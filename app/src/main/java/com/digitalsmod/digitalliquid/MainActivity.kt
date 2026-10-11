@@ -11,6 +11,8 @@ import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.view.Gravity
@@ -35,6 +37,8 @@ class MainActivity : Activity() {
     private var launchedForPanelPicker = false
     private var tab = 0
     private var onboardingPage = 0
+    private val uiHandler = Handler(Looper.getMainLooper())
+    private var welcomeTypewriter: Runnable? = null
     private lateinit var shell: LinearLayout
     private lateinit var scroll: ScrollView
     private lateinit var pageContent: LinearLayout
@@ -55,23 +59,25 @@ class MainActivity : Activity() {
         maybePickPanelBackground(intent)
     }
 
+    private fun openBackgroundPicker() {
+        val picker = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/*", "video/*"))
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        }
+        try {
+            startActivityForResult(picker, REQUEST_PANEL_BACKGROUND)
+        } catch (_: Exception) {
+            Toast.makeText(this, "Không mở được trình chọn ảnh/video.", Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun maybePickPanelBackground(sourceIntent: Intent?) {
         if (sourceIntent?.getBooleanExtra(IslandService.EXTRA_PICK_PANEL_BACKGROUND, false) != true) return
         launchedForPanelPicker = true
         sourceIntent.removeExtra(IslandService.EXTRA_PICK_PANEL_BACKGROUND)
-        window.decorView.post {
-            val picker = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                addCategory(Intent.CATEGORY_OPENABLE)
-                type = "*/*"
-                putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/*", "video/*"))
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-            }
-            try {
-                startActivityForResult(picker, REQUEST_PANEL_BACKGROUND)
-            } catch (_: Exception) {
-                Toast.makeText(this, "Thiết bị không mở được trình chọn ảnh/video.", Toast.LENGTH_LONG).show()
-            }
-        }
+        window.decorView.post { openBackgroundPicker() }
     }
 
     @Deprecated("Deprecated in Android API, still supported for ACTION_OPEN_DOCUMENT compatibility")
@@ -88,7 +94,8 @@ class MainActivity : Activity() {
                 } catch (_: Exception) { }
                 prefs.edit().putString(IslandService.PANEL_BACKGROUND_URI, uri.toString()).apply()
                 sendBroadcast(Intent(IslandService.ACTION_APPLY_CONFIG).setPackage(packageName))
-                Toast.makeText(this, "Đã đặt ảnh/video làm nền bảng DigitalLiquid.", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Đã cập nhật nền ảnh/video.", Toast.LENGTH_SHORT).show()
+                if (!launchedForPanelPicker && prefs.getBoolean(AppPrefs.ONBOARDING_DONE, false)) renderMain()
             }
         }
         if (launchedForPanelPicker) {
@@ -124,119 +131,94 @@ class MainActivity : Activity() {
     }
 
     private fun renderOnboarding(page: Int) {
-        onboardingPage = page.coerceIn(0, 2)
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(22), dp(26), dp(22), dp(24))
+        onboardingPage = 0
+        welcomeTypewriter?.let { uiHandler.removeCallbacks(it) }
+        val root = FrameLayout(this).apply {
             background = appBackground()
+            clipChildren = false
+            clipToPadding = false
         }
-        val brand = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(26), dp(28), dp(26), dp(30))
         }
-        brand.addView(ImageView(this).apply {
+        column.addView(ImageView(this).apply {
             setImageResource(R.drawable.digitalliquid_brand)
-            scaleType = ImageView.ScaleType.CENTER_CROP
+            scaleType = ImageView.ScaleType.FIT_CENTER
             contentDescription = "DigitalLiquid"
-        }, LinearLayout.LayoutParams(dp(46), dp(46)))
-        brand.addView(LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(11), 0, 0, 0)
-            addView(TextView(this@MainActivity).apply {
-                text = "DigitalLiquid"
-                textSize = 18f
-                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-                setTextColor(Color.WHITE)
-            })
-            addView(TextView(this@MainActivity).apply {
-                text = "DYNAMIC ISLAND"
-                textSize = 9f
-                letterSpacing = 0.12f
-                setTextColor(0xFF9CA6C2.toInt())
-            }, marginTop(2))
-        }, LinearLayout.LayoutParams(0, -2, 1f))
-        root.addView(brand)
-        val progress = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(22), 0, dp(10))
-        }
-        repeat(3) { index ->
-            val marker = View(this).apply {
-                background = rounded(if (index == onboardingPage) 0xFFB9AEFF.toInt() else 0xFF333442.toInt(), 50)
-            }
-            progress.addView(marker, LinearLayout.LayoutParams(if (index == onboardingPage) dp(28) else dp(8), dp(5)).apply {
-                marginEnd = dp(7)
-            })
-        }
-        root.addView(progress)
+        }, LinearLayout.LayoutParams(dp(76), dp(76)).apply { bottomMargin = dp(26) })
 
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_VERTICAL
+        val welcome = TextView(this).apply {
+            text = ""
+            textSize = 31f
+            letterSpacing = -0.02f
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            setLayerType(View.LAYER_TYPE_HARDWARE, null)
         }
-        val scroll = ScrollView(this).apply { isFillViewport = true; addView(content) }
-        root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
-
-        when (onboardingPage) {
-            0 -> {
-                content.addView(TextView(this).apply {
-                    text = "Một viên thuốc.\nĐúng phần còn thiếu."
-                    textSize = 31f
-                    setLineSpacing(0f, 1.03f)
-                    typeface = Typeface.create("sans-serif", Typeface.BOLD)
-                    setTextColor(Color.WHITE)
-                })
-                content.addView(bodyText("DigitalLiquid bổ sung cho HyperOS, không thay thế HyperIsland. Khi rảnh, viên thuốc vẫn đen đặc và luôn hiện diện ở cạnh trên."), marginTop(14))
-                content.addView(ImageView(this).apply {
-                    setImageResource(R.drawable.digitalliquid_hero)
-                    scaleType = ImageView.ScaleType.FIT_CENTER
-                    contentDescription = "Minh hoạ DigitalLiquid trên điện thoại"
-                    background = rounded(0xFF0B1020.toInt(), 22)
-                }, LinearLayout.LayoutParams(-1, dp(210)).apply { topMargin = dp(22); bottomMargin = dp(22) })
-                content.addView(featureMiniCard("01", "Chạm một lần", "Viên thuốc rung lắc hai bên kèm vệt mờ chuyển động."), marginBottom(10))
-                content.addView(featureMiniCard("02", "Giữ để tùy chỉnh", "Mở bảng đen và đặt ảnh hoặc video từ thiết bị làm nền."), marginBottom(10))
-            }
-            1 -> {
-                content.addView(TextView(this).apply {
-                    text = "Luôn sẵn sàng.\nKhông giành việc của HyperOS."
-                    textSize = 31f
-                    typeface = Typeface.create("sans-serif", Typeface.BOLD)
-                    setTextColor(Color.WHITE)
-                })
-                content.addView(bodyText("Nhạc, ghi âm, hẹn giờ, bấm giờ và phát nền tiếp tục do HyperOS xử lý. DigitalLiquid không dựng một bản sao để chen vào."), marginTop(14))
-                content.addView(featureMiniCard("GHI MÀN HÌNH", "Hiệu ứng REC riêng", "Chấm đỏ nhịp sáng chỉ xuất hiện khi phát hiện trạng thái quay màn hình."), marginTop(22))
-                content.addView(infoCard("Quyền do bạn kiểm soát", "Notification Access chỉ dùng để phát hiện thông báo quay màn hình. Không tải nội dung thông báo lên máy chủ."), marginTop(12))
-            }
-            2 -> {
-                content.addView(TextView(this).apply {
-                    text = "Bạn là người\nquyết định mọi thứ."
-                    textSize = 31f
-                    typeface = Typeface.create("sans-serif", Typeface.BOLD)
-                    setTextColor(Color.WHITE)
-                })
-                content.addView(bodyText("Chọn vị trí và kích thước, rồi giữ viên thuốc để mở bảng tùy chỉnh. Ảnh/video bạn chọn sẽ được giữ làm nền bằng quyền truy cập tệp cục bộ."), marginTop(14))
-                content.addView(featureMiniCard("HIỂN THỊ", "Vị trí và kích thước", "Cấu hình được lưu lại và áp dụng ngay vào viên thuốc."), marginTop(26))
-                content.addView(featureMiniCard("TƯƠNG TÁC", "Chạm / giữ", "Chạm để rung lắc; giữ để mở bảng đen và tải nền."), marginTop(10))
-            }
-        }
-
-        val footer = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        val skip = textButton(if (onboardingPage == 2) "Để sau" else "Bỏ qua", false) {
+        column.addView(welcome, LinearLayout.LayoutParams(-1, dp(64)))
+        column.addView(View(this).apply {
+            background = rounded(0xFFB9AEFF.toInt(), 50)
+        }, LinearLayout.LayoutParams(dp(28), dp(3)).apply { topMargin = dp(16); bottomMargin = dp(26) })
+        column.addView(ImageView(this).apply {
+            setImageResource(R.drawable.digitalliquid_hero)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            contentDescription = ""
+        }, LinearLayout.LayoutParams(-1, dp(230)).apply { bottomMargin = dp(24) })
+        column.addView(textButton("Bắt đầu sử dụng  →", true) {
             completeOnboarding()
-        }
-        footer.addView(skip, LinearLayout.LayoutParams(0, dp(52), 0.75f))
-        footer.addView(textButton(if (onboardingPage == 2) "Bắt đầu sử dụng  →" else "Tiếp tục  →", true) {
-            if (onboardingPage < 2) renderOnboarding(onboardingPage + 1) else completeOnboarding()
-        }, LinearLayout.LayoutParams(0, dp(52), 1.5f).apply { marginStart = dp(10) })
-        root.addView(footer, marginTop(12))
-        root.alpha = 0f
+        }, LinearLayout.LayoutParams(-1, dp(54)))
+        root.addView(column, FrameLayout.LayoutParams(-1, -1))
         setContentView(root)
-        installRootInsets(root, dp(22), dp(26), dp(22), dp(24))
-        root.animate().alpha(1f).translationY(0f).setDuration(280L).start()
+        installRootInsets(root, 0, 0, 0, 0)
+        column.alpha = 0f
+        column.translationY = dp(8).toFloat()
+        column.animate().alpha(1f).translationY(0f).setDuration(420L).setInterpolator(android.view.animation.PathInterpolator(0.18f, 0.82f, 0.2f, 1f)).start()
+        animateWelcomeTypewriter(welcome)
+    }
+
+    private fun animateWelcomeTypewriter(target: TextView) {
+        welcomeTypewriter?.let { uiHandler.removeCallbacks(it) }
+        val label = "Chào mừng"
+        var index = 0
+        var deleting = false
+        val task = object : Runnable {
+            override fun run() {
+                if (!target.isAttachedToWindow || prefs.getBoolean(AppPrefs.ONBOARDING_DONE, false)) return
+                index = if (deleting) (index - 1).coerceAtLeast(0) else (index + 1).coerceAtMost(label.length)
+                target.text = label.substring(0, index)
+                val progress = index.toFloat() / label.length.coerceAtLeast(1)
+                target.alpha = 0.78f + progress * 0.22f
+                target.translationX = if (deleting) dp(1).toFloat() else -dp(1).toFloat()
+                if (Build.VERSION.SDK_INT >= 31) {
+                    val radius = if (deleting) 0.85f else 0.4f
+                    try { target.setRenderEffect(android.graphics.RenderEffect.createBlurEffect(radius, 0f, android.graphics.Shader.TileMode.CLAMP)) } catch (_: Exception) { }
+                }
+                if (!deleting && index >= label.length) {
+                    deleting = true
+                    uiHandler.postDelayed(this, 850L)
+                    return
+                }
+                if (deleting && index <= 0) {
+                    target.translationX = 0f
+                    target.alpha = 1f
+                    if (Build.VERSION.SDK_INT >= 31) try { target.setRenderEffect(null) } catch (_: Exception) { }
+                    deleting = false
+                    uiHandler.postDelayed(this, 240L)
+                    return
+                }
+                uiHandler.postDelayed(this, if (deleting) 40L else 55L)
+            }
+        }
+        welcomeTypewriter = task
+        uiHandler.postDelayed(task, 180L)
     }
 
     private fun completeOnboarding() {
+        welcomeTypewriter?.let { uiHandler.removeCallbacks(it) }
+        welcomeTypewriter = null
         prefs.edit().putBoolean(AppPrefs.ONBOARDING_DONE, true).apply()
         tab = 0
         renderMain()
@@ -354,9 +336,9 @@ class MainActivity : Activity() {
 
         addEyebrow(target, "CÀI ĐẶT NHANH", 24)
         target.addView(permissionStatusCard(), marginTop(8))
-        target.addView(featureMiniCard("HIỂN THỊ", "Hiển thị trên ứng dụng khác", if (Settings.canDrawOverlays(this)) "Đã cấp quyền. Viên thuốc có thể xuất hiện trên màn hình." else "Bắt buộc để hiển thị đảo nổi trên ứng dụng khác."), marginTop(10))
-        target.addView(textButton(if (Settings.canDrawOverlays(this)) "Quản lý quyền hiển thị" else "Cấp quyền hiển thị", false) {
-            openOverlayPermission()
+        target.addView(featureMiniCard("TRỢ NĂNG", "Lớp phủ trên thanh trạng thái", if (hasHyperIslandAccessibility()) "Đã bật lớp phủ tin cậy và theo dõi HyperIsland." else "Bắt buộc để viên thuốc nằm trên status bar và nhận chạm trong vùng camera."), marginTop(10))
+        target.addView(textButton(if (hasHyperIslandAccessibility()) "Quản lý quyền Trợ năng" else "Bật quyền Trợ năng", false) {
+            openAccessibilitySettings()
         }, marginTop(8))
         target.addView(featureMiniCard("QUAY MÀN HÌNH", "Hiệu ứng ghi hình", if (hasNotificationAccess()) "Đã cấp quyền để phát hiện thông báo quay màn hình của hệ thống." else "Cần bật Notification Access để phát hiện trạng thái quay màn hình."), marginTop(10))
         target.addView(textButton(if (hasNotificationAccess()) "Mở cài đặt quyền thông báo" else "Bật quyền thông báo", false) {
@@ -384,6 +366,19 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER
         }, marginTop(12))
         target.addView(previewCard, marginTop(18))
+
+        val selectedBackground = prefs.getString(IslandService.PANEL_BACKGROUND_URI, null)
+        target.addView(textButton(
+            if (selectedBackground.isNullOrBlank()) "Chọn ảnh hoặc video nền" else "Thay ảnh/video nền",
+            primary = true
+        ) { openBackgroundPicker() }, marginTop(14))
+        if (!selectedBackground.isNullOrBlank()) {
+            target.addView(textButton("Xóa nền đã chọn", primary = false) {
+                prefs.edit().remove(IslandService.PANEL_BACKGROUND_URI).apply()
+                applyConfig()
+                renderMain()
+            }, marginTop(7))
+        }
 
         target.addView(sectionTitle("Kích thước"), marginTop(22))
         target.addView(seekCard("Chiều rộng", "126–330 dp", AppPrefs.WIDTH, 126, 330, " dp") { applyConfig() }, marginTop(8))
@@ -420,7 +415,11 @@ class MainActivity : Activity() {
         target.addView(textButton(if (hasNotificationAccess()) "Quản lý quyền thông báo" else "Bật quyền thông báo", false) {
             startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
         }, marginTop(8))
-        target.addView(infoCard("Nền bảng tùy chỉnh", "Giữ viên thuốc để mở bảng. Chọn “Tải ảnh hoặc video từ thiết bị”; tệp được lưu dưới dạng URI cục bộ, không tải lên máy chủ. Video phát lặp không tiếng để không chen vào âm thanh nền."), marginTop(14))
+        target.addView(featureMiniCard("HYPERISLAND", "Tự ẩn khi hệ thống xuất hiện", if (hasHyperIslandAccessibility()) "Đã bật quan sát giao diện hệ thống." else "Bật Trợ năng để đặt viên thuốc lên lớp thanh trạng thái và thử nhận biết lúc HyperIsland xuất hiện/biến mất."), marginTop(16))
+        target.addView(textButton(if (hasHyperIslandAccessibility()) "Quản lý quyền Trợ năng" else "Bật theo dõi HyperIsland", false) {
+            openAccessibilitySettings()
+        }, marginTop(8))
+        target.addView(infoCard("Nền bảng tùy chỉnh", "Chọn ảnh hoặc video tại mục Vị trí & Chuyển động trong ứng dụng. Khi mở bảng, nội dung đã chọn chiếm toàn bộ bề mặt, không bị chữ hoặc nút che. Video lặp không tiếng."), marginTop(14))
     }
 
     private fun buildSettings(target: LinearLayout) {
@@ -432,9 +431,11 @@ class MainActivity : Activity() {
             setTextColor(Color.WHITE)
         }, marginTop(4))
         target.addView(bodyText("Các quyền đặc biệt của Android không thể tự bật. Bạn sẽ được chuyển sang trang Cài đặt tương ứng."), marginTop(7))
-        target.addView(settingAction("Hiển thị trên ứng dụng khác", if (Settings.canDrawOverlays(this)) "Đã cấp quyền" else "Chưa cấp quyền", "Mở trang cấp quyền overlay") { openOverlayPermission() }, marginTop(18))
-        target.addView(settingAction("Notification Access", if (hasNotificationAccess()) "Đã cấp quyền" else "Chưa cấp quyền", "Phát hiện trạng thái quay màn hình từ thông báo hệ thống") {
+        target.addView(settingAction("Notification Access", if (hasNotificationAccess()) "Đã cấp quyền" else "Chưa cấp quyền", "Đọc trạng thái thông báo đang hoạt động để phát hiện quay màn hình, nhạc và đồng hồ") {
             startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+        }, marginTop(10))
+        target.addView(settingAction("Theo dõi HyperIsland", if (hasHyperIslandAccessibility()) "Đã bật" else "Chưa bật", "Cho phép nhận diện HyperIsland và dùng lớp phủ Trợ năng đáng tin cậy để chạm được ở vùng thanh trạng thái. Nhận diện phụ thuộc phiên bản HyperOS.") {
+            openAccessibilitySettings()
         }, marginTop(10))
         target.addView(settingAction("Không hạn chế pin", batteryOptimizationSummary(), "Giảm khả năng hệ thống dừng overlay nền") { requestBatteryExemption() }, marginTop(10))
 
@@ -454,7 +455,7 @@ class MainActivity : Activity() {
             addView(bodyText("Tắt chuyển động rung lắc và co giãn. Viên thuốc vẫn hiển thị màu đen."), marginTop(5))
         }.apply { setPadding(dp(15), dp(14), dp(15), dp(14)) }, marginTop(10))
 
-        target.addView(settingAction("Chạy lại onboarding", "Xem lại giới thiệu", "Hiện lại phần giới thiệu 3 bước") {
+        target.addView(settingAction("Chạy lại onboarding", "Xem lại giới thiệu", "Hiện lại màn hình Chào mừng") {
             prefs.edit().putBoolean(AppPrefs.ONBOARDING_DONE, false).apply()
             renderOnboarding(0)
         }, marginTop(22))
@@ -495,8 +496,9 @@ class MainActivity : Activity() {
             letterSpacing = 0.11f
             setTextColor(0xFFA8A1F7.toInt())
         })
-        outer.addView(statusLine("Hiển thị nổi", Settings.canDrawOverlays(this)), marginTop(10))
-        outer.addView(statusLine("Đọc thông báo", hasNotificationAccess()), marginTop(8))
+        outer.addView(statusLine("Lớp phủ trên thanh trạng thái", hasHyperIslandAccessibility()), marginTop(10))
+        outer.addView(statusLine("Phát hiện quay màn hình", hasNotificationAccess()), marginTop(8))
+        outer.addView(statusLine("Theo dõi HyperIsland", hasHyperIslandAccessibility()), marginTop(8))
         outer.addView(statusLine("Hiệu ứng viên thuốc", true, "Sẵn sàng"), marginTop(8))
         return outer
     }
@@ -736,6 +738,27 @@ class MainActivity : Activity() {
         return container
     }
 
+    override fun onDestroy() {
+        welcomeTypewriter?.let { uiHandler.removeCallbacks(it) }
+        welcomeTypewriter = null
+        super.onDestroy()
+    }
+
+    private fun hasHyperIslandAccessibility(): Boolean {
+        val component = android.content.ComponentName(this, HyperIslandVisibilityService::class.java).flattenToString()
+        val enabled = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES).orEmpty()
+        val accessibilityOn = Settings.Secure.getInt(contentResolver, Settings.Secure.ACCESSIBILITY_ENABLED, 0) == 1
+        return accessibilityOn && enabled.split(':').any { it.equals(component, ignoreCase = true) }
+    }
+
+    private fun openAccessibilitySettings() {
+        try {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        } catch (_: Exception) {
+            Toast.makeText(this, "Không mở được cài đặt Trợ năng.", Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun hasNotificationAccess(): Boolean {
         val enabled = Settings.Secure.getString(contentResolver, "enabled_notification_listeners") ?: return false
         return enabled.split(":").any { it.equals(componentNameForListener(), ignoreCase = true) }
@@ -744,16 +767,13 @@ class MainActivity : Activity() {
     private fun componentNameForListener(): String =
         android.content.ComponentName(this, IslandNotificationListener::class.java).flattenToString()
 
-    private fun openOverlayPermission() {
-        if (Build.VERSION.SDK_INT >= 23) {
-            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
-        }
-    }
-
     private fun startIsland() {
-        if (!Settings.canDrawOverlays(this)) {
-            openOverlayPermission()
-            Toast.makeText(this, "Hãy cấp quyền hiển thị nổi rồi bật lại đảo.", Toast.LENGTH_LONG).show()
+        // An ordinary TYPE_APPLICATION_OVERLAY is placed below critical system windows
+        // such as the status bar. Require the enabled AccessibilityService so the pill
+        // can use TYPE_ACCESSIBILITY_OVERLAY and remain touchable around the camera cutout.
+        if (!hasHyperIslandAccessibility()) {
+            Toast.makeText(this, "Hãy bật Trợ năng DigitalLiquid trước để viên thuốc nằm trên thanh trạng thái và nhận biết HyperIsland.", Toast.LENGTH_LONG).show()
+            openAccessibilitySettings()
             return
         }
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
