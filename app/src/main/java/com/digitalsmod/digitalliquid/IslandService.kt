@@ -9,14 +9,18 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.res.Configuration
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.graphics.Color
+import android.graphics.Matrix
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
+import android.media.MediaPlayer
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -24,7 +28,10 @@ import android.os.Looper
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
+import android.view.Surface
+import android.view.TextureView
 import android.view.View
+import android.view.ViewOutlineProvider
 import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.view.animation.PathInterpolator
@@ -32,7 +39,7 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
-import android.widget.VideoView
+import android.widget.Toast
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.math.sin
@@ -44,6 +51,8 @@ import kotlin.math.sin
  */
 class IslandService : Service() {
     private lateinit var windowManager: WindowManager
+    private var usingAccessibilityOverlay = false
+    private var overlayStartupAttempts = 0
     private val handler = Handler(Looper.getMainLooper())
     private var islandRoot: FrameLayout? = null
     private var content: LinearLayout? = null
@@ -59,15 +68,23 @@ class IslandService : Service() {
     private var glassStrength = 72
     private var tint = "midnight"
     private var panelOpen = false
+    private var closingPanelWithMedia = false
     private var screenRecording = false
+    private var notificationScreenRecording = false
+    private var accessibilityScreenRecording = false
+    private var nativeActivityActive = false
+    private var hyperIslandVisibilityOverride: Boolean? = null
+    private var idleDot: View? = null
+    private var panelMediaPlayer: MediaPlayer? = null
+    private var panelVideoSurface: Surface? = null
+    private var panelTextureView: TextureView? = null
     private var playPanelIntro = false
     private var lastBackgroundUri: String? = null
     private var panelBrandTitle: TextView? = null
-    private var panelCustomizeLabel: TextView? = null
-    private var panelUploadButton: TextView? = null
     private var panelTypewriter: Runnable? = null
     private var resizeAnimator: ValueAnimator? = null
     private var recordingPulse: ValueAnimator? = null
+    private var recordingTextTypewriter: Runnable? = null
     private var downX = 0f
     private var downY = 0f
     private var longPressTriggered = false
@@ -82,10 +99,26 @@ class IslandService : Service() {
         }
     }
 
+    private val orientationReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != Intent.ACTION_CONFIGURATION_CHANGED) return
+            applyPreferences()
+            // Re-read the physical display cutout after rotation so the island stays
+            // aligned with the camera rather than following the app's portrait UI.
+            render(animateSize = true)
+            updatePosition()
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         instance = this
-        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        hyperIslandVisibilityOverride = lastHyperIslandVisibilityOverride
+        notificationScreenRecording = lastNotificationScreenRecording
+        accessibilityScreenRecording = lastAccessibilityScreenRecording
+        nativeActivityActive = lastNativeActivityActive
+        screenRecording = notificationScreenRecording || accessibilityScreenRecording
+        refreshOverlayWindowManager()
         createNotificationChannel()
         val foregroundNotification = buildForegroundNotification()
         if (Build.VERSION.SDK_INT >= 34) {
@@ -98,16 +131,43 @@ class IslandService : Service() {
         try {
             if (Build.VERSION.SDK_INT >= 33) {
                 registerReceiver(configReceiver, IntentFilter(ACTION_APPLY_CONFIG), Context.RECEIVER_NOT_EXPORTED)
+                registerReceiver(orientationReceiver, IntentFilter(Intent.ACTION_CONFIGURATION_CHANGED), Context.RECEIVER_NOT_EXPORTED)
             } else {
                 @Suppress("DEPRECATION")
                 registerReceiver(configReceiver, IntentFilter(ACTION_APPLY_CONFIG))
+                @Suppress("DEPRECATION")
+                registerReceiver(orientationReceiver, IntentFilter(Intent.ACTION_CONFIGURATION_CHANGED))
             }
         } catch (_: Exception) { }
-        showIsland()
+        waitForAccessibilityOverlay()
         IslandNotificationListener.refreshFromServiceStart()
     }
 
+    private fun waitForAccessibilityOverlay() {
+        refreshOverlayWindowManager()
+        if (usingAccessibilityOverlay) {
+            overlayStartupAttempts = 0
+            showIsland()
+            return
+        }
+        // AccessibilityService can reconnect just after Activity returns from Settings.
+        // Wait briefly rather than create a normal overlay below the status bar.
+        if (overlayStartupAttempts++ < 8) {
+            handler.postDelayed({ waitForAccessibilityOverlay() }, 250L)
+        } else {
+            Toast.makeText(this, "DigitalLiquid chưa kết nối được lớp phủ Trợ năng. Hãy bật lại quyền Theo dõi HyperIsland rồi thử lại.", Toast.LENGTH_LONG).show()
+            stopSelf()
+        }
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        applyPreferences()
+        render(animateSize = false)
+        updatePosition()
+    }
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -137,7 +197,7 @@ class IslandService : Service() {
         val prefs = AppPrefs.get(this)
         widthDp = prefs.getInt(AppPrefs.WIDTH, 148).coerceIn(126, 330)
         heightDp = prefs.getInt(AppPrefs.HEIGHT, 38).coerceIn(34, 72)
-        topOffsetDp = prefs.getInt(AppPrefs.OFFSET_TOP, 6).coerceIn(0, 140)
+        topOffsetDp = prefs.getInt(AppPrefs.OFFSET_TOP, 0).coerceIn(0, 140)
         alignment = prefs.getString(AppPrefs.ALIGNMENT, "center") ?: "center"
         glassStrength = prefs.getInt(AppPrefs.GLASS_STRENGTH, 72).coerceIn(15, 100)
         tint = prefs.getString(AppPrefs.TINT, "midnight") ?: "midnight"
@@ -154,10 +214,16 @@ class IslandService : Service() {
             visibility = View.GONE
             clipChildren = true
             clipToPadding = true
+            isClickable = false
+            isFocusable = false
+            background = roundedBackground(30f, Color.BLACK)
+            clipToOutline = true
         }
         val scrim = View(this).apply {
-            setBackgroundColor(0x70000000)
+            setBackgroundColor(Color.TRANSPARENT)
             visibility = View.GONE
+            isClickable = false
+            isFocusable = false
         }
         val innerContent = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -168,8 +234,8 @@ class IslandService : Service() {
             isFocusable = false
         }
         val root = FrameLayout(this).apply {
-            background = roundedBackground(if (panelOpen) 28f else heightDp / 2f, Color.BLACK)
-            clipToOutline = false
+            background = roundedBackground(if (panelOpen) 30f else heightDp / 2f, Color.BLACK)
+            clipToOutline = true
             clipChildren = true
             clipToPadding = true
             isClickable = true
@@ -179,8 +245,23 @@ class IslandService : Service() {
             addView(mediaBackground, FrameLayout.LayoutParams(-1, -1))
             addView(scrim, FrameLayout.LayoutParams(-1, -1))
             addView(innerContent, FrameLayout.LayoutParams(-1, -1))
+            val dot = View(this@IslandService).apply {
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(0xFFFFD36E.toInt())
+                }
+                isClickable = false
+                isFocusable = false
+                elevation = dp(3).toFloat()
+                alpha = 0.95f
+            }
+            addView(dot, FrameLayout.LayoutParams(dp(3), dp(3), Gravity.RIGHT or Gravity.TOP).apply {
+                rightMargin = dp(7)
+                topMargin = dp(7)
+            })
+            idleDot = dot
             setOnTouchListener { view, event -> handlePillTouch(view, event) }
-            contentDescription = "DigitalLiquid. Chạm một lần để tạo hiệu ứng; giữ để tùy chỉnh."
+            contentDescription = "DigitalLiquid"
         }
         glassView = glass
         backgroundHost = mediaBackground
@@ -191,16 +272,20 @@ class IslandService : Service() {
         val initialParams = WindowManager.LayoutParams(
             targetWidth(),
             targetHeight(),
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-            else WindowManager.LayoutParams.TYPE_PHONE,
+            overlayWindowType(),
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = gravityForAlignment()
-            x = horizontalOffset()
-            y = dp(topOffsetDp)
+            gravity = gravityForWindow()
+            x = positionX(width, panelOpen)
+            y = positionY(height, panelOpen)
+            if (Build.VERSION.SDK_INT >= 30) {
+                // Request high-refresh rendering where the panel/display supports it.
+                preferredRefreshRate = 120f
+            }
             if (Build.VERSION.SDK_INT >= 28) {
                 layoutInDisplayCutoutMode = if (Build.VERSION.SDK_INT >= 30) {
                     WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
@@ -214,10 +299,52 @@ class IslandService : Service() {
         try {
             windowManager.addView(root, initialParams)
         } catch (_: Exception) {
+            // Never silently fall back to TYPE_APPLICATION_OVERLAY: it can be below the
+            // status bar, recreating the invisible/non-responsive pill bug.
+            Toast.makeText(this, "Android từ chối lớp phủ trên thanh trạng thái. Kiểm tra quyền Trợ năng DigitalLiquid.", Toast.LENGTH_LONG).show()
             stopSelf()
             return
         }
         render()
+    }
+
+    private fun refreshOverlayWindowManager() {
+        val trustedManager = HyperIslandVisibilityService.overlayWindowManager()
+        if (trustedManager != null) {
+            windowManager = trustedManager
+            usingAccessibilityOverlay = true
+        } else {
+            windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+            usingAccessibilityOverlay = false
+        }
+    }
+
+    private fun overlayWindowType(): Int {
+        check(usingAccessibilityOverlay) { "Accessibility overlay must be connected before showing the pill." }
+        return WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+    }
+
+    private fun rebuildOverlayForAccessibilityMode() {
+        val root = islandRoot ?: return
+        val shouldUseTrusted = HyperIslandVisibilityService.overlayWindowManager() != null
+        if (!shouldUseTrusted && usingAccessibilityOverlay) {
+            // Accessibility was disabled while running. Stop rather than regress to an
+            // overlay that cannot receive taps over the status bar.
+            stopSelf()
+            return
+        }
+        if (shouldUseTrusted == usingAccessibilityOverlay) return
+        try { windowManager.removeView(root) } catch (_: Exception) { }
+        stopPanelMedia()
+        islandRoot = null
+        content = null
+        glassView = null
+        backgroundHost = null
+        backgroundScrim = null
+        idleDot = null
+        params = null
+        refreshOverlayWindowManager()
+        if (usingAccessibilityOverlay) showIsland() else stopSelf()
     }
 
     private fun handlePillTouch(view: View, event: MotionEvent): Boolean {
@@ -240,7 +367,7 @@ class IslandService : Service() {
                 handler.removeCallbacks(longPressRunnable)
                 if (!longPressTriggered && abs(event.rawX - downX) <= touchSlop * 1.5f && abs(event.rawY - downY) <= touchSlop * 1.5f) {
                     view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-                    wobblePill()
+                    if (panelOpen) closeCustomizationPanel() else wobblePill()
                 }
                 return true
             }
@@ -255,7 +382,7 @@ class IslandService : Service() {
     private val longPressRunnable = Runnable {
         longPressTriggered = true
         islandRoot?.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-        openCustomizationPanel()
+        if (panelOpen) closeCustomizationPanel() else openCustomizationPanel()
     }
 
     private fun wobblePill() {
@@ -267,21 +394,33 @@ class IslandService : Service() {
             root.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
             return
         }
-        val baseX = horizontalOffset()
-        val distance = dp(5).toFloat()
+        // Use the live window coordinate; landscape cutout mode anchors at the camera side.
+        val baseX = lp.x
+        val distance = dp(13).toFloat()
         glassView?.setMotionBlur(0f)
-        ValueAnimator.ofFloat(0f, -distance, distance * 0.82f, -distance * 0.52f, distance * 0.25f, 0f).apply {
-            duration = 330L
-            interpolator = PathInterpolator(0.2f, 0.82f, 0.25f, 1f)
+        ValueAnimator.ofFloat(0f, -distance, distance * 1.04f, -distance * 0.80f, distance * 0.54f, -distance * 0.26f, distance * 0.10f, 0f).apply {
+            duration = 540L
+            interpolator = PathInterpolator(0.18f, 0.82f, 0.20f, 1f)
             addUpdateListener { animator ->
                 lp.x = baseX + (animator.animatedValue as Float).roundToInt()
                 try { windowManager.updateViewLayout(root, lp) } catch (_: Exception) { }
                 val progress = animator.animatedFraction
-                glassView?.setMotionBlur(sin(progress * Math.PI).toFloat())
+                val blur = if (progress < 0.5f) progress * 2f else (1f - progress) * 2f
+                glassView?.setMotionBlur(blur.coerceIn(0f, 1f))
+                if (Build.VERSION.SDK_INT >= 31) {
+                    val blurRadius = dp(2).toFloat() * blur
+                    try { root.setRenderEffect(if (blurRadius > 0.05f) android.graphics.RenderEffect.createBlurEffect(blurRadius, blurRadius * 0.18f, android.graphics.Shader.TileMode.CLAMP) else null) } catch (_: Exception) { }
+                }
+                val squash = sin(progress * Math.PI).toFloat()
+                root.scaleX = 1f + 0.035f * squash
+                root.scaleY = 1f - 0.012f * squash
             }
             addListener(object : android.animation.AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: android.animation.Animator) {
                     lp.x = baseX
+                    root.scaleX = 1f
+                    root.scaleY = 1f
+                    if (Build.VERSION.SDK_INT >= 31) try { root.setRenderEffect(null) } catch (_: Exception) { }
                     glassView?.setMotionBlur(0f)
                     try { windowManager.updateViewLayout(root, lp) } catch (_: Exception) { }
                 }
@@ -292,6 +431,7 @@ class IslandService : Service() {
 
     private fun openCustomizationPanel() {
         if (panelOpen) return
+        closingPanelWithMedia = false
         panelOpen = true
         playPanelIntro = true
         render(animateSize = true)
@@ -299,25 +439,31 @@ class IslandService : Service() {
 
     private fun closeCustomizationPanel() {
         if (!panelOpen) return
+        closingPanelWithMedia = !AppPrefs.get(this).getString(PANEL_BACKGROUND_URI, null).isNullOrBlank()
         panelTypewriter?.let { handler.removeCallbacks(it) }
         panelOpen = false
         panelTypewriter = null
         panelBrandTitle = null
-        panelCustomizeLabel = null
-        panelUploadButton = null
         render(animateSize = true)
     }
 
     private fun targetWidth(): Int {
         val density = resources.displayMetrics.density.coerceAtLeast(1f)
-        val screenWidthPx = resources.displayMetrics.widthPixels.coerceAtLeast(dp(180))
+        val screenWidthPx = displayWidthPx().coerceAtLeast(dp(180))
         val screenWidthDp = (screenWidthPx / density).toInt().coerceAtLeast(180)
-        val desiredDp = if (panelOpen) screenWidthDp - 24 else if (screenRecording) maxOf(widthDp, 178) else widthDp
-        return dp(desiredDp).coerceIn(dp(126), (screenWidthPx - dp(12)).coerceAtLeast(dp(126)))
+        val desiredDp = when {
+            panelOpen -> screenWidthDp - 24
+            isLandscapeWithSideCutout() -> if (screenRecording) maxOf(heightDp, 42) else heightDp
+            screenRecording -> maxOf(widthDp, 178)
+            else -> widthDp
+        }
+        val maxWidthPx = (screenWidthPx - dp(12)).coerceAtLeast(dp(36))
+        return dp(desiredDp).coerceIn(dp(if (isLandscapeWithSideCutout() && !panelOpen) 34 else 126), maxWidthPx)
     }
 
     private fun targetHeight(): Int = when {
-        panelOpen -> dp(250)
+        panelOpen -> dp(252)
+        isLandscapeWithSideCutout() -> dp(if (screenRecording) maxOf(widthDp, 178) else widthDp)
         screenRecording -> dp(maxOf(heightDp, 42))
         else -> dp(heightDp)
     }
@@ -328,18 +474,92 @@ class IslandService : Service() {
         else -> Gravity.TOP or Gravity.CENTER_HORIZONTAL
     }
 
+    private fun gravityForWindow(): Int = when {
+        isLandscapeWithSideCutout() -> {
+            // In landscape the physical camera cutout moves to a side. Keep the pill upright
+            // along that edge instead of letting the position follow a portrait top-center assumption.
+            Gravity.TOP or Gravity.LEFT
+        }
+        isPortraitWithTopCutout() -> Gravity.TOP or Gravity.CENTER_HORIZONTAL
+        else -> gravityForAlignment()
+    }
+
     private fun horizontalOffset(): Int = if (alignment == "center") 0 else dp(12)
+
+    private fun displayWidthPx(): Int = if (Build.VERSION.SDK_INT >= 30) {
+        try { windowManager.currentWindowMetrics.bounds.width() } catch (_: Exception) { resources.displayMetrics.widthPixels }
+    } else resources.displayMetrics.widthPixels
+
+    private fun displayHeightPx(): Int = if (Build.VERSION.SDK_INT >= 30) {
+        try { windowManager.currentWindowMetrics.bounds.height() } catch (_: Exception) { resources.displayMetrics.heightPixels }
+    } else resources.displayMetrics.heightPixels
+
+    private fun currentCameraCutoutBounds(): Rect? {
+        if (Build.VERSION.SDK_INT >= 30) {
+            try {
+                return windowManager.currentWindowMetrics.windowInsets.displayCutout?.boundingRects
+                    ?.filterNot { it.isEmpty }
+                    ?.maxByOrNull { it.width().toLong() * it.height().toLong() }
+                    ?.let { Rect(it) }
+            } catch (_: Exception) { }
+        }
+        if (Build.VERSION.SDK_INT >= 28) {
+            try {
+                return islandRoot?.rootWindowInsets?.displayCutout?.boundingRects
+                    ?.filterNot { it.isEmpty }
+                    ?.maxByOrNull { it.width().toLong() * it.height().toLong() }
+                    ?.let { Rect(it) }
+            } catch (_: Exception) { }
+        }
+        return null
+    }
+
+    private fun isLandscapeWithSideCutout(): Boolean {
+        if (resources.configuration.orientation != Configuration.ORIENTATION_LANDSCAPE) return false
+        val rect = currentCameraCutoutBounds() ?: return false
+        val edgeTolerance = dp(18)
+        val screenWidth = displayWidthPx()
+        return rect.left <= edgeTolerance || rect.right >= screenWidth - edgeTolerance
+    }
+
+    private fun isPortraitWithTopCutout(): Boolean {
+        if (resources.configuration.orientation != Configuration.ORIENTATION_PORTRAIT) return false
+        val rect = currentCameraCutoutBounds() ?: return false
+        return rect.top <= dp(18) && rect.centerY() <= dp(90)
+    }
+
+    private fun positionX(windowWidth: Int = targetWidth(), expanded: Boolean = panelOpen): Int {
+        if (isLandscapeWithSideCutout()) {
+            if (expanded) return ((displayWidthPx() - windowWidth) / 2).coerceAtLeast(0)
+            val cutout = currentCameraCutoutBounds()
+            if (cutout != null) return (cutout.centerX() - windowWidth / 2).coerceAtLeast(0)
+        }
+        if (isPortraitWithTopCutout()) {
+            val cutout = currentCameraCutoutBounds()
+            if (cutout != null) return cutout.centerX() - displayWidthPx() / 2
+        }
+        return horizontalOffset()
+    }
+
+    private fun positionY(windowHeight: Int = targetHeight(), expanded: Boolean = panelOpen): Int {
+        if (isLandscapeWithSideCutout()) {
+            if (expanded) return dp(topOffsetDp)
+            val cutout = currentCameraCutoutBounds()
+            if (cutout != null) return (cutout.centerY() - windowHeight / 2).coerceAtLeast(0)
+        }
+        return overlayTopY()
+    }
 
     private fun updatePosition() {
         val root = islandRoot ?: return
         val lp = params ?: return
         lp.width = targetWidth()
         lp.height = targetHeight()
-        lp.gravity = gravityForAlignment()
-        lp.x = horizontalOffset()
-        lp.y = dp(topOffsetDp)
+        lp.gravity = gravityForWindow()
+        lp.x = positionX(lp.width, panelOpen)
+        lp.y = positionY(lp.height, panelOpen)
         try { windowManager.updateViewLayout(root, lp) } catch (_: Exception) { }
-        root.background = roundedBackground(if (panelOpen) 28f else heightDp / 2f, Color.BLACK)
+        root.background = roundedBackground(if (panelOpen) 30f else heightDp / 2f, Color.BLACK)
         glassView?.configure(glassStrength, tint, expandedNow = panelOpen)
     }
 
@@ -348,23 +568,36 @@ class IslandService : Service() {
         val rootContent = content ?: return
         val prefs = AppPrefs.get(this)
         resizeAnimator?.cancel()
-        rootContent.removeAllViews()
         recordingPulse?.cancel()
         recordingPulse = null
+        recordingTextTypewriter?.let { handler.removeCallbacks(it) }
+        recordingTextTypewriter = null
+        rootContent.removeAllViews()
+        rootContent.visibility = View.VISIBLE
         rootContent.setPadding(dp(if (panelOpen) 18 else 8), dp(if (panelOpen) 15 else 2), dp(if (panelOpen) 18 else 8), dp(if (panelOpen) 14 else 2))
-        root.background = roundedBackground(if (panelOpen) 28f else heightDp / 2f, Color.BLACK)
-        root.clipToOutline = panelOpen
+        root.background = roundedBackground(if (panelOpen) 30f else heightDp / 2f, Color.BLACK)
+        root.clipToOutline = true
+        root.clipChildren = true
+        root.clipToPadding = true
         glassView?.configure(glassStrength, tint, expandedNow = panelOpen)
         glassView?.visibility = if (panelOpen) View.GONE else View.VISIBLE
-        syncPanelBackground()
+        idleDot?.visibility = if (!panelOpen && !screenRecording) View.VISIBLE else View.GONE
 
+        val customUri = prefs.getString(PANEL_BACKGROUND_URI, null)
+        val showMediaOnTop = (panelOpen || closingPanelWithMedia) && !customUri.isNullOrBlank()
         if (panelOpen) {
-            val runIntro = playPanelIntro
-            playPanelIntro = false
-            renderCustomizationPanel(rootContent, runIntro)
+            if (showMediaOnTop) {
+                // The selected local media becomes the whole panel. No text/buttons are layered over it.
+                rootContent.visibility = View.GONE
+            } else {
+                val runIntro = playPanelIntro
+                playPanelIntro = false
+                renderCustomizationPanel(rootContent, runIntro)
+            }
         } else if (screenRecording) {
             renderRecordingIndicator(rootContent)
         }
+        syncPanelBackground()
 
         val lp = params
         if (lp != null) {
@@ -372,17 +605,47 @@ class IslandService : Service() {
             else {
                 lp.width = targetWidth()
                 lp.height = targetHeight()
-                lp.gravity = gravityForAlignment()
-                lp.x = horizontalOffset()
-                lp.y = dp(topOffsetDp)
+                lp.gravity = gravityForWindow()
+                lp.x = positionX(lp.width, panelOpen)
+                lp.y = positionY(lp.height, panelOpen)
                 try { windowManager.updateViewLayout(root, lp) } catch (_: Exception) { }
             }
         }
+        applyNativeActivityVisibility()
+    }
+
+    private fun applyNativeActivityVisibility() {
+        val root = islandRoot ?: return
+        val lp = params ?: return
+        // Accessibility observation, when enabled, takes precedence so the pill can return
+        // as soon as HyperIsland is no longer visible even if a media notification persists.
+        val suppress = hyperIslandVisibilityOverride ?: nativeActivityActive
+        val wantedVisibility = if (suppress) View.GONE else View.VISIBLE
+        val hasNotTouchable = (lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) != 0
+        if (root.visibility != wantedVisibility || hasNotTouchable != suppress) {
+            root.visibility = wantedVisibility
+            lp.flags = if (suppress) {
+                lp.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            } else {
+                lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+            }
+            try { windowManager.updateViewLayout(root, lp) } catch (_: Exception) { }
+        }
+    }
+
+    // With insets disabled on this window, y=0 is already the physical screen top.
+    // Subtracting status-bar height placed the pill partly outside the display and made
+    // its touch region inconsistent. Use the chosen offset directly.
+    private fun overlayTopY(): Int = dp(topOffsetDp)
+
+    private fun statusBarHeightPx(): Int {
+        val id = resources.getIdentifier("status_bar_height", "dimen", "android")
+        return if (id > 0) resources.getDimensionPixelSize(id) else dp(24)
     }
 
     private fun renderRecordingIndicator(target: LinearLayout) {
         val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
+            orientation = if (isLandscapeWithSideCutout()) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
             isClickable = false
         }
@@ -403,15 +666,18 @@ class IslandService : Service() {
         dotWrap.addView(ring, FrameLayout.LayoutParams(dp(16), dp(16), Gravity.CENTER))
         dotWrap.addView(dot, FrameLayout.LayoutParams(dp(7), dp(7), Gravity.CENTER))
         row.addView(dotWrap, LinearLayout.LayoutParams(dp(20), dp(22)))
-        row.addView(TextView(this).apply {
-            text = "ĐANG QUAY MÀN HÌNH"
-            textSize = 10.5f
-            letterSpacing = 0.06f
+        val recLabel = TextView(this).apply {
+            text = ""
+            textSize = 11f
+            letterSpacing = 0.08f
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER_VERTICAL
-        }, LinearLayout.LayoutParams(-2, dp(22)))
+            setLayerType(View.LAYER_TYPE_HARDWARE, null)
+        }
+        row.addView(recLabel, LinearLayout.LayoutParams(-2, dp(22)))
         target.addView(row, LinearLayout.LayoutParams(-1, -1))
+        startRecordingTypewriter(recLabel)
 
         recordingPulse?.cancel()
         recordingPulse = ValueAnimator.ofFloat(0f, 1f).apply {
@@ -432,151 +698,237 @@ class IslandService : Service() {
         }
     }
 
+    private fun startRecordingTypewriter(labelView: TextView) {
+        recordingTextTypewriter?.let { handler.removeCallbacks(it) }
+        val phrase = "REC"
+        var index = 0
+        var deleting = false
+        val task = object : Runnable {
+            override fun run() {
+                if (!screenRecording || islandRoot == null || !labelView.isAttachedToWindow) return
+                index = if (deleting) (index - 1).coerceAtLeast(0) else (index + 1).coerceAtMost(phrase.length)
+                labelView.text = phrase.substring(0, index)
+                labelView.translationX = if (deleting) dp(1).toFloat() else -dp(1).toFloat()
+                labelView.alpha = 0.72f + 0.28f * index / phrase.length.toFloat()
+                if (Build.VERSION.SDK_INT >= 31) {
+                    val blur = if (deleting) 0.8f else 0.35f
+                    try { labelView.setRenderEffect(android.graphics.RenderEffect.createBlurEffect(blur, 0f, android.graphics.Shader.TileMode.CLAMP)) } catch (_: Exception) { }
+                }
+                if (!deleting && index >= phrase.length) {
+                    deleting = true
+                    handler.postDelayed(this, 460L)
+                    return
+                }
+                if (deleting && index <= 0) {
+                    labelView.translationX = 0f
+                    labelView.alpha = 1f
+                    if (Build.VERSION.SDK_INT >= 31) try { labelView.setRenderEffect(null) } catch (_: Exception) { }
+                    deleting = false
+                    handler.postDelayed(this, 160L)
+                    return
+                }
+                handler.postDelayed(this, if (deleting) 55L else 70L)
+            }
+        }
+        recordingTextTypewriter = task
+        handler.postDelayed(task, 80L)
+    }
+
     private fun renderCustomizationPanel(target: LinearLayout, animateIntro: Boolean) {
-        val topRow = FrameLayout(this).apply { clipChildren = false }
+        target.orientation = LinearLayout.VERTICAL
+        target.gravity = Gravity.CENTER
+        target.setPadding(dp(18), dp(15), dp(18), dp(14))
         val brand = TextView(this).apply {
             text = if (animateIntro) "" else "DigitalLiquid"
-            textSize = 24f
+            textSize = 23f
             letterSpacing = -0.025f
             typeface = Typeface.create("sans-serif", Typeface.BOLD)
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
+            isClickable = false
         }
-        topRow.addView(brand, FrameLayout.LayoutParams(-1, dp(44), Gravity.CENTER))
-        val close = TextView(this).apply {
-            text = "×"
-            textSize = 23f
-            setTextColor(0xFFE7E7EB.toInt())
-            gravity = Gravity.CENTER
-            background = roundedBackground(18f, 0x28000000)
-            isClickable = true
-            setOnClickListener { closeCustomizationPanel() }
-        }
-        topRow.addView(close, FrameLayout.LayoutParams(dp(34), dp(34), Gravity.RIGHT or Gravity.TOP))
-        target.addView(topRow, LinearLayout.LayoutParams(-1, dp(44)))
-
+        target.addView(brand, LinearLayout.LayoutParams(-1, dp(54)))
         val customize = TextView(this).apply {
-            text = "Tùy chỉnh"
-            textSize = 15f
+            text = if (animateIntro) "" else "Tùy chỉnh"
+            textSize = 14f
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setTextColor(0xFFE5E5EB.toInt())
+            setTextColor(0xFFC6C6D0.toInt())
             gravity = Gravity.CENTER
-            alpha = if (animateIntro) 0f else 1f
-            translationY = if (animateIntro) dp(5).toFloat() else 0f
+            isClickable = false
         }
-        target.addView(customize, LinearLayout.LayoutParams(-1, dp(30)))
-
-        val upload = TextView(this).apply {
-            text = "Tải ảnh hoặc video từ thiết bị"
-            textSize = 13f
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-            setPadding(dp(12), 0, dp(12), 0)
-            background = roundedBackground(17f, 0xFF24242A.toInt())
-            isClickable = true
-            alpha = if (animateIntro) 0f else 1f
-            translationY = if (animateIntro) dp(7).toFloat() else 0f
-            setOnClickListener { requestBackgroundPicker() }
-        }
-        val uploadParams = LinearLayout.LayoutParams(-1, dp(48)).apply {
-            topMargin = dp(7)
-        }
-        target.addView(upload, uploadParams)
-
-        val hint = TextView(this).apply {
-            text = "Ảnh hoặc video sẽ phủ nền bảng này. Tệp chỉ được đọc từ thiết bị của bạn."
-            textSize = 10.5f
-            setTextColor(0xFFB9BAC3.toInt())
-            gravity = Gravity.CENTER
-            maxLines = 2
-            alpha = if (animateIntro) 0f else 1f
-        }
-        target.addView(hint, LinearLayout.LayoutParams(-1, dp(38)))
-
+        target.addView(customize, LinearLayout.LayoutParams(-1, dp(34)))
         panelBrandTitle = brand
-        panelCustomizeLabel = customize
-        panelUploadButton = upload
-        if (animateIntro) startPanelTypewriter(brand, customize, upload, hint)
+        if (animateIntro) startPanelTypewriter(brand, customize)
     }
 
-    private fun startPanelTypewriter(brand: TextView, customize: TextView, upload: TextView, hint: TextView) {
+    private fun startPanelTypewriter(brand: TextView, customize: TextView) {
         panelTypewriter?.let { handler.removeCallbacks(it) }
-        val label = "DigitalLiquid"
+        val first = "DigitalLiquid"
+        val second = "Tùy chỉnh"
         var index = 0
+        var deleting = false
+        var row = 0
         val task = object : Runnable {
             override fun run() {
-                if (!panelOpen || panelBrandTitle !== brand) return
-                index = (index + 1).coerceAtMost(label.length)
-                brand.text = label.substring(0, index)
-                if (index < label.length) {
-                    handler.postDelayed(this, 43L)
-                } else {
-                    customize.animate().alpha(1f).translationY(0f).setDuration(240L).setInterpolator(PathInterpolator(0.18f, 0.82f, 0.25f, 1f)).start()
-                    upload.animate().alpha(1f).translationY(0f).setDuration(280L).setStartDelay(45L).setInterpolator(PathInterpolator(0.18f, 0.82f, 0.25f, 1f)).start()
-                    hint.animate().alpha(1f).setDuration(220L).setStartDelay(85L).start()
+                if (!panelOpen || panelBrandTitle !== brand || content?.visibility != View.VISIBLE) return
+                val label = if (row == 0) first else second
+                val view = if (row == 0) brand else customize
+                index = if (deleting) (index - 1).coerceAtLeast(0) else (index + 1).coerceAtMost(label.length)
+                view.text = label.substring(0, index)
+                if (Build.VERSION.SDK_INT >= 31) {
+                    val blur = if (deleting) 0.65f else 0.35f
+                    try { view.setRenderEffect(android.graphics.RenderEffect.createBlurEffect(blur, 0f, android.graphics.Shader.TileMode.CLAMP)) } catch (_: Exception) { }
+                }
+                view.alpha = 0.76f + 0.24f * (index.toFloat() / label.length.coerceAtLeast(1))
+                view.translationX = if (deleting) dp(1).toFloat() else -dp(1).toFloat()
+                if (!deleting && index >= label.length) {
+                    deleting = true
+                    handler.postDelayed(this, 720L)
+                    return
+                }
+                if (deleting && index <= 0) {
+                    view.setRenderEffectCompatClear()
+                    view.translationX = 0f
+                    view.alpha = 1f
+                    deleting = false
+                    row = (row + 1) % 2
+                    handler.postDelayed(this, 180L)
+                    return
+                }
+                if (index in 0..label.length) {
+                    if (index == 0) view.setRenderEffectCompatClear()
+                    handler.postDelayed(this, if (deleting) 34L else 46L)
                 }
             }
         }
         panelTypewriter = task
-        handler.postDelayed(task, 75L)
-    }
-
-    private fun requestBackgroundPicker() {
-        try {
-            val intent = Intent(this, MainActivity::class.java)
-                .putExtra(EXTRA_PICK_PANEL_BACKGROUND, true)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            startActivity(intent)
-        } catch (_: Exception) {
-            android.widget.Toast.makeText(this, "Không mở được trình chọn tệp.", android.widget.Toast.LENGTH_SHORT).show()
-        }
+        handler.postDelayed(task, 50L)
     }
 
     private fun syncPanelBackground() {
         val host = backgroundHost ?: return
         val scrim = backgroundScrim ?: return
-        val prefs = AppPrefs.get(this)
-        val uriString = prefs.getString(PANEL_BACKGROUND_URI, null)
-        val shouldShow = panelOpen && !uriString.isNullOrBlank()
+        val rootContent = content ?: return
+        val uriString = AppPrefs.get(this).getString(PANEL_BACKGROUND_URI, null)
+        val shouldShow = (panelOpen || closingPanelWithMedia) && !uriString.isNullOrBlank()
         if (!shouldShow) {
-            if (host.childCount > 0 || lastBackgroundUri != null) {
-                (host.getChildAt(0) as? VideoView)?.stopPlayback()
-                host.removeAllViews()
-                lastBackgroundUri = null
-            }
+            stopPanelMedia()
+            host.removeAllViews()
+            lastBackgroundUri = null
             host.visibility = View.GONE
             scrim.visibility = View.GONE
+            rootContent.visibility = if (panelOpen) View.VISIBLE else View.VISIBLE
             return
         }
+
         host.visibility = View.VISIBLE
-        scrim.visibility = View.VISIBLE
-        if (lastBackgroundUri == uriString && host.childCount > 0) return
-        (host.getChildAt(0) as? VideoView)?.stopPlayback()
+        scrim.visibility = View.GONE
+        host.elevation = dp(8).toFloat()
+        host.background = roundedBackground(30f, Color.BLACK)
+        host.clipToOutline = true
+        host.clipChildren = true
+        host.clipToPadding = true
+        rootContent.visibility = View.GONE
+        if (lastBackgroundUri == uriString && host.childCount > 0) {
+            host.bringToFront()
+            return
+        }
+        stopPanelMedia()
         host.removeAllViews()
         lastBackgroundUri = uriString
         val uri = Uri.parse(uriString)
         val mime = try { contentResolver.getType(uri).orEmpty() } catch (_: Exception) { "" }
         if (mime.startsWith("video/", ignoreCase = true)) {
-            val video = VideoView(this).apply {
-                setBackgroundColor(Color.BLACK)
-                setVideoURI(uri)
-                setOnPreparedListener { player ->
-                    player.isLooping = true
-                    try { player.setVolume(0f, 0f) } catch (_: Exception) { }
-                    start()
+            val texture = TextureView(this)
+            panelTextureView = texture
+            texture.isOpaque = true
+            texture.isClickable = false
+            texture.isFocusable = false
+            texture.background = roundedBackground(30f, Color.BLACK)
+            texture.clipToOutline = true
+            texture.outlineProvider = ViewOutlineProvider.BACKGROUND
+            texture.elevation = dp(8).toFloat()
+            texture.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                override fun onSurfaceTextureAvailable(surfaceTexture: android.graphics.SurfaceTexture, width: Int, height: Int) {
+                    val surface = Surface(surfaceTexture)
+                    panelVideoSurface = surface
+                    val player = MediaPlayer()
+                    panelMediaPlayer = player
+                    try {
+                        player.setDataSource(this@IslandService, uri)
+                        player.setSurface(surface)
+                        player.isLooping = true
+                        player.setVolume(0f, 0f)
+                        player.setOnVideoSizeChangedListener { _, videoWidth, videoHeight ->
+                            applyVideoCenterCrop(texture, videoWidth, videoHeight)
+                        }
+                        player.setOnPreparedListener { prepared ->
+                            applyVideoCenterCrop(texture, prepared.videoWidth, prepared.videoHeight)
+                            prepared.start()
+                        }
+                        player.setOnErrorListener { _, _, _ ->
+                            stopPanelMedia()
+                            true
+                        }
+                        player.prepareAsync()
+                    } catch (_: Exception) {
+                        stopPanelMedia()
+                    }
                 }
-                setOnErrorListener { _, _, _ -> true }
+                override fun onSurfaceTextureSizeChanged(surfaceTexture: android.graphics.SurfaceTexture, width: Int, height: Int) {
+                    val player = panelMediaPlayer
+                    if (player != null) applyVideoCenterCrop(texture, player.videoWidth, player.videoHeight)
+                }
+                override fun onSurfaceTextureDestroyed(surfaceTexture: android.graphics.SurfaceTexture): Boolean {
+                    stopPanelMedia()
+                    return true
+                }
+                override fun onSurfaceTextureUpdated(surfaceTexture: android.graphics.SurfaceTexture) = Unit
             }
-            host.addView(video, FrameLayout.LayoutParams(-1, -1))
+            host.addView(texture, FrameLayout.LayoutParams(-1, -1))
         } else {
             val image = ImageView(this).apply {
                 scaleType = ImageView.ScaleType.CENTER_CROP
                 setBackgroundColor(Color.BLACK)
-                contentDescription = "Nền tùy chỉnh DigitalLiquid"
+                contentDescription = ""
+                isClickable = false
+                isFocusable = false
                 try { setImageURI(uri) } catch (_: Exception) { }
             }
             host.addView(image, FrameLayout.LayoutParams(-1, -1))
+        }
+        host.bringToFront()
+    }
+
+    private fun applyVideoCenterCrop(texture: TextureView, videoWidth: Int, videoHeight: Int) {
+        if (videoWidth <= 0 || videoHeight <= 0 || texture.width <= 0 || texture.height <= 0) return
+        val viewWidth = texture.width.toFloat()
+        val viewHeight = texture.height.toFloat()
+        val videoAspect = videoWidth.toFloat() / videoHeight.toFloat()
+        val viewAspect = viewWidth / viewHeight
+        val scaleX = if (videoAspect > viewAspect) videoAspect / viewAspect else 1f
+        val scaleY = if (videoAspect < viewAspect) viewAspect / videoAspect else 1f
+        val matrix = Matrix()
+        matrix.setScale(scaleX, scaleY, viewWidth / 2f, viewHeight / 2f)
+        texture.setTransform(matrix)
+    }
+
+    private fun stopPanelMedia() {
+        try { panelMediaPlayer?.setOnPreparedListener(null) } catch (_: Exception) { }
+        try { panelMediaPlayer?.setOnVideoSizeChangedListener(null) } catch (_: Exception) { }
+        try { panelMediaPlayer?.setOnErrorListener(null) } catch (_: Exception) { }
+        try { panelMediaPlayer?.stop() } catch (_: Exception) { }
+        try { panelMediaPlayer?.reset() } catch (_: Exception) { }
+        try { panelMediaPlayer?.release() } catch (_: Exception) { }
+        panelMediaPlayer = null
+        try { panelVideoSurface?.release() } catch (_: Exception) { }
+        panelVideoSurface = null
+        panelTextureView = null
+    }
+
+    private fun TextView.setRenderEffectCompatClear() {
+        if (Build.VERSION.SDK_INT >= 31) {
+            try { setRenderEffect(null) } catch (_: Exception) { }
         }
     }
 
@@ -584,30 +936,69 @@ class IslandService : Service() {
         val root = islandRoot ?: return
         val lp = params ?: return
         resizeAnimator?.cancel()
+        val opening = panelOpen
         val startWidth = lp.width.toFloat()
         val startHeight = lp.height.toFloat()
+        val startX = lp.x.toFloat()
+        val startY = lp.y.toFloat()
         val endWidth = targetWidth().toFloat()
         val endHeight = targetHeight().toFloat()
+        val endX = positionX(endWidth.roundToInt(), panelOpen).toFloat()
+        val endY = positionY(endHeight.roundToInt(), panelOpen).toFloat()
+        lp.gravity = gravityForWindow()
         if (AppPrefs.get(this).getBoolean(AppPrefs.REDUCE_MOTION, false)) {
             lp.width = endWidth.roundToInt()
             lp.height = endHeight.roundToInt()
-            root.background = roundedBackground(if (panelOpen) 28f else heightDp / 2f, Color.BLACK)
+            lp.x = endX.roundToInt()
+            lp.y = endY.roundToInt()
+            root.background = roundedBackground(if (panelOpen) 30f else heightDp / 2f, Color.BLACK)
+            root.scaleX = 1f
+            root.scaleY = 1f
             try { windowManager.updateViewLayout(root, lp) } catch (_: Exception) { }
+            if (closingPanelWithMedia) {
+                closingPanelWithMedia = false
+                syncPanelBackground()
+            }
+            applyNativeActivityVisibility()
             return
         }
+        root.alpha = 0.98f
+        root.scaleX = if (opening) 0.94f else 1.045f
+        root.scaleY = if (opening) 0.90f else 1.035f
         resizeAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = if (panelOpen) 310L else 260L
-            interpolator = PathInterpolator(0.18f, 0.82f, 0.25f, 1f)
+            duration = if (panelOpen) 420L else 360L
+            interpolator = PathInterpolator(0.16f, 0.92f, 0.18f, 1f)
             addUpdateListener { animator ->
                 val t = animator.animatedValue as Float
                 lp.width = (startWidth + (endWidth - startWidth) * t).roundToInt()
                 lp.height = (startHeight + (endHeight - startHeight) * t).roundToInt()
+                lp.x = (startX + (endX - startX) * t).roundToInt()
+                lp.y = (startY + (endY - startY) * t).roundToInt()
                 root.background = roundedBackground(
-                    if (panelOpen) 28f else (lp.height / resources.displayMetrics.density) / 2f,
+                    if (panelOpen) 30f else (lp.height / resources.displayMetrics.density) / 2f,
                     Color.BLACK
                 )
+                root.scaleX = if (opening) 0.94f + 0.06f * t else 1.045f - 0.045f * t
+                root.scaleY = if (opening) 0.90f + 0.10f * t else 1.035f - 0.035f * t
+                if (Build.VERSION.SDK_INT >= 31) {
+                    val blur = (if (opening) 1f - t else t) * 1.15f
+                    try { root.setRenderEffect(android.graphics.RenderEffect.createBlurEffect(blur, blur, android.graphics.Shader.TileMode.CLAMP)) } catch (_: Exception) { }
+                }
                 try { windowManager.updateViewLayout(root, lp) } catch (_: Exception) { }
             }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    root.scaleX = 1f
+                    root.scaleY = 1f
+                    root.alpha = 1f
+                    if (Build.VERSION.SDK_INT >= 31) try { root.setRenderEffect(null) } catch (_: Exception) { }
+                    if (closingPanelWithMedia) {
+                        closingPanelWithMedia = false
+                        syncPanelBackground()
+                    }
+                    applyNativeActivityVisibility()
+                }
+            })
             start()
         }
     }
@@ -627,8 +1018,10 @@ class IslandService : Service() {
         resizeAnimator?.cancel()
         recordingPulse?.cancel()
         panelTypewriter?.let { handler.removeCallbacks(it) }
-        (backgroundHost?.getChildAt(0) as? VideoView)?.stopPlayback()
+        recordingTextTypewriter?.let { handler.removeCallbacks(it) }
+        stopPanelMedia()
         try { unregisterReceiver(configReceiver) } catch (_: Exception) { }
+        try { unregisterReceiver(orientationReceiver) } catch (_: Exception) { }
         islandRoot?.let { try { windowManager.removeView(it) } catch (_: Exception) { } }
         islandRoot = null
         handler.removeCallbacksAndMessages(null)
@@ -642,13 +1035,56 @@ class IslandService : Service() {
         private const val CHANNEL_ID = "digitalliquid_overlay"
         private const val LONG_PRESS_MS = 430L
         @Volatile private var instance: IslandService? = null
+        @Volatile private var lastHyperIslandVisibilityOverride: Boolean? = null
+
+        fun refreshOverlayWindowType() {
+            val service = instance ?: return
+            service.handler.post { service.rebuildOverlayForAccessibilityMode() }
+        }
+
+        @Volatile private var lastNotificationScreenRecording = false
+        @Volatile private var lastAccessibilityScreenRecording = false
+        @Volatile private var lastNativeActivityActive = false
 
         fun setScreenRecordingActive(active: Boolean) {
+            lastNotificationScreenRecording = active
+            updateCombinedRecordingState()
+        }
+
+        fun setAccessibilityScreenRecordingActive(active: Boolean) {
+            lastAccessibilityScreenRecording = active
+            updateCombinedRecordingState()
+        }
+
+        private fun updateCombinedRecordingState() {
+            val combined = lastNotificationScreenRecording || lastAccessibilityScreenRecording
             val service = instance ?: return
             service.handler.post {
-                if (service.screenRecording == active) return@post
-                service.screenRecording = active
+                if (service.screenRecording == combined) return@post
+                service.notificationScreenRecording = lastNotificationScreenRecording
+                service.accessibilityScreenRecording = lastAccessibilityScreenRecording
+                service.screenRecording = combined
                 service.render(animateSize = true)
+            }
+        }
+
+        fun setNativeIslandActivityActive(active: Boolean) {
+            lastNativeActivityActive = active
+            val service = instance ?: return
+            service.handler.post {
+                if (service.nativeActivityActive == active) return@post
+                service.nativeActivityActive = active
+                service.applyNativeActivityVisibility()
+            }
+        }
+
+        fun setHyperIslandVisibilityOverride(visible: Boolean?) {
+            lastHyperIslandVisibilityOverride = visible
+            val service = instance ?: return
+            service.handler.post {
+                if (service.hyperIslandVisibilityOverride == visible) return@post
+                service.hyperIslandVisibilityOverride = visible
+                service.applyNativeActivityVisibility()
             }
         }
 
