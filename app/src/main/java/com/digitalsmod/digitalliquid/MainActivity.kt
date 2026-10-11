@@ -35,6 +35,7 @@ class MainActivity : Activity() {
     companion object { private const val REQUEST_PANEL_BACKGROUND = 2409 }
 
     private var launchedForPanelPicker = false
+    private var unsupportedDevice = false
     private var tab = 0
     private var onboardingPage = 0
     private val uiHandler = Handler(Looper.getMainLooper())
@@ -46,9 +47,101 @@ class MainActivity : Activity() {
     private val prefs by lazy { AppPrefs.get(this) }
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
+    private fun readSystemProperty(name: String): String {
+        return try {
+            val cls = Class.forName("android.os.SystemProperties")
+            val method = cls.getMethod("get", String::class.java, String::class.java)
+            (method.invoke(null, name, "") as? String).orEmpty()
+        } catch (_: Throwable) {
+            ""
+        }
+    }
+
+    /** Allows only Xiaomi/Redmi/POCO devices whose ROM identifies itself as HyperOS 3+. */
+    private fun checkDeviceCompatibility(): Pair<Boolean, String> {
+        val familyIdentity = listOf(Build.MANUFACTURER, Build.BRAND, Build.DEVICE, Build.PRODUCT)
+            .joinToString(" ").lowercase()
+        val isXiaomiFamily = listOf("xiaomi", "redmi", "poco").any { familyIdentity.contains(it) }
+        if (!isXiaomiFamily) {
+            return false to "DigitalLiquid chỉ hỗ trợ điện thoại Xiaomi, Redmi và POCO chạy HyperOS 3 trở lên. Thiết bị hiện tại không thuộc nhóm được hỗ trợ."
+        }
+
+        val osIdentity = listOf(
+            readSystemProperty("ro.mi.os.version.name"),
+            readSystemProperty("ro.mi.os.version.incremental"),
+            Build.DISPLAY
+        ).filter { it.isNotBlank() }.joinToString(" ")
+        // Avoid interpreting Android's generic text like “Android OS 16” as Xiaomi HyperOS.
+        val versionMatch = Regex("(?i)\\bOS([0-9]+)(?:\\.[0-9]+)*").find(osIdentity)
+            ?: Regex("(?i)HyperOS\\s+([0-9]+)(?:\\.[0-9]+)*").find(osIdentity)
+        val major = versionMatch?.groupValues?.getOrNull(1)?.toIntOrNull()
+        // Xiaomi's documented focus-protocol value is 3 for OS3 island support; use it first
+        // because a version string may be hidden or vendor-formatted differently.
+        val focusProtocolVersion = try {
+            Settings.System.getInt(contentResolver, "notification_focus_protocol", 0)
+        } catch (_: Exception) { 0 }
+        val supported = focusProtocolVersion >= 3 || (major != null && major >= 3)
+        if (!supported) {
+            val found = buildString {
+                append(osIdentity.ifBlank { "không xác định được phiên bản ROM" })
+                if (focusProtocolVersion > 0) append(" · notification_focus_protocol=$focusProtocolVersion")
+            }
+            return false to "DigitalLiquid yêu cầu Xiaomi/Redmi/POCO chạy HyperOS 3, HyperOS 4 hoặc mới hơn. MIUI và HyperOS 2 trở xuống không được hỗ trợ. Hệ thống phát hiện: $found"
+        }
+        return true to ""
+    }
+
+    private fun renderUnsupportedDevice(reason: String) {
+        unsupportedDevice = true
+        try { stopService(Intent(this, IslandService::class.java)) } catch (_: Exception) { }
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(28), dp(32), dp(28), dp(32))
+            background = GradientDrawable().apply {
+                setColor(Color.rgb(7, 8, 12))
+            }
+        }
+        root.addView(TextView(this).apply {
+            text = "DigitalLiquid"
+            textSize = 27f
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+        })
+        root.addView(TextView(this).apply {
+            text = "THIẾT BỊ KHÔNG ĐƯỢC HỖ TRỢ"
+            textSize = 12f
+            letterSpacing = 0.08f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(0xFFFF6B6B.toInt())
+            gravity = Gravity.CENTER
+        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(14) })
+        root.addView(TextView(this).apply {
+            text = reason
+            textSize = 14f
+            setTextColor(0xFFB8BBC6.toInt())
+            gravity = Gravity.CENTER
+            setLineSpacing(dp(4).toFloat(), 1f)
+        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
+        val exit = Button(this).apply {
+            text = "Thoát"
+            setTextColor(Color.WHITE)
+            background = roundedGradient(intArrayOf(0xFF242631.toInt(), 0xFF151720.toInt()), 16, 0x35FFFFFF)
+            setOnClickListener { finish() }
+        }
+        root.addView(exit, LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(24) })
+        setContentView(root)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         applySystemBars()
+        val compatibility = checkDeviceCompatibility()
+        if (!compatibility.first) {
+            renderUnsupportedDevice(compatibility.second)
+            return
+        }
         if (prefs.getBoolean(AppPrefs.ONBOARDING_DONE, false)) renderMain() else renderOnboarding(0)
         maybePickPanelBackground(intent)
     }
@@ -106,6 +199,12 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        if (unsupportedDevice) return
+        val compatibility = checkDeviceCompatibility()
+        if (!compatibility.first) {
+            renderUnsupportedDevice(compatibility.second)
+            return
+        }
         if (prefs.getBoolean(AppPrefs.ONBOARDING_DONE, false)) renderMain()
     }
 
