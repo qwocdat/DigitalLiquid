@@ -16,8 +16,9 @@ import android.view.View
 import kotlin.math.min
 
 /**
- * Per-pixel AGSL liquid-glass renderer on Android 13+ with a native gradient fallback
- * on older releases. Cross-window blur, when available, is configured by IslandService.
+ * Black iOS-style Dynamic Island surface with per-pixel AGSL highlights on Android 13+
+ * and a native gradient fallback on older Android versions. This view never blurs the
+ * application behind the island; all highlights are drawn inside the pill itself.
  */
 class LiquidGlassView(context: Context) : View(context) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -47,11 +48,12 @@ class LiquidGlassView(context: Context) : View(context) {
 
     fun configure(glassStrength: Int, tint: String, expandedNow: Boolean) {
         strength = (glassStrength.coerceIn(15, 100) / 100f)
+        // The pill stays near-black like iOS. Presets only tint its subtle optical edge.
         tintColor = when (tint) {
-            "violet" -> Color.rgb(30, 18, 48)
-            "ice" -> Color.rgb(12, 28, 39)
-            "graphite" -> Color.rgb(24, 25, 30)
-            else -> Color.rgb(14, 18, 27)
+            "violet" -> Color.rgb(7, 4, 13)
+            "ice" -> Color.rgb(3, 8, 12)
+            "graphite" -> Color.rgb(8, 8, 10)
+            else -> Color.rgb(2, 3, 5)
         }
         expanded = expandedNow
         refreshMotionPreference()
@@ -98,7 +100,7 @@ class LiquidGlassView(context: Context) : View(context) {
         if (width <= 0 || height <= 0) return
         val w = width.toFloat()
         val h = height.toFloat()
-        val radius = min(h * if (expanded) 0.22f else 0.5f, 34f)
+        val radius = if (expanded) min(h * 0.24f, dp(34f)) else min(h * 0.5f, w * 0.5f)
         rect.set(0.5f, 0.5f, w - 0.5f, h - 0.5f)
         path.reset()
         path.addRoundRect(rect, radius, radius, Path.Direction.CW)
@@ -119,7 +121,7 @@ class LiquidGlassView(context: Context) : View(context) {
         // Thin, restrained optical rim. No thick dark inset border or plastic-looking stroke.
         strokePaint.shader = LinearGradient(
             0f, 0f, w, h,
-            intArrayOf(0xAFFFFFFF.toInt(), 0x19E8F0FF, 0x55FFFFFF, 0x12FFFFFF),
+            intArrayOf(0x50FFFFFF, 0x14E8F0FF, 0x35FFFFFF, 0x08FFFFFF),
             floatArrayOf(0f, 0.42f, 0.76f, 1f), Shader.TileMode.CLAMP
         )
         strokePaint.strokeWidth = dp(0.75f)
@@ -135,19 +137,19 @@ class LiquidGlassView(context: Context) : View(context) {
         paint.shader = LinearGradient(
             sweepX, 0f, sweepX + w * 0.16f, h,
             intArrayOf(
-                withAlpha(Color.rgb(242, 248, 255), (0.10f + strength * 0.13f) * 255f),
-                withAlpha(base, 220f),
-                withAlpha(base, 242f)
+                withAlpha(Color.rgb(238, 244, 255), (0.035f + strength * 0.075f) * 255f),
+                withAlpha(base, 248f),
+                withAlpha(base, 255f)
             ),
-            floatArrayOf(0f, 0.34f, 1f), Shader.TileMode.CLAMP
+            floatArrayOf(0f, 0.26f, 1f), Shader.TileMode.CLAMP
         )
         canvas.drawRoundRect(rect, radius, radius, paint)
         paint.shader = null
         val glint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             shader = LinearGradient(
                 0f, 0f, w, h * 0.55f,
-                intArrayOf(0x2BFFFFFF, 0x08FFFFFF, 0x00FFFFFF),
-                floatArrayOf(0f, 0.55f, 1f), Shader.TileMode.CLAMP
+                intArrayOf(0x20FFFFFF, 0x06FFFFFF, 0x00FFFFFF),
+                floatArrayOf(0f, 0.48f, 1f), Shader.TileMode.CLAMP
             )
         }
         canvas.drawRoundRect(rect, radius, radius, glint)
@@ -207,7 +209,7 @@ class LiquidGlassView(context: Context) : View(context) {
                 float2 size = max(uSize, float2(1.0, 1.0));
                 float2 uv = p / size;
                 float2 center = p - size * 0.5;
-                float corner = min(size.y * (0.50 - uExpanded * 0.25), 34.0);
+                float corner = min(size.y * (0.50 - uExpanded * 0.25), size.x * 0.5);
                 float d = roundedBox(center, size * 0.5 - float2(0.8, 0.8), corner);
                 float mask = 1.0 - smoothstep(-1.1, 1.1, d);
                 float rim = 1.0 - smoothstep(0.0, 3.6, abs(d));
@@ -216,12 +218,13 @@ class LiquidGlassView(context: Context) : View(context) {
                 float travelling = exp(-pow((uv.x - fract(uTime * 0.095)) * 25.0, 2.0));
                 float specular = (topSweep * 0.17 + lowerGlow * 0.045 + travelling * 0.06) * uIntensity;
                 float3 tint = uTint.rgb;
-                float3 color = tint * (0.68 + uv.y * 0.23);
-                color += float3(0.30, 0.38, 0.50) * specular;
-                color += float3(0.72, 0.82, 1.0) * rim * (0.20 + uIntensity * 0.30);
-                color += float3(1.0, 1.0, 1.0) * topSweep * uIntensity * 0.035;
-                float alpha = 0.48 + uIntensity * 0.16 + rim * 0.06;
-                return half4(half3(color), half(alpha * mask));
+                // Opaque black body; only a restrained moving specular highlight is bright.
+                float3 color = tint * (0.82 + uv.y * 0.12);
+                color += float3(0.19, 0.22, 0.29) * specular;
+                color += float3(0.48, 0.54, 0.66) * rim * (0.12 + uIntensity * 0.22);
+                color += float3(1.0, 1.0, 1.0) * topSweep * uIntensity * 0.026;
+                float alpha = 0.965 + rim * 0.025;
+                return half4(half3(color), half(min(alpha, 1.0) * mask));
             }
         """
     }
