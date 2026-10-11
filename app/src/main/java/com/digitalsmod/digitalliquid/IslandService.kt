@@ -41,6 +41,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import kotlin.math.abs
+import kotlin.math.exp
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
@@ -73,8 +74,10 @@ class IslandService : Service() {
     private var notificationScreenRecording = false
     private var accessibilityScreenRecording = false
     private var nativeActivityActive = false
+    private var cameraActive = false
     private var hyperIslandVisibilityOverride: Boolean? = null
     private var idleDot: View? = null
+    private var wobbleAnimator: ValueAnimator? = null
     private var panelMediaPlayer: MediaPlayer? = null
     private var panelVideoSurface: Surface? = null
     private var panelTextureView: TextureView? = null
@@ -117,6 +120,7 @@ class IslandService : Service() {
         notificationScreenRecording = lastNotificationScreenRecording
         accessibilityScreenRecording = lastAccessibilityScreenRecording
         nativeActivityActive = lastNativeActivityActive
+        cameraActive = lastCameraActivityActive
         screenRecording = notificationScreenRecording || accessibilityScreenRecording
         refreshOverlayWindowManager()
         createNotificationChannel()
@@ -255,11 +259,29 @@ class IslandService : Service() {
                 elevation = dp(3).toFloat()
                 alpha = 0.95f
             }
-            addView(dot, FrameLayout.LayoutParams(dp(3), dp(3), Gravity.RIGHT or Gravity.TOP).apply {
-                rightMargin = dp(7)
-                topMargin = dp(7)
+            // iPhone Dynamic Island's privacy dot sits right-of-centre and vertically centred,
+            // not glued to the upper-right corner. Recalculate proportionally when width changes.
+            addView(dot, FrameLayout.LayoutParams(dp(3), dp(3), Gravity.LEFT or Gravity.TOP).apply {
+                leftMargin = dp(99)
+                topMargin = dp(17)
             })
             idleDot = dot
+            addOnLayoutChangeListener { changedView, _, _, _, _, _, _, _, _ ->
+                val dotView = idleDot ?: return@addOnLayoutChangeListener
+                val dotParams = dotView.layoutParams as? FrameLayout.LayoutParams ?: return@addOnLayoutChangeListener
+                val dotWidth = if (dotView.measuredWidth > 0) dotView.measuredWidth else dp(3)
+                val dotHeight = if (dotView.measuredHeight > 0) dotView.measuredHeight else dp(3)
+                val wantedLeft = ((changedView.width * 0.665f) - dotWidth / 2f).roundToInt()
+                    .coerceIn(0, (changedView.width - dotWidth).coerceAtLeast(0))
+                val wantedTop = ((changedView.height - dotHeight) / 2f).roundToInt()
+                if (dotParams.leftMargin != wantedLeft || dotParams.topMargin != wantedTop ||
+                    dotParams.gravity != (Gravity.LEFT or Gravity.TOP)) {
+                    dotParams.gravity = Gravity.LEFT or Gravity.TOP
+                    dotParams.leftMargin = wantedLeft
+                    dotParams.topMargin = wantedTop
+                    dotView.layoutParams = dotParams
+                }
+            }
             setOnTouchListener { view, event -> handlePillTouch(view, event) }
             contentDescription = "DigitalLiquid"
         }
@@ -389,44 +411,56 @@ class IslandService : Service() {
         val root = islandRoot ?: return
         val lp = params ?: return
         if (panelOpen) return
-        val reduceMotion = AppPrefs.get(this).getBoolean(AppPrefs.REDUCE_MOTION, false)
-        if (reduceMotion) {
+        if (AppPrefs.get(this).getBoolean(AppPrefs.REDUCE_MOTION, false)) {
             root.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
             return
         }
-        // Use the live window coordinate; landscape cutout mode anchors at the camera side.
+
+        // Cancel the previous response first so its end callback restores its own starting point.
+        wobbleAnimator?.cancel()
         val baseX = lp.x
-        val distance = dp(13).toFloat()
+        val baseY = lp.y
+        val distance = dp(9).toFloat()
+        var lastOffset = 0f
         glassView?.setMotionBlur(0f)
-        ValueAnimator.ofFloat(0f, -distance, distance * 1.04f, -distance * 0.80f, distance * 0.54f, -distance * 0.26f, distance * 0.10f, 0f).apply {
-            duration = 540L
-            interpolator = PathInterpolator(0.18f, 0.82f, 0.20f, 1f)
-            addUpdateListener { animator ->
-                lp.x = baseX + (animator.animatedValue as Float).roundToInt()
-                try { windowManager.updateViewLayout(root, lp) } catch (_: Exception) { }
-                val progress = animator.animatedFraction
-                val blur = if (progress < 0.5f) progress * 2f else (1f - progress) * 2f
-                glassView?.setMotionBlur(blur.coerceIn(0f, 1f))
-                if (Build.VERSION.SDK_INT >= 31) {
-                    val blurRadius = dp(2).toFloat() * blur
-                    try { root.setRenderEffect(if (blurRadius > 0.05f) android.graphics.RenderEffect.createBlurEffect(blurRadius, blurRadius * 0.18f, android.graphics.Shader.TileMode.CLAMP) else null) } catch (_: Exception) { }
-                }
-                val squash = sin(progress * Math.PI).toFloat()
-                root.scaleX = 1f + 0.035f * squash
-                root.scaleY = 1f - 0.012f * squash
-            }
-            addListener(object : android.animation.AnimatorListenerAdapter() {
-                override fun onAnimationEnd(animation: android.animation.Animator) {
-                    lp.x = baseX
-                    root.scaleX = 1f
-                    root.scaleY = 1f
-                    if (Build.VERSION.SDK_INT >= 31) try { root.setRenderEffect(null) } catch (_: Exception) { }
-                    glassView?.setMotionBlur(0f)
-                    try { windowManager.updateViewLayout(root, lp) } catch (_: Exception) { }
-                }
-            })
-            start()
+        root.scaleX = 1f
+        root.scaleY = 1f
+
+        // Slow damped oscillation: less springy than the old rubber-like overshoot.
+        val animator = ValueAnimator.ofFloat(0f, 1f)
+        wobbleAnimator = animator
+        animator.duration = 880L
+        animator.interpolator = android.view.animation.LinearInterpolator()
+        animator.addUpdateListener { frame ->
+            val t = frame.animatedValue as Float
+            val envelope = exp(-4.15f * t)
+            val phase = t * Math.PI.toFloat() * 3.8f
+            val offset = -distance * envelope * sin(phase)
+            lp.x = baseX + offset.roundToInt()
+            lp.y = baseY
+            try { windowManager.updateViewLayout(root, lp) } catch (_: Exception) { }
+
+            // Blur strength follows per-frame travel; there is no permanent halo around the pill.
+            val frameTravel = abs(offset - lastOffset)
+            val blur = (frameTravel * 0.52f).coerceIn(0f, 0.78f)
+            val direction = if (offset < lastOffset) -1f else 1f
+            glassView?.setMotionBlur(blur, direction)
+            lastOffset = offset
         }
+        animator.addListener(object : android.animation.AnimatorListenerAdapter() {
+            override fun onAnimationEnd(animation: android.animation.Animator) {
+                lp.x = baseX
+                lp.y = baseY
+                root.translationX = 0f
+                root.translationY = 0f
+                root.scaleX = 1f
+                root.scaleY = 1f
+                glassView?.setMotionBlur(0f, 1f)
+                try { windowManager.updateViewLayout(root, lp) } catch (_: Exception) { }
+                if (wobbleAnimator === animator) wobbleAnimator = null
+            }
+        })
+        animator.start()
     }
 
     private fun openCustomizationPanel() {
@@ -568,6 +602,7 @@ class IslandService : Service() {
         val rootContent = content ?: return
         val prefs = AppPrefs.get(this)
         resizeAnimator?.cancel()
+        wobbleAnimator?.cancel()
         recordingPulse?.cancel()
         recordingPulse = null
         recordingTextTypewriter?.let { handler.removeCallbacks(it) }
@@ -581,7 +616,7 @@ class IslandService : Service() {
         root.clipToPadding = true
         glassView?.configure(glassStrength, tint, expandedNow = panelOpen)
         glassView?.visibility = if (panelOpen) View.GONE else View.VISIBLE
-        idleDot?.visibility = if (!panelOpen && !screenRecording) View.VISIBLE else View.GONE
+        updatePrivacyDot()
 
         val customUri = prefs.getString(PANEL_BACKGROUND_URI, null)
         val showMediaOnTop = (panelOpen || closingPanelWithMedia) && !customUri.isNullOrBlank()
@@ -614,12 +649,23 @@ class IslandService : Service() {
         applyNativeActivityVisibility()
     }
 
+    private fun updatePrivacyDot() {
+        val dot = idleDot ?: return
+        val color = if (cameraActive) 0xFF30D158.toInt() else 0xFFFF9F0A.toInt()
+        (dot.background as? GradientDrawable)?.setColor(color)
+        dot.alpha = if (cameraActive) 1f else 0.96f
+        dot.visibility = if (!panelOpen && !screenRecording) View.VISIBLE else View.GONE
+        dot.contentDescription = if (cameraActive) "Camera đang hoạt động" else "DigitalLiquid trạng thái chờ"
+    }
+
     private fun applyNativeActivityVisibility() {
         val root = islandRoot ?: return
         val lp = params ?: return
-        // Accessibility observation, when enabled, takes precedence so the pill can return
-        // as soon as HyperIsland is no longer visible even if a media notification persists.
-        val suppress = hyperIslandVisibilityOverride ?: nativeActivityActive
+        // Native media/timer activities suppress the idle pill even when an accessibility scan
+        // temporarily misses HyperIsland. Screen recording and camera mode take priority because
+        // DigitalLiquid's recording indicator/privacy dot is the requested companion effect.
+        val nativeIslandVisible = hyperIslandVisibilityOverride == true || nativeActivityActive
+        val suppress = !screenRecording && !cameraActive && nativeIslandVisible
         val wantedVisibility = if (suppress) View.GONE else View.VISIBLE
         val hasNotTouchable = (lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) != 0
         if (root.visibility != wantedVisibility || hasNotTouchable != suppress) {
@@ -1016,6 +1062,7 @@ class IslandService : Service() {
         instance = null
         AppPrefs.get(this).edit().putBoolean(AppPrefs.SERVICE_ENABLED, false).apply()
         resizeAnimator?.cancel()
+        wobbleAnimator?.cancel()
         recordingPulse?.cancel()
         panelTypewriter?.let { handler.removeCallbacks(it) }
         recordingTextTypewriter?.let { handler.removeCallbacks(it) }
@@ -1045,6 +1092,18 @@ class IslandService : Service() {
         @Volatile private var lastNotificationScreenRecording = false
         @Volatile private var lastAccessibilityScreenRecording = false
         @Volatile private var lastNativeActivityActive = false
+        @Volatile private var lastCameraActivityActive = false
+
+        fun setCameraActivityActive(active: Boolean) {
+            lastCameraActivityActive = active
+            val service = instance ?: return
+            service.handler.post {
+                if (service.cameraActive == active) return@post
+                service.cameraActive = active
+                service.updatePrivacyDot()
+                service.applyNativeActivityVisibility()
+            }
+        }
 
         fun setScreenRecordingActive(active: Boolean) {
             lastNotificationScreenRecording = active
