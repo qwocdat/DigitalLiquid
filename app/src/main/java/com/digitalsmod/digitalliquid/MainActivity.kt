@@ -22,6 +22,7 @@ import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ImageView
 import android.text.InputType
 import android.widget.ScrollView
 import android.widget.SeekBar
@@ -113,13 +114,31 @@ class MainActivity : Activity() {
             setPadding(dp(22), dp(26), dp(22), dp(24))
             background = appBackground()
         }
-        val brand = TextView(this).apply {
-            text = "DIGITALSMOD  /  LAB"
-            textSize = 11f
-            letterSpacing = 0.16f
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setTextColor(0xFFAAA3FF.toInt())
+        val brand = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
         }
+        brand.addView(ImageView(this).apply {
+            setImageResource(R.drawable.digitalliquid_brand)
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            contentDescription = "DigitalLiquid"
+        }, LinearLayout.LayoutParams(dp(46), dp(46)))
+        brand.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(11), 0, 0, 0)
+            addView(TextView(this@MainActivity).apply {
+                text = "DigitalLiquid"
+                textSize = 18f
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                setTextColor(Color.WHITE)
+            })
+            addView(TextView(this@MainActivity).apply {
+                text = "DYNAMIC ISLAND"
+                textSize = 9f
+                letterSpacing = 0.12f
+                setTextColor(0xFF9CA6C2.toInt())
+            }, marginTop(2))
+        }, LinearLayout.LayoutParams(0, -2, 1f))
         root.addView(brand)
         val progress = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -146,27 +165,32 @@ class MainActivity : Activity() {
         when (onboardingPage) {
             0 -> {
                 content.addView(TextView(this).apply {
-                    text = "Một viên thuốc.\nCả màn hình sống động hơn."
+                    text = "Nhạc, thông báo.\nMọi thứ đúng chỗ."
                     textSize = 31f
                     setLineSpacing(0f, 1.03f)
                     typeface = Typeface.create("sans-serif", Typeface.BOLD)
                     setTextColor(Color.WHITE)
                 })
-                content.addView(bodyText("DigitalLiquid đưa nhạc, thông báo và trạng thái pin vào một đảo nổi có hiệu ứng kính lỏng. Không phải ảnh GIF giả dạng công nghệ."), marginTop(14))
-                content.addView(buildGlassPreview(), marginTop(28).apply { bottomMargin = dp(28) })
-                content.addView(featureMiniCard("01", "Shader theo từng pixel", "Highlight, viền quang học và chuyển động bề mặt bằng AGSL trên Android 13+; có fallback cho máy cũ."), marginBottom(10))
-                content.addView(featureMiniCard("02", "Điều khiển có tác dụng", "Nút nhạc gửi lệnh tới phiên phát nhạc đang hoạt động, không chỉ đổi biểu tượng."), marginBottom(10))
+                content.addView(bodyText("Xem nhạc, thông báo, sạc pin và đồng hồ ngay ở cạnh trên màn hình. Viên thuốc chỉ hiện nội dung khi có hoạt động phù hợp."), marginTop(14))
+                content.addView(ImageView(this).apply {
+                    setImageResource(R.drawable.digitalliquid_hero)
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                    contentDescription = "Minh hoạ DigitalLiquid trên điện thoại"
+                    background = rounded(0xFF0B1020.toInt(), 22)
+                }, LinearLayout.LayoutParams(-1, dp(210)).apply { topMargin = dp(22); bottomMargin = dp(22) })
+                content.addView(featureMiniCard("01", "Viên thuốc đen kiểu iOS", "Gọn, liền mạch, có chuyển động mềm khi mở rộng."), marginBottom(10))
+                content.addView(featureMiniCard("02", "Tự cập nhật theo hoạt động", "Nhạc, thông báo, sạc và timer từ ứng dụng Đồng hồ."), marginBottom(10))
             }
             1 -> {
                 content.addView(TextView(this).apply {
-                    text = "Kính lỏng,\nkhông phải nhựa bóng."
+                    text = "Chỉ xuất hiện\nkhi có hoạt động."
                     textSize = 31f
                     typeface = Typeface.create("sans-serif", Typeface.BOLD)
                     setTextColor(Color.WHITE)
                 })
-                content.addView(bodyText("DigitalLiquid dùng viên thuốc đen kiểu iOS với shader AGSL, highlight chuyển động và animation co giãn. Hiệu ứng được vẽ bên trong viên thuốc, không làm mờ toàn màn hình."), marginTop(14))
-                content.addView(infoCard("Giới hạn kỹ thuật", "Shader tạo highlight, méo quang học giả lập và viền kính ở cấp pixel. Android không cho overlay tự do đọc pixel của ứng dụng phía dưới; muốn khúc xạ chính hình nền thật sẽ cần quyền quay/chia sẻ màn hình riêng, nên app không tự xin quyền nhạy cảm đó."), marginTop(24))
-                content.addView(infoCard("Riêng tư", "Đọc thông báo chỉ hoạt động sau khi bạn tự bật quyền Notification Access. App không cần tài khoản và không tải nội dung thông báo lên máy chủ."), marginTop(12))
+                content.addView(bodyText("Nhạc, thông báo, sạc pin và thời gian chạy nằm gọn trên cạnh trên. Chạm viên thuốc để xem thêm, còn mọi thao tác trong ứng dụng bên dưới vẫn giữ nguyên."), marginTop(14))
+                content.addView(featureMiniCard("RIÊNG TƯ", "Quyền do bạn kiểm soát", "Bạn tự bật quyền cần thiết trong Cài đặt. DigitalLiquid không yêu cầu tài khoản."), marginTop(22))
+                content.addView(infoCard("Thông báo của bạn", "Nội dung được dùng trên thiết bị để hiển thị trên viên thuốc, không được gửi lên máy chủ."), marginTop(12))
             }
             2 -> {
                 content.addView(TextView(this).apply {
@@ -175,9 +199,9 @@ class MainActivity : Activity() {
                     typeface = Typeface.create("sans-serif", Typeface.BOLD)
                     setTextColor(Color.WHITE)
                 })
-                content.addView(bodyText("Tùy chỉnh kích thước, căn trái/giữa/phải, khoảng cách từ mép trên, tông viền kính và cường độ phản quang. Vị trí thay đổi bằng cài đặt, không kéo viên thuốc bằng tay."), marginTop(14))
+                content.addView(bodyText("Chọn vị trí, kích thước và cường độ phản quang. Khi Đồng hồ bắt đầu hẹn giờ hoặc bấm giờ, nội dung sẽ tự xuất hiện nếu hệ thống gửi thông báo chạy nền."), marginTop(14))
                 content.addView(featureMiniCard("HIỂN THỊ", "Vị trí và kích thước", "Thanh cài đặt tác động trực tiếp lên viên thuốc, cấu hình được lưu lại."), marginTop(26))
-                content.addView(featureMiniCard("HOẠT ĐỘNG", "Nhạc, thông báo, sạc, pin, timer", "Mỗi mô-đun có công tắc riêng. Một số chức năng cần Android cấp quyền."), marginTop(10))
+                content.addView(featureMiniCard("HOẠT ĐỘNG", "Nhạc, thông báo, sạc và đồng hồ", "Các hoạt động xuất hiện tự động khi ứng dụng nguồn gửi trạng thái đang chạy."), marginTop(10))
             }
         }
 
@@ -241,13 +265,10 @@ class MainActivity : Activity() {
 
     private fun buildTopBar(): View {
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        val badge = TextView(this).apply {
-            text = "DL"
-            textSize = 15f
-            typeface = Typeface.create("sans-serif", Typeface.BOLD)
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
-            background = roundedGradient(intArrayOf(0xFF8172E8.toInt(), 0xFF443A86.toInt()), 15)
+        val badge = ImageView(this).apply {
+            setImageResource(R.drawable.digitalliquid_brand)
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            contentDescription = "DigitalLiquid"
         }
         row.addView(badge, LinearLayout.LayoutParams(dp(44), dp(44)))
         val labels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(11), 0, 0, 0) }
@@ -258,14 +279,14 @@ class MainActivity : Activity() {
             setTextColor(Color.WHITE)
         })
         labels.addView(TextView(this).apply {
-            text = when (tab) { 0 -> "CONTROL CENTER"; 1 -> "LIQUID GLASS STUDIO"; 2 -> "LIVE ACTIVITIES"; else -> "SYSTEM & PERMISSIONS" }
+            text = when (tab) { 0 -> "ĐẢO NỔI"; 1 -> "GIAO DIỆN"; 2 -> "TÍNH NĂNG"; else -> "CÀI ĐẶT" }
             textSize = 9f
             letterSpacing = 0.12f
             setTextColor(0xFF9699AA.toInt())
         }, marginTop(3))
         row.addView(labels, LinearLayout.LayoutParams(0, -2, 1f))
         val state = TextView(this).apply {
-            text = if (prefs.getBoolean(AppPrefs.SERVICE_ENABLED, false)) "● LIVE" else "○ READY"
+            text = if (prefs.getBoolean(AppPrefs.SERVICE_ENABLED, false)) "ĐANG BẬT" else "ĐANG TẮT"
             textSize = 10f
             letterSpacing = 0.04f
             setTextColor(if (prefs.getBoolean(AppPrefs.SERVICE_ENABLED, false)) 0xFF8EF2BE.toInt() else 0xFFB9BCCD.toInt())
@@ -277,7 +298,7 @@ class MainActivity : Activity() {
     }
 
     private fun buildOverview(target: LinearLayout) {
-        addEyebrow(target, "YOUR ISLAND")
+        addEyebrow(target, "ĐẢO NỔI CỦA BẠN")
         target.addView(TextView(this).apply {
             text = "Trạng thái của bạn"
             textSize = 25f
@@ -289,47 +310,47 @@ class MainActivity : Activity() {
         val hero = card().apply { setPadding(dp(16), dp(16), dp(16), dp(16)) }
         val heroHeader = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         heroHeader.addView(TextView(this).apply {
-            text = "LIVE PREVIEW"
+            text = "ĐẢO NỔI"
             textSize = 10f
-            letterSpacing = 0.13f
+            letterSpacing = 0.08f
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             setTextColor(0xFFBAB4FF.toInt())
         }, LinearLayout.LayoutParams(0, -2, 1f))
         heroHeader.addView(TextView(this).apply {
-            text = if (prefs.getBoolean(AppPrefs.SERVICE_ENABLED, false)) "ĐANG BẬT" else "BẢN XEM TRƯỚC"
+            text = if (prefs.getBoolean(AppPrefs.SERVICE_ENABLED, false)) "ĐANG CHẠY" else "CHƯA BẬT"
             textSize = 9f
             setTextColor(0xFF9DA2B1.toInt())
         })
         hero.addView(heroHeader)
         hero.addView(buildGlassPreview(), marginTop(15))
         hero.addView(TextView(this).apply {
-            text = "Shader preview · chạm viên thuốc nổi thật để mở bảng điều khiển"
+            text = "Khi có hoạt động, nội dung sẽ xuất hiện trên viên thuốc."
             textSize = 11f
             setTextColor(0xFF9397A6.toInt())
         }, marginTop(12))
         hero.addView(textButton(
-            if (prefs.getBoolean(AppPrefs.SERVICE_ENABLED, false)) "Tắt Dynamic Island" else "Bật Dynamic Island  →",
+            if (prefs.getBoolean(AppPrefs.SERVICE_ENABLED, false)) "Tắt đảo nổi" else "Bật đảo nổi  →",
             primary = !prefs.getBoolean(AppPrefs.SERVICE_ENABLED, false)
         ) {
             if (prefs.getBoolean(AppPrefs.SERVICE_ENABLED, false)) stopIsland() else startIsland()
         }, marginTop(15))
         target.addView(hero, marginTop(20))
 
-        addEyebrow(target, "QUICK SETUP", 24)
+        addEyebrow(target, "CÀI ĐẶT NHANH", 24)
         target.addView(permissionStatusCard(), marginTop(8))
-        target.addView(featureMiniCard("01  /  OVERLAY", "Hiển thị trên ứng dụng khác", if (Settings.canDrawOverlays(this)) "Đã cấp quyền. Viên thuốc có thể xuất hiện trên màn hình." else "Bắt buộc để hiển thị đảo nổi trên ứng dụng khác."), marginTop(10))
+        target.addView(featureMiniCard("HIỂN THỊ", "Hiển thị trên ứng dụng khác", if (Settings.canDrawOverlays(this)) "Đã cấp quyền. Viên thuốc có thể xuất hiện trên màn hình." else "Bắt buộc để hiển thị đảo nổi trên ứng dụng khác."), marginTop(10))
         target.addView(textButton(if (Settings.canDrawOverlays(this)) "Quản lý quyền hiển thị" else "Cấp quyền hiển thị", false) {
             openOverlayPermission()
         }, marginTop(8))
-        target.addView(featureMiniCard("02  /  NOTIFICATIONS", "Thông báo và điều khiển nhạc", if (hasNotificationAccess()) "Đã cấp quyền đọc thông báo trên thiết bị." else "Cần bật Notification Access để đọc thông báo và tìm media session."), marginTop(10))
+        target.addView(featureMiniCard("THÔNG BÁO", "Thông báo và điều khiển nhạc", if (hasNotificationAccess()) "Đã cấp quyền đọc thông báo trên thiết bị." else "Cần bật Notification Access để đọc thông báo và tìm media session."), marginTop(10))
         target.addView(textButton(if (hasNotificationAccess()) "Mở cài đặt quyền thông báo" else "Bật quyền thông báo", false) {
             startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
         }, marginTop(8))
-        target.addView(infoCard("Thiết kế có chủ đích", "Không có chức năng kéo viên thuốc bằng tay. Hãy mở mục Giao diện để chỉnh vị trí, kích thước và hiệu ứng bằng các thanh điều khiển."), marginTop(18))
+        target.addView(infoCard("Tuỳ chỉnh dễ dàng", "Mở mục Giao diện để chỉnh vị trí, kích thước và phản quang. Không cần kéo viên thuốc bằng tay."), marginTop(18))
     }
 
     private fun buildAppearance(target: LinearLayout) {
-        addEyebrow(target, "APPEARANCE ENGINE")
+        addEyebrow(target, "HIỆU ỨNG & VỊ TRÍ")
         target.addView(TextView(this).apply {
             text = "Tạo chất kính của riêng bạn"
             textSize = 24f
@@ -340,7 +361,7 @@ class MainActivity : Activity() {
         val previewCard = card().apply { setPadding(dp(14), dp(16), dp(14), dp(16)) }
         previewCard.addView(buildGlassPreview(), LinearLayout.LayoutParams(-1, dp(70)))
         previewCard.addView(TextView(this).apply {
-            text = "LIVE SHADER · ${if (Build.VERSION.SDK_INT >= 33) "AGSL / GPU" else "GRADIENT FALLBACK"}"
+            text = "HIỆU ỨNG KÍNH LỎNG ĐANG BẬT"
             textSize = 10f
             letterSpacing = 0.09f
             setTextColor(0xFFB8B1FF.toInt())
@@ -349,10 +370,10 @@ class MainActivity : Activity() {
         target.addView(previewCard, marginTop(18))
 
         target.addView(sectionTitle("Kích thước"), marginTop(22))
-        target.addView(seekCard("Chiều rộng", "140–300 dp", AppPrefs.WIDTH, 140, 300, " dp") { applyConfig() }, marginTop(8))
-        target.addView(seekCard("Chiều cao", "36–64 dp", AppPrefs.HEIGHT, 36, 64, " dp") { applyConfig() }, marginTop(8))
+        target.addView(seekCard("Chiều rộng", "126–330 dp", AppPrefs.WIDTH, 126, 330, " dp") { applyConfig() }, marginTop(8))
+        target.addView(seekCard("Chiều cao", "34–72 dp", AppPrefs.HEIGHT, 34, 72, " dp") { applyConfig() }, marginTop(8))
 
-        target.addView(sectionTitle("Vị trí · không kéo bằng tay"), marginTop(22))
+        target.addView(sectionTitle("Vị trí và căn chỉnh"), marginTop(22))
         target.addView(card().apply {
             addView(TextView(this@MainActivity).apply {
                 text = "Căn ngang"
@@ -364,9 +385,9 @@ class MainActivity : Activity() {
                 prefs.getString(AppPrefs.ALIGNMENT, "center") ?: "center"
             ) { selected -> prefs.edit().putString(AppPrefs.ALIGNMENT, selected).apply(); applyConfig(); renderMain() }, marginTop(10))
         }.apply { setPadding(dp(15), dp(15), dp(15), dp(15)) }, marginTop(8))
-        target.addView(seekCard("Khoảng cách từ mép trên", "0–140 dp", AppPrefs.OFFSET_TOP, 0, 140, " dp") { applyConfig() }, marginTop(8))
+        target.addView(seekCard("Vị trí dọc", "0 là sát mép trên trong vùng thanh trạng thái", AppPrefs.OFFSET_TOP, 0, 140, " dp") { applyConfig() }, marginTop(8))
 
-        target.addView(sectionTitle("Shader & ánh sáng"), marginTop(22))
+        target.addView(sectionTitle("Phản quang & ánh sáng"), marginTop(22))
         target.addView(seekCard("Cường độ phản quang", "Điều chỉnh highlight và viền quang học bên trong viên thuốc", AppPrefs.GLASS_STRENGTH, 15, 100, "%") { applyConfig() }, marginTop(8))
         target.addView(card().apply {
             addView(TextView(this@MainActivity).apply {
@@ -379,44 +400,26 @@ class MainActivity : Activity() {
                 prefs.getString(AppPrefs.TINT, "midnight") ?: "midnight"
             ) { selected -> prefs.edit().putString(AppPrefs.TINT, selected).apply(); applyConfig(); renderMain() }, marginTop(10))
         }.apply { setPadding(dp(15), dp(15), dp(15), dp(15)) }, marginTop(8))
-        target.addView(infoCard("Viên thuốc kiểu iOS", "Bề mặt đen gần như đục hoàn toàn; AGSL chỉ vẽ phản quang, highlight và viền quang học trong phạm vi viên thuốc. Không dùng blur-behind của cửa sổ nổi nên nội dung ứng dụng phía sau không bị làm mờ."), marginTop(14))
+        target.addView(infoCard("Viên thuốc kiểu iOS", "Bề mặt đen gần như đục hoàn toàn; hiệu ứng phản quang chỉ nằm bên trong viên thuốc. Không làm mờ cả màn hình hay che các thao tác bên ngoài."), marginTop(14))
     }
 
     private fun buildFeatures(target: LinearLayout) {
-        addEyebrow(target, "LIVE ACTIVITIES")
+        addEyebrow(target, "TIỆN ÍCH ĐANG CHẠY")
         target.addView(TextView(this).apply {
             text = "Chọn thứ được xuất hiện"
             textSize = 24f
             typeface = Typeface.create("sans-serif", Typeface.BOLD)
             setTextColor(Color.WHITE)
         }, marginTop(4))
-        target.addView(bodyText("Tắt mô-đun bạn không cần. Các phần cần dữ liệu từ hệ thống sẽ chỉ hoạt động khi đã cấp quyền tương ứng."), marginTop(7))
+        target.addView(bodyText("Bật các hoạt động muốn hiển thị. Nhạc, thông báo và Đồng hồ chỉ xuất hiện khi hệ thống cung cấp trạng thái đang chạy."), marginTop(7))
         target.addView(toggleCard("Điều khiển nhạc", "Phát/tạm dừng, bài trước và bài tiếp theo qua MediaController.", AppPrefs.SHOW_MEDIA), marginTop(18))
         target.addView(toggleCard("Thông báo", "Tiêu đề, nội dung và nút mở thông báo gốc.", AppPrefs.SHOW_NOTIFICATIONS), marginTop(10))
         target.addView(toggleCard("Lọc theo ứng dụng", "Khi bật, chỉ các ứng dụng được chọn mới hiện thông báo trong đảo nổi.", AppPrefs.FILTER_NOTIFICATIONS), marginTop(10))
         target.addView(textButton("Chọn ứng dụng được hiển thị  →", false) { showNotificationAppFilter() }, marginTop(8))
         target.addView(toggleCard("Trạng thái sạc", "Hiện trạng thái khi cắm sạc hoặc pin đầy.", AppPrefs.SHOW_CHARGING), marginTop(10))
         target.addView(toggleCard("Phần trăm pin", "Đọc pin từ broadcast hệ thống.", AppPrefs.SHOW_BATTERY), marginTop(10))
-        target.addView(toggleCard("Bộ đếm thời gian", "Countdown có thể bắt đầu nhanh ngay từ viên thuốc.", AppPrefs.SHOW_TIMER), marginTop(10))
-
-        addEyebrow(target, "QUICK TIMER", 26)
-        target.addView(bodyText("Các nút bên dưới bắt đầu countdown trên viên thuốc đang chạy."), marginTop(5))
-        val timerRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        listOf(1, 5, 10).forEach { minutes ->
-            timerRow.addView(textButton("$minutes phút", true) {
-                if (!prefs.getBoolean(AppPrefs.SERVICE_ENABLED, false)) {
-                    Toast.makeText(this, "Hãy bật Dynamic Island trước.", Toast.LENGTH_SHORT).show()
-                } else {
-                    IslandService.startQuickTimer(minutes)
-                    Toast.makeText(this, "Đã bắt đầu $minutes phút.", Toast.LENGTH_SHORT).show()
-                }
-            }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { if (minutes > 1) marginStart = dp(7) })
-        }
-        target.addView(timerRow, marginTop(10))
-        target.addView(textButton("Dừng và đặt lại timer", false) {
-            IslandService.stopTimer()
-            Toast.makeText(this, "Đã đặt lại bộ đếm.", Toast.LENGTH_SHORT).show()
-        }, marginTop(8))
+        target.addView(toggleCard("Đồng hồ tự động", "Tự hiện hẹn giờ hoặc bấm giờ khi ứng dụng Đồng hồ gửi thông báo đang chạy. Mọi thao tác bắt đầu, tạm dừng và đặt lại vẫn thực hiện trong Đồng hồ.", AppPrefs.SHOW_TIMER), marginTop(10))
+        target.addView(infoCard("Dùng với Đồng hồ", "Mở ứng dụng Đồng hồ trên điện thoại và bắt đầu Hẹn giờ hoặc Bấm giờ. DigitalLiquid sẽ nhận thông báo đang chạy để hiện thời gian trên viên thuốc. Hãy cấp quyền Truy cập thông báo ở Cài đặt; khả năng phát hiện tuỳ ứng dụng Đồng hồ và phiên bản hệ thống."), marginTop(12))
         target.addView(infoCard("Về quyền thông báo", "Android yêu cầu bạn bật Notification Access bằng tay. Quyền này cho phép app đọc nội dung thông báo trên thiết bị để hiển thị; không có dữ liệu nào được gửi tới máy chủ."), marginTop(16))
         target.addView(textButton("Mở cài đặt Notification Access", false) {
             startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
@@ -474,7 +477,7 @@ class MainActivity : Activity() {
     }
 
     private fun buildSettings(target: LinearLayout) {
-        addEyebrow(target, "SYSTEM & PRIVACY")
+        addEyebrow(target, "QUYỀN & RIÊNG TƯ")
         target.addView(TextView(this).apply {
             text = "Cài đặt hệ thống"
             textSize = 24f
@@ -501,7 +504,7 @@ class MainActivity : Activity() {
         }
         target.addView(card().apply {
             addView(reduceMotion)
-            addView(bodyText("Tắt hiệu ứng co giãn khi mở/đóng viên thuốc; ánh sáng shader tĩnh vẫn giữ nguyên."), marginTop(5))
+            addView(bodyText("Tắt hiệu ứng co giãn khi mở hoặc thu gọn viên thuốc. Ánh phản quang vẫn được giữ lại."), marginTop(5))
         }.apply { setPadding(dp(15), dp(14), dp(15), dp(14)) }, marginTop(10))
 
         target.addView(settingAction("Chạy lại onboarding", "Xem lại giới thiệu", "Hiện lại phần giới thiệu 3 bước") {
@@ -519,7 +522,7 @@ class MainActivity : Activity() {
                     renderMain()
                 }.show()
         }, marginTop(10))
-        target.addView(infoCard("DigitalLiquid 1.1", "Native Android · Kotlin · AGSL shader trên Android 13+ · min Android 8.0. Không cần tài khoản, không dùng thư viện quảng cáo."), marginTop(20))
+        target.addView(infoCard("DigitalLiquid", "Được thiết kế cho Android, không cần tài khoản. Bạn có thể tắt quyền hoặc dừng viên thuốc bất cứ lúc nào."), marginTop(20))
     }
 
     private fun buildGlassPreview(): View {
@@ -535,32 +538,7 @@ class MainActivity : Activity() {
                 expandedNow = false
             )
         }
-        frame.addView(glass, FrameLayout.LayoutParams(-1, -1))
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            setPadding(dp(10), 0, dp(10), 0)
-        }
-        row.addView(TextView(this).apply {
-            text = "◈"
-            textSize = 19f
-            setTextColor(0xFFB9AEFF.toInt())
-            gravity = Gravity.CENTER
-        }, LinearLayout.LayoutParams(dp(26), -1))
-        row.addView(TextView(this).apply {
-            text = "DigitalLiquid"
-            textSize = 13f
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER_VERTICAL
-        })
-        row.addView(View(this), LinearLayout.LayoutParams(dp(10), 1))
-        row.addView(TextView(this).apply {
-            text = "•••"
-            textSize = 15f
-            setTextColor(0xFFB3B7C5.toInt())
-        })
-        frame.addView(row, FrameLayout.LayoutParams(-1, -1))
+        frame.addView(glass, FrameLayout.LayoutParams(dp(150), dp(38), Gravity.CENTER))
         frame.layoutParams = LinearLayout.LayoutParams(-1, dp(64))
         return frame
     }
@@ -575,7 +553,7 @@ class MainActivity : Activity() {
         })
         outer.addView(statusLine("Hiển thị nổi", Settings.canDrawOverlays(this)), marginTop(10))
         outer.addView(statusLine("Đọc thông báo", hasNotificationAccess()), marginTop(8))
-        outer.addView(statusLine("Hiệu ứng shader", true, if (Build.VERSION.SDK_INT >= 33) "AGSL" else "Fallback"), marginTop(8))
+        outer.addView(statusLine("Hiệu ứng kính lỏng", true, if (Build.VERSION.SDK_INT >= 33) "Đầy đủ" else "Tương thích"), marginTop(8))
         return outer
     }
 
@@ -629,7 +607,7 @@ class MainActivity : Activity() {
         val line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         line.addView(TextView(this).apply { text = label; textSize = 13f; setTextColor(Color.WHITE) }, LinearLayout.LayoutParams(0, -2, 1f))
         val initial = prefs.getInt(key, when (key) {
-            AppPrefs.WIDTH -> 170; AppPrefs.HEIGHT -> 42; AppPrefs.OFFSET_TOP -> 8; AppPrefs.GLASS_STRENGTH -> 72; else -> min
+            AppPrefs.WIDTH -> 148; AppPrefs.HEIGHT -> 38; AppPrefs.OFFSET_TOP -> 6; AppPrefs.GLASS_STRENGTH -> 72; else -> min
         }).coerceIn(min, maxValue)
         val value = TextView(this).apply {
             text = "$initial$suffix"
