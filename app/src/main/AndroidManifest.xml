@@ -14,6 +14,8 @@
 
     <application
         android:allowBackup="false"
+        android:icon="@drawable/digitalliquid_brand"
+        android:roundIcon="@drawable/digitalliquid_brand"
         android:label="DigitalLiquid"
         android:theme="@android:style/Theme.Material.NoActionBar"
         android:usesCleartextTraffic="false">
