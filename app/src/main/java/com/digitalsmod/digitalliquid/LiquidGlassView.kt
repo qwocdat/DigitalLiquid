@@ -121,10 +121,10 @@ class LiquidGlassView(context: Context) : View(context) {
         // Thin, restrained optical rim. No thick dark inset border or plastic-looking stroke.
         strokePaint.shader = LinearGradient(
             0f, 0f, w, h,
-            intArrayOf(0x50FFFFFF, 0x14E8F0FF, 0x35FFFFFF, 0x08FFFFFF),
+            intArrayOf(0x22FFFFFF, 0x08E8F0FF, 0x14FFFFFF, 0x04FFFFFF),
             floatArrayOf(0f, 0.42f, 0.76f, 1f), Shader.TileMode.CLAMP
         )
-        strokePaint.strokeWidth = dp(0.75f)
+        strokePaint.strokeWidth = dp(0.55f)
         canvas.drawRoundRect(rect, radius, radius, strokePaint)
         strokePaint.shader = null
     }
@@ -134,21 +134,33 @@ class LiquidGlassView(context: Context) : View(context) {
         val h = height.toFloat()
         val base = tintColor
         val sweepX = (time / 12f % 1f) * w * 0.24f
+
+        // Start with a fully opaque black surface. Highlights are composited over it,
+        // never used as a translucent base that lets the app behind bleed through.
+        paint.shader = null
+        paint.color = base
+        paint.alpha = 255
+        canvas.drawRoundRect(rect, radius, radius, paint)
+
+        paint.color = Color.WHITE
+        paint.alpha = 255
         paint.shader = LinearGradient(
-            sweepX, 0f, sweepX + w * 0.16f, h,
+            sweepX, 0f, sweepX + w * 0.28f, h * 0.55f,
             intArrayOf(
                 withAlpha(Color.rgb(238, 244, 255), (0.035f + strength * 0.075f) * 255f),
-                withAlpha(base, 248f),
-                withAlpha(base, 255f)
+                0x06FFFFFF,
+                0x00FFFFFF
             ),
-            floatArrayOf(0f, 0.26f, 1f), Shader.TileMode.CLAMP
+            floatArrayOf(0f, 0.35f, 1f), Shader.TileMode.CLAMP
         )
         canvas.drawRoundRect(rect, radius, radius, paint)
         paint.shader = null
+        paint.alpha = 255
+
         val glint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             shader = LinearGradient(
                 0f, 0f, w, h * 0.55f,
-                intArrayOf(0x20FFFFFF, 0x06FFFFFF, 0x00FFFFFF),
+                intArrayOf(0x14FFFFFF, 0x04FFFFFF, 0x00FFFFFF),
                 floatArrayOf(0f, 0.48f, 1f), Shader.TileMode.CLAMP
             )
         }
@@ -221,10 +233,10 @@ class LiquidGlassView(context: Context) : View(context) {
                 // Opaque black body; only a restrained moving specular highlight is bright.
                 float3 color = tint * (0.82 + uv.y * 0.12);
                 color += float3(0.19, 0.22, 0.29) * specular;
-                color += float3(0.48, 0.54, 0.66) * rim * (0.12 + uIntensity * 0.22);
+                color += float3(0.32, 0.36, 0.44) * rim * (0.07 + uIntensity * 0.13);
                 color += float3(1.0, 1.0, 1.0) * topSweep * uIntensity * 0.026;
-                float alpha = 0.965 + rim * 0.025;
-                return half4(half3(color), half(min(alpha, 1.0) * mask));
+                // Opaque within the pill; only antialiased outside edges are transparent.
+                return half4(half3(color), half(mask));
             }
         """
     }
