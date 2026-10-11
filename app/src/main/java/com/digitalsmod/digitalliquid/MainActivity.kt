@@ -164,7 +164,7 @@ class MainActivity : Activity() {
                     typeface = Typeface.create("sans-serif", Typeface.BOLD)
                     setTextColor(Color.WHITE)
                 })
-                content.addView(bodyText("DigitalLiquid kết hợp shader AGSL, chuyển động co giãn và blur phía sau cửa sổ khi Android/thiết bị hỗ trợ. Nếu máy tắt cross-window blur, hiệu ứng shader vẫn chạy."), marginTop(14))
+                content.addView(bodyText("DigitalLiquid dùng viên thuốc đen kiểu iOS với shader AGSL, highlight chuyển động và animation co giãn. Hiệu ứng được vẽ bên trong viên thuốc, không làm mờ toàn màn hình."), marginTop(14))
                 content.addView(infoCard("Giới hạn kỹ thuật", "Shader tạo highlight, méo quang học giả lập và viền kính ở cấp pixel. Android không cho overlay tự do đọc pixel của ứng dụng phía dưới; muốn khúc xạ chính hình nền thật sẽ cần quyền quay/chia sẻ màn hình riêng, nên app không tự xin quyền nhạy cảm đó."), marginTop(24))
                 content.addView(infoCard("Riêng tư", "Đọc thông báo chỉ hoạt động sau khi bạn tự bật quyền Notification Access. App không cần tài khoản và không tải nội dung thông báo lên máy chủ."), marginTop(12))
             }
@@ -175,7 +175,7 @@ class MainActivity : Activity() {
                     typeface = Typeface.create("sans-serif", Typeface.BOLD)
                     setTextColor(Color.WHITE)
                 })
-                content.addView(bodyText("Tùy chỉnh kích thước, căn trái/giữa/phải, khoảng cách từ mép trên, màu kính và mức độ blur. Không còn kéo viên thuốc lung tung trên màn hình."), marginTop(14))
+                content.addView(bodyText("Tùy chỉnh kích thước, căn trái/giữa/phải, khoảng cách từ mép trên, tông viền kính và cường độ phản quang. Vị trí thay đổi bằng cài đặt, không kéo viên thuốc bằng tay."), marginTop(14))
                 content.addView(featureMiniCard("HIỂN THỊ", "Vị trí và kích thước", "Thanh cài đặt tác động trực tiếp lên viên thuốc, cấu hình được lưu lại."), marginTop(26))
                 content.addView(featureMiniCard("HOẠT ĐỘNG", "Nhạc, thông báo, sạc, pin, timer", "Mỗi mô-đun có công tắc riêng. Một số chức năng cần Android cấp quyền."), marginTop(10))
             }
@@ -349,8 +349,8 @@ class MainActivity : Activity() {
         target.addView(previewCard, marginTop(18))
 
         target.addView(sectionTitle("Kích thước"), marginTop(22))
-        target.addView(seekCard("Chiều rộng", "170–330 dp", AppPrefs.WIDTH, 170, 330, " dp") { applyConfig() }, marginTop(8))
-        target.addView(seekCard("Chiều cao", "40–72 dp", AppPrefs.HEIGHT, 40, 72, " dp") { applyConfig() }, marginTop(8))
+        target.addView(seekCard("Chiều rộng", "140–300 dp", AppPrefs.WIDTH, 140, 300, " dp") { applyConfig() }, marginTop(8))
+        target.addView(seekCard("Chiều cao", "36–64 dp", AppPrefs.HEIGHT, 36, 64, " dp") { applyConfig() }, marginTop(8))
 
         target.addView(sectionTitle("Vị trí · không kéo bằng tay"), marginTop(22))
         target.addView(card().apply {
@@ -367,8 +367,7 @@ class MainActivity : Activity() {
         target.addView(seekCard("Khoảng cách từ mép trên", "0–140 dp", AppPrefs.OFFSET_TOP, 0, 140, " dp") { applyConfig() }, marginTop(8))
 
         target.addView(sectionTitle("Shader & ánh sáng"), marginTop(22))
-        target.addView(seekCard("Cường độ kính", "Highlight và viền quang học", AppPrefs.GLASS_STRENGTH, 15, 100, "%") { applyConfig() }, marginTop(8))
-        target.addView(seekCard("Blur phía sau", "Android 12+; tùy thiết bị", AppPrefs.BLUR_RADIUS, 0, 32, " px") { applyConfig() }, marginTop(8))
+        target.addView(seekCard("Cường độ phản quang", "Điều chỉnh highlight và viền quang học bên trong viên thuốc", AppPrefs.GLASS_STRENGTH, 15, 100, "%") { applyConfig() }, marginTop(8))
         target.addView(card().apply {
             addView(TextView(this@MainActivity).apply {
                 text = "Tông màu kính"
@@ -380,7 +379,7 @@ class MainActivity : Activity() {
                 prefs.getString(AppPrefs.TINT, "midnight") ?: "midnight"
             ) { selected -> prefs.edit().putString(AppPrefs.TINT, selected).apply(); applyConfig(); renderMain() }, marginTop(10))
         }.apply { setPadding(dp(15), dp(15), dp(15), dp(15)) }, marginTop(8))
-        target.addView(infoCard("Tại sao shader khác blur?", "Blur làm mềm nội dung phía sau. Shader tạo hình dạng, độ sáng theo mặt cong, vùng highlight và viền kính thay đổi theo thời gian. Hai thứ kết hợp mới cho cảm giác kính lỏng; nếu ROM tắt blur hệ thống thì shader vẫn không bị mất."), marginTop(14))
+        target.addView(infoCard("Viên thuốc kiểu iOS", "Bề mặt đen gần như đục hoàn toàn; AGSL chỉ vẽ phản quang, highlight và viền quang học trong phạm vi viên thuốc. Không dùng blur-behind của cửa sổ nổi nên nội dung ứng dụng phía sau không bị làm mờ."), marginTop(14))
     }
 
     private fun buildFeatures(target: LinearLayout) {
@@ -630,7 +629,7 @@ class MainActivity : Activity() {
         val line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         line.addView(TextView(this).apply { text = label; textSize = 13f; setTextColor(Color.WHITE) }, LinearLayout.LayoutParams(0, -2, 1f))
         val initial = prefs.getInt(key, when (key) {
-            AppPrefs.WIDTH -> 226; AppPrefs.HEIGHT -> 46; AppPrefs.OFFSET_TOP -> 8; AppPrefs.GLASS_STRENGTH -> 72; AppPrefs.BLUR_RADIUS -> 18; else -> min
+            AppPrefs.WIDTH -> 170; AppPrefs.HEIGHT -> 42; AppPrefs.OFFSET_TOP -> 8; AppPrefs.GLASS_STRENGTH -> 72; else -> min
         }).coerceIn(min, maxValue)
         val value = TextView(this).apply {
             text = "$initial$suffix"
