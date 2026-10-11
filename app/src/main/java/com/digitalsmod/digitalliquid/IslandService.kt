@@ -54,11 +54,10 @@ class IslandService : Service() {
     private var timerRemainingMs = 0L
     private var timerEndAt = 0L
     private var timerRunning = false
-    private var widthDp = 226
-    private var heightDp = 46
+    private var widthDp = 170
+    private var heightDp = 42
     private var topOffsetDp = 8
     private var alignment = "center"
-    private var blurRadiusDp = 18
     private var glassStrength = 72
     private var tint = "midnight"
     private var resizeAnimator: ValueAnimator? = null
@@ -159,11 +158,10 @@ class IslandService : Service() {
 
     private fun applyPreferences() {
         val prefs = AppPrefs.get(this)
-        widthDp = prefs.getInt(AppPrefs.WIDTH, 226).coerceIn(170, 330)
-        heightDp = prefs.getInt(AppPrefs.HEIGHT, 46).coerceIn(40, 72)
+        widthDp = prefs.getInt(AppPrefs.WIDTH, 170).coerceIn(140, 300)
+        heightDp = prefs.getInt(AppPrefs.HEIGHT, 42).coerceIn(36, 64)
         topOffsetDp = prefs.getInt(AppPrefs.OFFSET_TOP, 8).coerceIn(0, 140)
         alignment = prefs.getString(AppPrefs.ALIGNMENT, "center") ?: "center"
-        blurRadiusDp = prefs.getInt(AppPrefs.BLUR_RADIUS, 18).coerceIn(0, 32)
         glassStrength = prefs.getInt(AppPrefs.GLASS_STRENGTH, 72).coerceIn(15, 100)
         tint = prefs.getString(AppPrefs.TINT, "midnight") ?: "midnight"
     }
@@ -184,36 +182,34 @@ class IslandService : Service() {
         }
         val root = FrameLayout(this).apply {
             setBackgroundColor(Color.TRANSPARENT)
+            // The window must be only the pill's bounds; never use a full-screen overlay.
+            clipChildren = true
+            clipToPadding = true
+            isClickable = true
+            isFocusable = false
             addView(glass, FrameLayout.LayoutParams(-1, -1))
             addView(innerContent, FrameLayout.LayoutParams(-1, -1))
-            setOnClickListener {
-                expanded = !expanded
-                performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
-                render(animateSize = true)
-            }
-            contentDescription = "DigitalLiquid dynamic island. Chạm để mở rộng."
+            setOnClickListener { toggleExpanded() }
+            contentDescription = "DigitalLiquid black Dynamic Island. Chạm để mở rộng."
         }
         glassView = glass
         content = innerContent
         islandRoot = root
-        val screenWidth = resources.displayMetrics.widthPixels
-        val collapsedWidth = dp(widthDp).coerceAtMost(screenWidth - dp(16))
         params = WindowManager.LayoutParams(
-            collapsedWidth,
+            targetWidth(),
             dp(heightDp),
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
             else WindowManager.LayoutParams.TYPE_PHONE,
+            // Keep taps on the pill working and let taps outside pass to the app below.
+            // Never blur-behind the overlay; the pill shader draws its own dark surface.
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                if (Build.VERSION.SDK_INT >= 31 && blurRadiusDp > 0) WindowManager.LayoutParams.FLAG_BLUR_BEHIND else 0,
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = gravityForAlignment()
             x = horizontalOffset()
             y = dp(topOffsetDp)
-            if (Build.VERSION.SDK_INT >= 31) {
-                try { setBlurBehindRadius(dp(blurRadiusDp)) } catch (_: Exception) { }
-            }
         }
         try {
             windowManager.addView(root, params)
@@ -235,40 +231,32 @@ class IslandService : Service() {
     private fun updatePosition() {
         val root = islandRoot ?: return
         val lp = params ?: return
-        val screenWidth = resources.displayMetrics.widthPixels
         lp.width = targetWidth()
         lp.height = targetHeight()
         lp.gravity = gravityForAlignment()
         lp.x = horizontalOffset()
         lp.y = dp(topOffsetDp)
-        if (Build.VERSION.SDK_INT >= 31) {
-            try {
-                if (blurRadiusDp > 0) {
-                    lp.flags = lp.flags or WindowManager.LayoutParams.FLAG_BLUR_BEHIND
-                    lp.setBlurBehindRadius(dp(blurRadiusDp))
-                } else {
-                    lp.flags = lp.flags and WindowManager.LayoutParams.FLAG_BLUR_BEHIND.inv()
-                    lp.setBlurBehindRadius(0)
-                }
-            } catch (_: Exception) { }
-        }
         try { windowManager.updateViewLayout(root, lp) } catch (_: Exception) { }
         glassView?.configure(glassStrength, tint, expanded)
     }
 
     private fun targetWidth(): Int {
-        val requested = if (expanded) maxOf(widthDp + 64, 300) else widthDp
-        return dp(requested).coerceAtMost(resources.displayMetrics.widthPixels - dp(12))
+        val screenWidth = resources.displayMetrics.widthPixels.coerceAtLeast(dp(180))
+        val minWidth = dp(140)
+        val safeMaxWidth = (screenWidth - dp(16)).coerceAtLeast(minWidth)
+        val requested = if (expanded) maxOf(widthDp + 56, 276) else widthDp
+        return dp(requested).coerceIn(minWidth, safeMaxWidth)
     }
 
     private fun targetHeight(): Int {
         if (!expanded) return dp(heightDp)
+        // Keep the expanded island compact. This is not a full-screen panel.
         return dp(when {
             mediaTitle.isNotBlank() -> 184
             notificationTitle.isNotBlank() -> 144
             timerRunning || timerRemainingMs > 0L -> 144
             else -> 142
-        })
+        }).coerceAtMost((resources.displayMetrics.heightPixels * 0.30f).toInt().coerceAtLeast(dp(142)))
     }
 
     private fun render(animateSize: Boolean = false) {
@@ -293,6 +281,8 @@ class IslandService : Service() {
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            isClickable = true
+            setOnClickListener { toggleExpanded() }
         }
         val statusDot = TextView(this).apply {
             text = when {
@@ -339,7 +329,7 @@ class IslandService : Service() {
             }
             header.addView(live)
         }
-        rootContent.addView(header, LinearLayout.LayoutParams(-1, dp(if (expanded) 30 else 34)))
+        rootContent.addView(header, LinearLayout.LayoutParams(-1, dp(if (expanded) 30 else 32)))
 
         if (expanded) {
             val secondaryText = when {
@@ -469,6 +459,12 @@ class IslandService : Service() {
         }
     }
 
+    private fun toggleExpanded() {
+        expanded = !expanded
+        islandRoot?.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
+        render(animateSize = true)
+    }
+
     private fun animateToTargetSize() {
         val root = islandRoot ?: return
         val lp = params ?: return
@@ -489,8 +485,10 @@ class IslandService : Service() {
             interpolator = OvershootInterpolator(0.72f)
             addUpdateListener { animator ->
                 val f = animator.animatedValue as Float
-                lp.width = (startWidth + (endWidth - startWidth) * f).toInt().coerceAtLeast(dp(100))
-                lp.height = (startHeight + (endHeight - startHeight) * f).toInt().coerceAtLeast(dp(32))
+                val maxWidth = (resources.displayMetrics.widthPixels - dp(16)).coerceAtLeast(dp(164))
+                val maxHeight = (resources.displayMetrics.heightPixels * 0.30f).toInt().coerceAtLeast(dp(142))
+                lp.width = (startWidth + (endWidth - startWidth) * f).toInt().coerceIn(dp(140), maxWidth)
+                lp.height = (startHeight + (endHeight - startHeight) * f).toInt().coerceIn(dp(32), maxHeight)
                 try { windowManager.updateViewLayout(root, lp) } catch (_: Exception) { }
                 glassView?.setPhase(f)
             }
