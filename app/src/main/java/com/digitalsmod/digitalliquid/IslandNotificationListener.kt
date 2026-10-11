@@ -1,6 +1,10 @@
 package com.digitalsmod.digitalliquid
 
 import android.app.Notification
+import android.media.session.MediaController
+import android.media.session.MediaSession
+import android.media.session.PlaybackState
+import android.os.Build
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import java.util.Locale
@@ -79,12 +83,15 @@ class IslandNotificationListener : NotificationListenerService() {
 
         val screenWords = listOf(
             "screen recording", "screen recorder", "recording screen", "record your screen",
-            "screen is being recorded", "screen capture recording", "tap to stop recording",
+            "screen is being recorded", "screen capture recording", "screen recording active",
+            "tap to stop recording", "stop screen recording", "recording your screen",
             "đang quay màn hình", "quay màn hình", "ghi màn hình", "trình ghi màn hình",
-            "đang ghi màn hình", "录屏", "屏幕录制", "正在录屏"
+            "đang ghi màn hình", "đang ghi lại màn hình", "ghi lại màn hình", "dừng quay màn hình",
+            "录屏", "屏幕录制", "正在录屏", "正在屏幕录制"
         )
         val knownRecorderPackage = pkg.contains("screenrecorder") || pkg.contains("screen_recorder") ||
-            pkg.contains("screenrecord") || pkg.contains("screen_record")
+            pkg.contains("screenrecord") || pkg.contains("screen_record") ||
+            pkg == "com.miui.screenrecorder" || pkg == "com.android.screenrecord"
         val ongoing = sbn.isOngoing ||
             (notification.flags and Notification.FLAG_ONGOING_EVENT) != 0 ||
             (notification.flags and Notification.FLAG_NO_CLEAR) != 0
@@ -92,6 +99,27 @@ class IslandNotificationListener : NotificationListenerService() {
         if (screenWords.any(text::contains)) return true
         // Xiaomi commonly posts the recorder notification from its dedicated recorder package.
         return knownRecorderPackage && !audioRecordingWords.any(text::contains)
+    }
+
+
+    private fun readMediaPlaybackState(sbn: StatusBarNotification): Int? {
+        val extras = sbn.notification.extras ?: return null
+        val token = try {
+            if (Build.VERSION.SDK_INT >= 33) {
+                extras.getParcelable(Notification.EXTRA_MEDIA_SESSION, MediaSession.Token::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                extras.getParcelable(Notification.EXTRA_MEDIA_SESSION) as? MediaSession.Token
+            }
+        } catch (_: Exception) {
+            null
+        } ?: return null
+
+        return try {
+            MediaController(this, token).playbackState?.state
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun isHyperOsHandledActivity(sbn: StatusBarNotification): Boolean {
@@ -102,10 +130,16 @@ class IslandNotificationListener : NotificationListenerService() {
             (n.flags and Notification.FLAG_ONGOING_EVENT) != 0 ||
             (n.flags and Notification.FLAG_NO_CLEAR) != 0
 
-        // Media notifications, including background playback, should stay owned by HyperOS.
-        val hasMediaSession = n.extras?.containsKey("android.mediaSession") == true ||
+        // Prefer the actual MediaSession state so a paused media notification does not
+        // keep the DigitalLiquid pill hidden indefinitely. Some vendor ROMs omit the token,
+        // so retain an ongoing-notification fallback in that case.
+        val hasMediaSession = n.extras?.containsKey(Notification.EXTRA_MEDIA_SESSION) == true ||
             n.category == Notification.CATEGORY_TRANSPORT
-        if (hasMediaSession && ongoing) return true
+        if (hasMediaSession && ongoing) {
+            val playbackState = readMediaPlaybackState(sbn)
+            if (playbackState != null) return playbackState == PlaybackState.STATE_PLAYING
+            return true
+        }
 
         // Clock variants used by Android, Google and Xiaomi. Only suppress while a timer/stopwatch is live.
         val clockPackage = pkg.contains("deskclock") || pkg.contains("miui.clock") ||
