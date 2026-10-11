@@ -32,42 +32,79 @@ jobs:
         with:
           packages: platform-tools
 
-      - name: Install Android SDK packages
+      - name: Install Android SDK
+        shell: bash
         run: |
+          set -euo pipefail
           sdkmanager --install "platforms;android-35"
           sdkmanager --install "build-tools;35.0.0"
 
-      - name: Locate Gradle project
+      - name: Diagnose and locate Android project
         id: project
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Repository directory:"
+          echo "=== Repository root ==="
           pwd
-          echo "Repository files:"
           ls -la
 
-          SETTINGS_FILE="$(find . -maxdepth 6 -type f \
+          echo "=== Git-tracked manifests ==="
+          git ls-files | grep -i 'AndroidManifest.xml' || true
+
+          echo "=== All manifests ==="
+          find . -type f -iname '*manifest*' \
+            -not -path '*/.git/*' \
+            -not -path '*/build/*' -print
+
+          SETTINGS_FILE="$(find . -maxdepth 7 -type f \
             \( -name settings.gradle.kts -o -name settings.gradle \) \
+            -not -path '*/.git/*' \
             -not -path '*/.gradle/*' \
             -print -quit)"
 
           if [ -z "$SETTINGS_FILE" ]; then
-            echo "::error::Cannot find settings.gradle or settings.gradle.kts"
-            find . -maxdepth 5 -type f -print | head -200
+            echo "::error::Cannot find settings.gradle(.kts)"
             exit 1
           fi
 
           PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
-          echo "Gradle project: $PROJECT_DIR"
+          echo "Project directory: $PROJECT_DIR"
 
           if [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ] && \
              [ ! -f "$PROJECT_DIR/app/build.gradle" ]; then
-            echo "::error::Cannot find app/build.gradle(.kts) in $PROJECT_DIR"
-            find "$PROJECT_DIR" -maxdepth 4 -type f -print
+            echo "::error::Cannot find app/build.gradle(.kts)"
+            find "$PROJECT_DIR" -maxdepth 5 -type f -print
             exit 1
           fi
+
+          MANIFEST="$PROJECT_DIR/app/src/main/AndroidManifest.xml"
+
+          if [ ! -f "$MANIFEST" ]; then
+            echo "::error::AndroidManifest.xml is missing at the required path"
+            echo "Expected: $MANIFEST"
+
+            FOUND_MANIFEST="$(find "$PROJECT_DIR" -type f \
+              -iname 'AndroidManifest.xml' \
+              -not -path '*/build/*' \
+              -print -quit || true)"
+
+            if [ -n "$FOUND_MANIFEST" ]; then
+              echo "Found another manifest: $FOUND_MANIFEST"
+              echo "Checking whether it can be copied to the standard location..."
+
+              mkdir -p "$PROJECT_DIR/app/src/main"
+              cp "$FOUND_MANIFEST" "$MANIFEST"
+              echo "Copied manifest to: $MANIFEST"
+            else
+              echo "::error::No AndroidManifest.xml exists in the project."
+              echo "Add the correct manifest to app/src/main/ and commit it."
+              exit 1
+            fi
+          fi
+
+          echo "=== Manifest content ==="
+          sed -n '1,220p' "$MANIFEST"
 
           echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
@@ -82,34 +119,33 @@ jobs:
 
           if [ -f gradlew ]; then
             chmod +x gradlew
-            ./gradlew --version
             ./gradlew clean assembleDebug --no-daemon --stacktrace
           else
-            gradle --version
             gradle clean assembleDebug --no-daemon --stacktrace
           fi
 
-      - name: Find and verify APK
+      - name: Verify APK
         id: apk
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
         run: |
           set -euo pipefail
 
-          APK="$(find app/build/outputs/apk -type f \
-            -name '*debug*.apk' -size +0c -print -quit 2>/dev/null || true)"
+          APK="$(find app/build/outputs/apk/debug \
+            -maxdepth 1 -type f -name '*.apk' \
+            -size +0c -print -quit 2>/dev/null || true)"
 
           if [ -z "$APK" ]; then
-            echo "::error::Build finished but no non-empty debug APK was found"
-            find app/build/outputs -maxdepth 6 -type f -print 2>/dev/null || true
+            echo "::error::APK was not generated"
+            find app/build/outputs -type f -print 2>/dev/null || true
             exit 1
           fi
 
-          echo "APK generated: $APK"
+          echo "APK generated successfully:"
           ls -lh "$APK"
           echo "path=$APK" >> "$GITHUB_OUTPUT"
 
-      - name: Upload APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: DigitalLiquid-debug-apk
