@@ -20,10 +20,8 @@ import android.view.WindowInsets
 import android.view.Window
 import android.widget.Button
 import android.widget.FrameLayout
-import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ImageView
-import android.text.InputType
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.Spinner
@@ -32,6 +30,9 @@ import android.widget.TextView
 import android.widget.Toast
 
 class MainActivity : Activity() {
+    companion object { private const val REQUEST_PANEL_BACKGROUND = 2409 }
+
+    private var launchedForPanelPicker = false
     private var tab = 0
     private var onboardingPage = 0
     private lateinit var shell: LinearLayout
@@ -45,39 +46,54 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         applySystemBars()
         if (prefs.getBoolean(AppPrefs.ONBOARDING_DONE, false)) renderMain() else renderOnboarding(0)
-        maybeShowReplyComposer()
+        maybePickPanelBackground(intent)
     }
 
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
         if (intent != null) setIntent(intent)
-        maybeShowReplyComposer()
+        maybePickPanelBackground(intent)
     }
 
-    private fun maybeShowReplyComposer() {
-        if (!intent.getBooleanExtra(IslandService.EXTRA_SHOW_REPLY, false)) return
-        intent.removeExtra(IslandService.EXTRA_SHOW_REPLY)
+    private fun maybePickPanelBackground(sourceIntent: Intent?) {
+        if (sourceIntent?.getBooleanExtra(IslandService.EXTRA_PICK_PANEL_BACKGROUND, false) != true) return
+        launchedForPanelPicker = true
+        sourceIntent.removeExtra(IslandService.EXTRA_PICK_PANEL_BACKGROUND)
         window.decorView.post {
-            val input = EditText(this).apply {
-                hint = "Nhập nội dung trả lời…"
-                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-                setSingleLine(false)
-                minLines = 2
-                maxLines = 5
+            val picker = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+                putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/*", "video/*"))
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
             }
-            AlertDialog.Builder(this)
-                .setTitle("Trả lời thông báo")
-                .setView(input)
-                .setNegativeButton("Hủy", null)
-                .setPositiveButton("Gửi") { _, _ ->
-                    val sent = IslandService.sendQuickReply(input.text.toString())
-                    Toast.makeText(
-                        this,
-                        if (sent) "Đã gửi yêu cầu trả lời tới ứng dụng nguồn." else "Ứng dụng nguồn không còn hỗ trợ trả lời nhanh.",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
-                .show()
+            try {
+                startActivityForResult(picker, REQUEST_PANEL_BACKGROUND)
+            } catch (_: Exception) {
+                Toast.makeText(this, "Thiết bị không mở được trình chọn ảnh/video.", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    @Deprecated("Deprecated in Android API, still supported for ACTION_OPEN_DOCUMENT compatibility")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQUEST_PANEL_BACKGROUND) return
+        if (resultCode == RESULT_OK) {
+            val resultIntent = data
+            val uri = resultIntent?.data
+            if (resultIntent != null && uri != null) {
+                try {
+                    val flags = resultIntent.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    if (flags != 0) contentResolver.takePersistableUriPermission(uri, flags)
+                } catch (_: Exception) { }
+                prefs.edit().putString(IslandService.PANEL_BACKGROUND_URI, uri.toString()).apply()
+                sendBroadcast(Intent(IslandService.ACTION_APPLY_CONFIG).setPackage(packageName))
+                Toast.makeText(this, "Đã đặt ảnh/video làm nền bảng DigitalLiquid.", Toast.LENGTH_SHORT).show()
+            }
+        }
+        if (launchedForPanelPicker) {
+            launchedForPanelPicker = false
+            finish()
         }
     }
 
@@ -165,32 +181,32 @@ class MainActivity : Activity() {
         when (onboardingPage) {
             0 -> {
                 content.addView(TextView(this).apply {
-                    text = "Nhạc, thông báo.\nMọi thứ đúng chỗ."
+                    text = "Một viên thuốc.\nĐúng phần còn thiếu."
                     textSize = 31f
                     setLineSpacing(0f, 1.03f)
                     typeface = Typeface.create("sans-serif", Typeface.BOLD)
                     setTextColor(Color.WHITE)
                 })
-                content.addView(bodyText("Xem nhạc, thông báo, sạc pin và đồng hồ ngay ở cạnh trên màn hình. Viên thuốc chỉ hiện nội dung khi có hoạt động phù hợp."), marginTop(14))
+                content.addView(bodyText("DigitalLiquid bổ sung cho HyperOS, không thay thế HyperIsland. Khi rảnh, viên thuốc vẫn đen đặc và luôn hiện diện ở cạnh trên."), marginTop(14))
                 content.addView(ImageView(this).apply {
                     setImageResource(R.drawable.digitalliquid_hero)
                     scaleType = ImageView.ScaleType.FIT_CENTER
                     contentDescription = "Minh hoạ DigitalLiquid trên điện thoại"
                     background = rounded(0xFF0B1020.toInt(), 22)
                 }, LinearLayout.LayoutParams(-1, dp(210)).apply { topMargin = dp(22); bottomMargin = dp(22) })
-                content.addView(featureMiniCard("01", "Viên thuốc đen kiểu iOS", "Gọn, liền mạch, có chuyển động mềm khi mở rộng."), marginBottom(10))
-                content.addView(featureMiniCard("02", "Tự cập nhật theo hoạt động", "Nhạc, thông báo, sạc và timer từ ứng dụng Đồng hồ."), marginBottom(10))
+                content.addView(featureMiniCard("01", "Chạm một lần", "Viên thuốc rung lắc hai bên kèm vệt mờ chuyển động."), marginBottom(10))
+                content.addView(featureMiniCard("02", "Giữ để tùy chỉnh", "Mở bảng đen và đặt ảnh hoặc video từ thiết bị làm nền."), marginBottom(10))
             }
             1 -> {
                 content.addView(TextView(this).apply {
-                    text = "Chỉ xuất hiện\nkhi có hoạt động."
+                    text = "Luôn sẵn sàng.\nKhông giành việc của HyperOS."
                     textSize = 31f
                     typeface = Typeface.create("sans-serif", Typeface.BOLD)
                     setTextColor(Color.WHITE)
                 })
-                content.addView(bodyText("Nhạc, thông báo, sạc pin và thời gian chạy nằm gọn trên cạnh trên. Chạm viên thuốc để xem thêm, còn mọi thao tác trong ứng dụng bên dưới vẫn giữ nguyên."), marginTop(14))
-                content.addView(featureMiniCard("RIÊNG TƯ", "Quyền do bạn kiểm soát", "Bạn tự bật quyền cần thiết trong Cài đặt. DigitalLiquid không yêu cầu tài khoản."), marginTop(22))
-                content.addView(infoCard("Thông báo của bạn", "Nội dung được dùng trên thiết bị để hiển thị trên viên thuốc, không được gửi lên máy chủ."), marginTop(12))
+                content.addView(bodyText("Nhạc, ghi âm, hẹn giờ, bấm giờ và phát nền tiếp tục do HyperOS xử lý. DigitalLiquid không dựng một bản sao để chen vào."), marginTop(14))
+                content.addView(featureMiniCard("GHI MÀN HÌNH", "Hiệu ứng REC riêng", "Chấm đỏ nhịp sáng chỉ xuất hiện khi phát hiện trạng thái quay màn hình."), marginTop(22))
+                content.addView(infoCard("Quyền do bạn kiểm soát", "Notification Access chỉ dùng để phát hiện thông báo quay màn hình. Không tải nội dung thông báo lên máy chủ."), marginTop(12))
             }
             2 -> {
                 content.addView(TextView(this).apply {
@@ -199,9 +215,9 @@ class MainActivity : Activity() {
                     typeface = Typeface.create("sans-serif", Typeface.BOLD)
                     setTextColor(Color.WHITE)
                 })
-                content.addView(bodyText("Chọn vị trí, kích thước và cường độ phản quang. Khi Đồng hồ bắt đầu hẹn giờ hoặc bấm giờ, nội dung sẽ tự xuất hiện nếu hệ thống gửi thông báo chạy nền."), marginTop(14))
-                content.addView(featureMiniCard("HIỂN THỊ", "Vị trí và kích thước", "Thanh cài đặt tác động trực tiếp lên viên thuốc, cấu hình được lưu lại."), marginTop(26))
-                content.addView(featureMiniCard("HOẠT ĐỘNG", "Nhạc, thông báo, sạc và đồng hồ", "Các hoạt động xuất hiện tự động khi ứng dụng nguồn gửi trạng thái đang chạy."), marginTop(10))
+                content.addView(bodyText("Chọn vị trí và kích thước, rồi giữ viên thuốc để mở bảng tùy chỉnh. Ảnh/video bạn chọn sẽ được giữ làm nền bằng quyền truy cập tệp cục bộ."), marginTop(14))
+                content.addView(featureMiniCard("HIỂN THỊ", "Vị trí và kích thước", "Cấu hình được lưu lại và áp dụng ngay vào viên thuốc."), marginTop(26))
+                content.addView(featureMiniCard("TƯƠNG TÁC", "Chạm / giữ", "Chạm để rung lắc; giữ để mở bảng đen và tải nền."), marginTop(10))
             }
         }
 
@@ -324,7 +340,7 @@ class MainActivity : Activity() {
         hero.addView(heroHeader)
         hero.addView(buildGlassPreview(), marginTop(15))
         hero.addView(TextView(this).apply {
-            text = "Khi có hoạt động, nội dung sẽ xuất hiện trên viên thuốc."
+            text = "Khi rảnh, viên thuốc luôn đen đặc. Chạm để rung lắc; giữ để mở bảng tùy chỉnh."
             textSize = 11f
             setTextColor(0xFF9397A6.toInt())
         }, marginTop(12))
@@ -342,28 +358,28 @@ class MainActivity : Activity() {
         target.addView(textButton(if (Settings.canDrawOverlays(this)) "Quản lý quyền hiển thị" else "Cấp quyền hiển thị", false) {
             openOverlayPermission()
         }, marginTop(8))
-        target.addView(featureMiniCard("THÔNG BÁO", "Thông báo và điều khiển nhạc", if (hasNotificationAccess()) "Đã cấp quyền đọc thông báo trên thiết bị." else "Cần bật Notification Access để đọc thông báo và tìm media session."), marginTop(10))
+        target.addView(featureMiniCard("QUAY MÀN HÌNH", "Hiệu ứng ghi hình", if (hasNotificationAccess()) "Đã cấp quyền để phát hiện thông báo quay màn hình của hệ thống." else "Cần bật Notification Access để phát hiện trạng thái quay màn hình."), marginTop(10))
         target.addView(textButton(if (hasNotificationAccess()) "Mở cài đặt quyền thông báo" else "Bật quyền thông báo", false) {
             startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
         }, marginTop(8))
-        target.addView(infoCard("Tuỳ chỉnh dễ dàng", "Mở mục Giao diện để chỉnh vị trí, kích thước và phản quang. Không cần kéo viên thuốc bằng tay."), marginTop(18))
+        target.addView(infoCard("Tương tác", "Chạm một lần để viên thuốc rung lắc với vệt mờ chuyển động. Giữ khoảng nửa giây để mở bảng đen; tải ảnh hoặc video trong máy để dùng làm nền."), marginTop(18))
     }
 
     private fun buildAppearance(target: LinearLayout) {
-        addEyebrow(target, "HIỆU ỨNG & VỊ TRÍ")
+        addEyebrow(target, "VỊ TRÍ & CHUYỂN ĐỘNG")
         target.addView(TextView(this).apply {
-            text = "Tạo chất kính của riêng bạn"
-            textSize = 24f
+            text = "Một viên thuốc. Không chiếm màn hình."
+            textSize = 23f
             typeface = Typeface.create("sans-serif", Typeface.BOLD)
             setTextColor(Color.WHITE)
         }, marginTop(4))
-        target.addView(bodyText("Mọi thay đổi được lưu tự động và đồng bộ vào viên thuốc đang chạy."), marginTop(7))
+        target.addView(bodyText("Bề mặt khi rảnh giữ màu đen đặc, không viền quang học và không làm mờ ứng dụng phía sau."), marginTop(7))
         val previewCard = card().apply { setPadding(dp(14), dp(16), dp(14), dp(16)) }
-        previewCard.addView(buildGlassPreview(), LinearLayout.LayoutParams(-1, dp(70)))
+        previewCard.addView(buildGlassPreview(), LinearLayout.LayoutParams(-1, dp(64)))
         previewCard.addView(TextView(this).apply {
-            text = "HIỆU ỨNG KÍNH LỎNG ĐANG BẬT"
-            textSize = 10f
-            letterSpacing = 0.09f
+            text = "CHẠM: RUNG LẮC  ·  GIỮ: TÙY CHỈNH"
+            textSize = 9.5f
+            letterSpacing = 0.055f
             setTextColor(0xFFB8B1FF.toInt())
             gravity = Gravity.CENTER
         }, marginTop(12))
@@ -373,7 +389,7 @@ class MainActivity : Activity() {
         target.addView(seekCard("Chiều rộng", "126–330 dp", AppPrefs.WIDTH, 126, 330, " dp") { applyConfig() }, marginTop(8))
         target.addView(seekCard("Chiều cao", "34–72 dp", AppPrefs.HEIGHT, 34, 72, " dp") { applyConfig() }, marginTop(8))
 
-        target.addView(sectionTitle("Vị trí và căn chỉnh"), marginTop(22))
+        target.addView(sectionTitle("Vị trí"), marginTop(22))
         target.addView(card().apply {
             addView(TextView(this@MainActivity).apply {
                 text = "Căn ngang"
@@ -386,94 +402,25 @@ class MainActivity : Activity() {
             ) { selected -> prefs.edit().putString(AppPrefs.ALIGNMENT, selected).apply(); applyConfig(); renderMain() }, marginTop(10))
         }.apply { setPadding(dp(15), dp(15), dp(15), dp(15)) }, marginTop(8))
         target.addView(seekCard("Vị trí dọc", "0 là sát mép trên trong vùng thanh trạng thái", AppPrefs.OFFSET_TOP, 0, 140, " dp") { applyConfig() }, marginTop(8))
-
-        target.addView(sectionTitle("Phản quang & ánh sáng"), marginTop(22))
-        target.addView(seekCard("Cường độ phản quang", "Điều chỉnh highlight và viền quang học bên trong viên thuốc", AppPrefs.GLASS_STRENGTH, 15, 100, "%") { applyConfig() }, marginTop(8))
-        target.addView(card().apply {
-            addView(TextView(this@MainActivity).apply {
-                text = "Tông màu kính"
-                textSize = 13f
-                setTextColor(Color.WHITE)
-            })
-            addView(segmentedOptions(
-                listOf("Midnight" to "midnight", "Violet" to "violet", "Ice" to "ice", "Graphite" to "graphite"),
-                prefs.getString(AppPrefs.TINT, "midnight") ?: "midnight"
-            ) { selected -> prefs.edit().putString(AppPrefs.TINT, selected).apply(); applyConfig(); renderMain() }, marginTop(10))
-        }.apply { setPadding(dp(15), dp(15), dp(15), dp(15)) }, marginTop(8))
-        target.addView(infoCard("Viên thuốc kiểu iOS", "Bề mặt đen gần như đục hoàn toàn; hiệu ứng phản quang chỉ nằm bên trong viên thuốc. Không làm mờ cả màn hình hay che các thao tác bên ngoài."), marginTop(14))
+        target.addView(toggleCard("Giảm chuyển động", "Tắt chuyển động rung lắc và co giãn; giữ giao diện cơ bản.", AppPrefs.REDUCE_MOTION), marginTop(18))
+        target.addView(infoCard("Hiệu ứng theo tần số màn hình", "Chuyển động dùng animation phần cứng và cập nhật theo nhịp khung hình Android. Tốc độ thực tế vẫn do tần số quét, hiệu năng và chính sách hệ thống của máy quyết định."), marginTop(14))
     }
 
     private fun buildFeatures(target: LinearLayout) {
-        addEyebrow(target, "TIỆN ÍCH ĐANG CHẠY")
+        addEyebrow(target, "TÍCH HỢP HYPEROS")
         target.addView(TextView(this).apply {
-            text = "Chọn thứ được xuất hiện"
-            textSize = 24f
+            text = "Bổ sung, không giành việc của hệ thống"
+            textSize = 22f
             typeface = Typeface.create("sans-serif", Typeface.BOLD)
             setTextColor(Color.WHITE)
         }, marginTop(4))
-        target.addView(bodyText("Bật các hoạt động muốn hiển thị. Nhạc, thông báo và Đồng hồ chỉ xuất hiện khi hệ thống cung cấp trạng thái đang chạy."), marginTop(7))
-        target.addView(toggleCard("Điều khiển nhạc", "Phát/tạm dừng, bài trước và bài tiếp theo qua MediaController.", AppPrefs.SHOW_MEDIA), marginTop(18))
-        target.addView(toggleCard("Thông báo", "Tiêu đề, nội dung và nút mở thông báo gốc.", AppPrefs.SHOW_NOTIFICATIONS), marginTop(10))
-        target.addView(toggleCard("Lọc theo ứng dụng", "Khi bật, chỉ các ứng dụng được chọn mới hiện thông báo trong đảo nổi.", AppPrefs.FILTER_NOTIFICATIONS), marginTop(10))
-        target.addView(textButton("Chọn ứng dụng được hiển thị  →", false) { showNotificationAppFilter() }, marginTop(8))
-        target.addView(toggleCard("Trạng thái sạc", "Hiện trạng thái khi cắm sạc hoặc pin đầy.", AppPrefs.SHOW_CHARGING), marginTop(10))
-        target.addView(toggleCard("Phần trăm pin", "Đọc pin từ broadcast hệ thống.", AppPrefs.SHOW_BATTERY), marginTop(10))
-        target.addView(toggleCard("Đồng hồ tự động", "Tự hiện hẹn giờ hoặc bấm giờ khi ứng dụng Đồng hồ gửi thông báo đang chạy. Mọi thao tác bắt đầu, tạm dừng và đặt lại vẫn thực hiện trong Đồng hồ.", AppPrefs.SHOW_TIMER), marginTop(10))
-        target.addView(infoCard("Dùng với Đồng hồ", "Mở ứng dụng Đồng hồ trên điện thoại và bắt đầu Hẹn giờ hoặc Bấm giờ. DigitalLiquid sẽ nhận thông báo đang chạy để hiện thời gian trên viên thuốc. Hãy cấp quyền Truy cập thông báo ở Cài đặt; khả năng phát hiện tuỳ ứng dụng Đồng hồ và phiên bản hệ thống."), marginTop(12))
-        target.addView(infoCard("Về quyền thông báo", "Android yêu cầu bạn bật Notification Access bằng tay. Quyền này cho phép app đọc nội dung thông báo trên thiết bị để hiển thị; không có dữ liệu nào được gửi tới máy chủ."), marginTop(16))
-        target.addView(textButton("Mở cài đặt Notification Access", false) {
+        target.addView(bodyText("DigitalLiquid không tạo lại giao diện cho nhạc, ghi âm, hẹn giờ, bấm giờ hay phát nền. Các hoạt động đó giữ nguyên cách HyperOS hiển thị. Ứng dụng chỉ thêm hiệu ứng riêng cho lúc quay màn hình."), marginTop(7))
+        target.addView(infoCard("Hiệu ứng quay màn hình", "Khi HyperOS hoặc trình ghi màn hình phát thông báo đang quay, viên thuốc mở rộng nhẹ và hiển thị chấm REC nhịp sáng. Khi thông báo biến mất, viên thuốc trở về trạng thái đen ban đầu."), marginTop(18))
+        target.addView(featureMiniCard("QUYỀN CẦN THIẾT", "Truy cập thông báo", if (hasNotificationAccess()) "Đã cấp quyền phát hiện thông báo ghi màn hình." else "Cấp quyền để phát hiện trạng thái quay màn hình do hệ thống thông báo."), marginTop(10))
+        target.addView(textButton(if (hasNotificationAccess()) "Quản lý quyền thông báo" else "Bật quyền thông báo", false) {
             startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
         }, marginTop(8))
-    }
-
-
-    private fun showNotificationAppFilter() {
-        val launchIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        val apps: List<Pair<String, String>> = try {
-            packageManager.queryIntentActivities(launchIntent, 0)
-                .mapNotNull { resolved ->
-                    val pkg = resolved.activityInfo?.packageName ?: return@mapNotNull null
-                    if (pkg == packageName) return@mapNotNull null
-                    val label = try { resolved.loadLabel(packageManager).toString() } catch (_: Exception) { pkg }
-                    pkg to label
-                }
-                .distinctBy { it.first }
-                .sortedBy { it.second.lowercase() }
-        } catch (_: Exception) { emptyList<Pair<String, String>>() }
-        if (apps.isEmpty()) {
-            Toast.makeText(this, "Không tìm thấy danh sách ứng dụng.", Toast.LENGTH_LONG).show()
-            return
-        }
-
-        val selected = (prefs.getStringSet(AppPrefs.ALLOWED_NOTIFICATION_PACKAGES, emptySet()) ?: emptySet()).toMutableSet()
-        val labels = apps.map { "${it.second}  ·  ${it.first}" }.toTypedArray()
-        val checked = BooleanArray(apps.size) { index -> selected.contains(apps[index].first) }
-        AlertDialog.Builder(this)
-            .setTitle("Ứng dụng được phép hiện")
-            .setMessage("Chọn app sẽ xuất hiện trong đảo nổi. Khi bộ lọc bật, app chưa chọn sẽ bị bỏ qua.")
-            .setMultiChoiceItems(labels, checked) { _, which, isChecked ->
-                val pkg = apps[which].first
-                if (isChecked) selected.add(pkg) else selected.remove(pkg)
-            }
-            .setNeutralButton("Chọn tất cả") { _, _ ->
-                prefs.edit()
-                    .putStringSet(AppPrefs.ALLOWED_NOTIFICATION_PACKAGES, apps.map { it.first }.toSet())
-                    .putBoolean(AppPrefs.FILTER_NOTIFICATIONS, true)
-                    .apply()
-                applyConfig()
-                renderMain()
-            }
-            .setNegativeButton("Hủy", null)
-            .setPositiveButton("Lưu lựa chọn") { _, _ ->
-                prefs.edit()
-                    .putStringSet(AppPrefs.ALLOWED_NOTIFICATION_PACKAGES, selected.toSet())
-                    .putBoolean(AppPrefs.FILTER_NOTIFICATIONS, true)
-                    .apply()
-                applyConfig()
-                renderMain()
-                Toast.makeText(this, "Đã lưu bộ lọc ứng dụng.", Toast.LENGTH_SHORT).show()
-            }
-            .show()
+        target.addView(infoCard("Nền bảng tùy chỉnh", "Giữ viên thuốc để mở bảng. Chọn “Tải ảnh hoặc video từ thiết bị”; tệp được lưu dưới dạng URI cục bộ, không tải lên máy chủ. Video phát lặp không tiếng để không chen vào âm thanh nền."), marginTop(14))
     }
 
     private fun buildSettings(target: LinearLayout) {
@@ -486,7 +433,7 @@ class MainActivity : Activity() {
         }, marginTop(4))
         target.addView(bodyText("Các quyền đặc biệt của Android không thể tự bật. Bạn sẽ được chuyển sang trang Cài đặt tương ứng."), marginTop(7))
         target.addView(settingAction("Hiển thị trên ứng dụng khác", if (Settings.canDrawOverlays(this)) "Đã cấp quyền" else "Chưa cấp quyền", "Mở trang cấp quyền overlay") { openOverlayPermission() }, marginTop(18))
-        target.addView(settingAction("Notification Access", if (hasNotificationAccess()) "Đã cấp quyền" else "Chưa cấp quyền", "Cho phép đọc thông báo và media session") {
+        target.addView(settingAction("Notification Access", if (hasNotificationAccess()) "Đã cấp quyền" else "Chưa cấp quyền", "Phát hiện trạng thái quay màn hình từ thông báo hệ thống") {
             startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
         }, marginTop(10))
         target.addView(settingAction("Không hạn chế pin", batteryOptimizationSummary(), "Giảm khả năng hệ thống dừng overlay nền") { requestBatteryExemption() }, marginTop(10))
@@ -504,7 +451,7 @@ class MainActivity : Activity() {
         }
         target.addView(card().apply {
             addView(reduceMotion)
-            addView(bodyText("Tắt hiệu ứng co giãn khi mở hoặc thu gọn viên thuốc. Ánh phản quang vẫn được giữ lại."), marginTop(5))
+            addView(bodyText("Tắt chuyển động rung lắc và co giãn. Viên thuốc vẫn hiển thị màu đen."), marginTop(5))
         }.apply { setPadding(dp(15), dp(14), dp(15), dp(14)) }, marginTop(10))
 
         target.addView(settingAction("Chạy lại onboarding", "Xem lại giới thiệu", "Hiện lại phần giới thiệu 3 bước") {
@@ -532,11 +479,8 @@ class MainActivity : Activity() {
             clipToPadding = false
         }
         val glass = LiquidGlassView(this).apply {
-            configure(
-                prefs.getInt(AppPrefs.GLASS_STRENGTH, 72),
-                prefs.getString(AppPrefs.TINT, "midnight") ?: "midnight",
-                expandedNow = false
-            )
+            configure(0, "midnight", expandedNow = false)
+            setMotionBlur(0f)
         }
         frame.addView(glass, FrameLayout.LayoutParams(dp(150), dp(38), Gravity.CENTER))
         frame.layoutParams = LinearLayout.LayoutParams(-1, dp(64))
@@ -553,7 +497,7 @@ class MainActivity : Activity() {
         })
         outer.addView(statusLine("Hiển thị nổi", Settings.canDrawOverlays(this)), marginTop(10))
         outer.addView(statusLine("Đọc thông báo", hasNotificationAccess()), marginTop(8))
-        outer.addView(statusLine("Hiệu ứng kính lỏng", true, if (Build.VERSION.SDK_INT >= 33) "Đầy đủ" else "Tương thích"), marginTop(8))
+        outer.addView(statusLine("Hiệu ứng viên thuốc", true, "Sẵn sàng"), marginTop(8))
         return outer
     }
 
