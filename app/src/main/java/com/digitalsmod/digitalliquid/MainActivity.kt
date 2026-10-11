@@ -148,7 +148,7 @@ class MainActivity : Activity() {
                 content.addView(TextView(this).apply {
                     text = "Một viên thuốc.\nCả màn hình sống động hơn."
                     textSize = 31f
-                    lineSpacingMultiplier = 1.03f
+                    setLineSpacing(0f, 1.03f)
                     typeface = Typeface.create("sans-serif", Typeface.BOLD)
                     setTextColor(Color.WHITE)
                 })
@@ -756,7 +756,7 @@ class MainActivity : Activity() {
     private fun bodyText(text: String) = TextView(this).apply {
         this.text = text
         textSize = 12f
-        lineSpacingMultiplier = 1.12f
+        setLineSpacing(0f, 1.12f)
         setTextColor(0xFF9FA3B3.toInt())
     }
 
