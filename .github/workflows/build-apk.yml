@@ -1,4 +1,3 @@
-
 name: Build DigitalLiquid APK
 
 on:
@@ -29,23 +28,18 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Accept Android SDK licenses
-        run: yes | sdkmanager --licenses || true
-
-      - name: Install required SDK packages
+      - name: Install Android SDK packages
         run: |
           sdkmanager --install "platform-tools"
           sdkmanager --install "platforms;android-35"
           sdkmanager --install "build-tools;35.0.0"
 
-      - name: Verify project structure
+      - name: Verify project files
         run: |
-          echo "Checking project files..."
           test -f settings.gradle.kts
           test -f build.gradle.kts
           test -f app/build.gradle.kts
           test -f app/src/main/AndroidManifest.xml
-          echo "Project structure verified."
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -54,19 +48,12 @@ jobs:
         run: gradle wrapper --gradle-version 8.9
 
       - name: Build APK
-        run: |
-          chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon --stacktrace
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
 
-      - name: Verify APK output
+      - name: Verify APK
         run: |
-          APK="app/build/outputs/apk/debug/app-debug.apk"
-          if [ ! -s "$APK" ]; then
-            echo "ERROR: APK was not generated."
-            exit 1
-          fi
-          ls -lh "$APK"
-          file "$APK"
+          test -s app/build/outputs/apk/debug/app-debug.apk
+          ls -lh app/build/outputs/apk/debug/app-debug.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
