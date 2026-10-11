@@ -21,6 +21,7 @@ import kotlin.math.abs
 class HyperIslandVisibilityService : AccessibilityService() {
     private val handler = Handler(Looper.getMainLooper())
     private var pendingScan: Runnable? = null
+    private var cameraForegroundActive = false
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -41,10 +42,34 @@ class HyperIslandVisibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val sourcePackage = event?.packageName?.toString()?.lowercase().orEmpty()
+        if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && sourcePackage.isNotBlank()) {
+            when {
+                isCameraPackage(sourcePackage) -> {
+                    cameraForegroundActive = true
+                    IslandService.setCameraActivityActive(true)
+                }
+                sourcePackage == "com.android.systemui" || sourcePackage == "com.miui.systemui" -> Unit
+                sourcePackage != packageName -> {
+                    cameraForegroundActive = false
+                    IslandService.setCameraActivityActive(false)
+                }
+            }
+        }
         if (sourcePackage.isNotBlank() && sourcePackage !in SYSTEM_UI_PACKAGES &&
+            !isScreenRecorderPackage(sourcePackage) &&
             event?.eventType != AccessibilityEvent.TYPE_WINDOWS_CHANGED) return
         scheduleScan(35L)
     }
+
+    private fun isCameraPackage(packageName: String): Boolean =
+        packageName in CAMERA_PACKAGES ||
+            (packageName.startsWith("com.") && packageName.contains("camera") &&
+                !packageName.contains("scanner") && packageName !in SYSTEM_UI_PACKAGES)
+
+    private fun isScreenRecorderPackage(packageName: String): Boolean =
+        packageName.contains("screenrecorder") || packageName.contains("screen_recorder") ||
+            packageName.contains("screenrecord") || packageName.contains("screen_record") ||
+            packageName == "com.android.screenrecord"
 
     private fun scheduleScan(delay: Long) {
         pendingScan?.let { handler.removeCallbacks(it) }
@@ -53,7 +78,11 @@ class HyperIslandVisibilityService : AccessibilityService() {
         handler.postDelayed(task, delay)
     }
 
-    private data class ScanResult(var hyperIslandVisible: Boolean = false, var screenRecordingVisible: Boolean = false)
+    private data class ScanResult(
+        var hyperIslandVisible: Boolean = false,
+        var screenRecordingVisible: Boolean = false,
+        var cameraPrivacyIndicatorVisible: Boolean = false
+    )
 
     private fun scanAndUpdate() {
         val result = ScanResult()
@@ -80,23 +109,26 @@ class HyperIslandVisibilityService : AccessibilityService() {
             for (window in windows ?: emptyList<AccessibilityWindowInfo>()) {
                 val root = window.root ?: continue
                 val pkg = root.packageName?.toString().orEmpty().lowercase()
-                if (pkg !in SYSTEM_UI_PACKAGES) {
+                val isSystemUi = pkg in SYSTEM_UI_PACKAGES
+                if (!isSystemUi && !isScreenRecorderPackage(pkg)) {
                     try { root.recycle() } catch (_: Exception) { }
                     continue
                 }
                 scanTree(
                     root, screenWidth, centerX, centerY, centerTolerance, minWidth, maxWidth,
-                    maxTop, maxHeight, density, sideCutout, cutout, result
+                    maxTop, maxHeight, density, sideCutout, cutout, result, isSystemUi
                 )
             }
         } catch (_: Exception) {
             // If accessibility data is temporarily unavailable, don't permanently hide the pill.
             IslandService.setHyperIslandVisibilityOverride(false)
             IslandService.setAccessibilityScreenRecordingActive(false)
+            IslandService.setCameraActivityActive(cameraForegroundActive)
             return
         }
         IslandService.setHyperIslandVisibilityOverride(result.hyperIslandVisible)
         IslandService.setAccessibilityScreenRecordingActive(result.screenRecordingVisible)
+        IslandService.setCameraActivityActive(cameraForegroundActive || result.cameraPrivacyIndicatorVisible)
     }
 
     private fun currentCutoutBounds(): Rect? {
@@ -124,7 +156,8 @@ class HyperIslandVisibilityService : AccessibilityService() {
         density: Float,
         sideCutout: Boolean,
         cutout: Rect?,
-        result: ScanResult
+        result: ScanResult,
+        allowIslandDetection: Boolean
     ) {
         val queue = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
         queue.add(root to 0)
@@ -139,8 +172,14 @@ class HyperIslandVisibilityService : AccessibilityService() {
         )
         val recordingWords = listOf(
             "screen recording", "screen recorder", "recording screen", "tap to stop recording",
-            "đang quay màn hình", "quay màn hình", "ghi màn hình", "trình ghi màn hình",
+            "stop screen recording", "screen recording active", "đang quay màn hình", "quay màn hình",
+            "ghi màn hình", "trình ghi màn hình", "đang ghi lại màn hình", "dừng quay màn hình",
             "screen capture recording", "录屏", "屏幕录制", "正在录屏", "正在屏幕录制"
+        )
+        val cameraPrivacyWords = listOf(
+            "camera in use", "camera is being used", "using the camera", "camera active",
+            "máy ảnh đang được sử dụng", "đang sử dụng máy ảnh", "camera đang hoạt động",
+            "đang dùng camera", "正在使用相机", "正在使用摄像头"
         )
         while (queue.isNotEmpty() && visited < 700) {
             val (node, depth) = queue.removeFirst()
@@ -157,9 +196,14 @@ class HyperIslandVisibilityService : AccessibilityService() {
                 val visibleLabel = "$text $description".lowercase()
                 val searchableLabel = "$visibleLabel $resourceId"
 
-                val isScreenRecordingNode = recordingWords.any(searchableLabel::contains)
+                val isScreenRecordingNode = recordingWords.any(searchableLabel::contains) ||
+                    listOf("screenrecord", "screen_record", "recording_indicator", "recording_chip", "screen_capture")
+                        .any(resourceId::contains)
                 if (!result.screenRecordingVisible && isScreenRecordingNode) {
                     result.screenRecordingVisible = true
+                }
+                if (allowIslandDetection && !result.cameraPrivacyIndicatorVisible && cameraPrivacyWords.any(searchableLabel::contains)) {
+                    result.cameraPrivacyIndicatorVisible = true
                 }
 
                 val ratio = width.toFloat() / height.coerceAtLeast(1).toFloat()
@@ -181,7 +225,7 @@ class HyperIslandVisibilityService : AccessibilityService() {
                     width >= (132 * density).toInt() && height >= (22 * density).toInt()
                 // Do not mistake the recorder chip/label for HyperIsland itself: recording
                 // is exactly the activity this companion is meant to add an effect for.
-                if (!isScreenRecordingNode && atCameraPosition && pillShape &&
+                if (allowIslandDetection && !isScreenRecordingNode && atCameraPosition && pillShape &&
                     (idHint || labelHint || longVisibleLabel)) {
                     result.hyperIslandVisible = true
                 }
@@ -206,6 +250,8 @@ class HyperIslandVisibilityService : AccessibilityService() {
         pendingScan?.let { handler.removeCallbacks(it) }
         IslandService.setHyperIslandVisibilityOverride(null)
         IslandService.setAccessibilityScreenRecordingActive(false)
+        IslandService.setCameraActivityActive(false)
+        cameraForegroundActive = false
         if (connectedInstance === this) connectedInstance = null
         IslandService.refreshOverlayWindowType()
         handler.removeCallbacksAndMessages(null)
@@ -224,6 +270,12 @@ class HyperIslandVisibilityService : AccessibilityService() {
             "com.android.systemui",
             "com.miui.systemui",
             "com.miui.home"
+        )
+        private val CAMERA_PACKAGES = setOf(
+            "com.android.camera",
+            "com.miui.camera",
+            "com.google.android.googlecamera",
+            "com.android.camera2"
         )
     }
 }
