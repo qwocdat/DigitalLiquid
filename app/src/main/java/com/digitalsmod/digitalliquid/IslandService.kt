@@ -51,18 +51,40 @@ class IslandService : Service() {
     private var mediaNotificationKey = ""
     private var mediaArtist = ""
     private var mediaController: MediaController? = null
-    private var timerRemainingMs = 0L
-    private var timerEndAt = 0L
-    private var timerRunning = false
-    private var widthDp = 170
-    private var heightDp = 42
-    private var topOffsetDp = 8
+    private var clockEventKey = ""
+    private var clockEventTitle = ""
+    private var clockEventText = ""
+    private var clockEventIntent: PendingIntent? = null
+    private var clockEventIsCountdown = false
+    private var clockEventWhen = 0L
+    private var clockEventUsesChronometer = false
+    private var clockTitleView: TextView? = null
+    private var widthDp = 148
+    private var heightDp = 38
+    // Negative values let the pill overlap the status-bar inset/cutout area.
+    private var topOffsetDp = 6
     private var alignment = "center"
     private var glassStrength = 72
     private var tint = "midnight"
     private var resizeAnimator: ValueAnimator? = null
     private var mediaSeekBar: SeekBar? = null
     private var mediaSeekLabel: TextView? = null
+
+    private val clockEventTicker = object : Runnable {
+        override fun run() {
+            if (clockEventKey.isBlank() || !clockEventUsesChronometer || clockEventWhen <= 0L) return
+            val now = System.currentTimeMillis()
+            val duration = if (clockEventIsCountdown) {
+                (clockEventWhen - now).coerceAtLeast(0L)
+            } else {
+                (now - clockEventWhen).coerceAtLeast(0L)
+            }
+            val display = formatClockDuration(duration)
+            clockEventTitle = display
+            clockTitleView?.text = display
+            if (!clockEventIsCountdown || duration > 0L) handler.postDelayed(this, 1000L)
+        }
+    }
 
     private val mediaProgressTicker = object : Runnable {
         override fun run() {
@@ -158,9 +180,9 @@ class IslandService : Service() {
 
     private fun applyPreferences() {
         val prefs = AppPrefs.get(this)
-        widthDp = prefs.getInt(AppPrefs.WIDTH, 170).coerceIn(140, 300)
-        heightDp = prefs.getInt(AppPrefs.HEIGHT, 42).coerceIn(36, 64)
-        topOffsetDp = prefs.getInt(AppPrefs.OFFSET_TOP, 8).coerceIn(0, 140)
+        widthDp = prefs.getInt(AppPrefs.WIDTH, 148).coerceIn(126, 330)
+        heightDp = prefs.getInt(AppPrefs.HEIGHT, 38).coerceIn(34, 72)
+        topOffsetDp = prefs.getInt(AppPrefs.OFFSET_TOP, 6).coerceIn(0, 140)
         alignment = prefs.getString(AppPrefs.ALIGNMENT, "center") ?: "center"
         glassStrength = prefs.getInt(AppPrefs.GLASS_STRENGTH, 72).coerceIn(15, 100)
         tint = prefs.getString(AppPrefs.TINT, "midnight") ?: "midnight"
@@ -204,12 +226,25 @@ class IslandService : Service() {
             // Never blur-behind the overlay; the pill shader draws its own dark surface.
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = gravityForAlignment()
             x = horizontalOffset()
             y = dp(topOffsetDp)
+            // Allow placement inside the cutout/status-bar zone on newer Android versions.
+            if (Build.VERSION.SDK_INT >= 28) {
+                layoutInDisplayCutoutMode = if (Build.VERSION.SDK_INT >= 30) {
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                } else {
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                }
+            }
+            // Do not let system-bar insets push the overlay down from the physical display edge.
+            if (Build.VERSION.SDK_INT >= 30) {
+                try { setFitInsetsTypes(0) } catch (_: Exception) { }
+            }
         }
         try {
             windowManager.addView(root, params)
@@ -242,21 +277,29 @@ class IslandService : Service() {
 
     private fun targetWidth(): Int {
         val screenWidth = resources.displayMetrics.widthPixels.coerceAtLeast(dp(180))
-        val minWidth = dp(140)
+        val minWidth = dp(126)
         val safeMaxWidth = (screenWidth - dp(16)).coerceAtLeast(minWidth)
-        val requested = if (expanded) maxOf(widthDp + 56, 276) else widthDp
-        return dp(requested).coerceIn(minWidth, safeMaxWidth)
+        val prefs = AppPrefs.get(this)
+        val showClock = prefs.getBoolean(AppPrefs.SHOW_TIMER, true) && clockEventTitle.isNotBlank()
+        val requested = when {
+            expanded -> maxOf(widthDp + 56, 276)
+            showClock -> maxOf(widthDp, 166)
+            mediaTitle.isNotBlank() -> maxOf(widthDp, 166)
+            else -> widthDp
+        }
+        return dp(requested).coerceIn(dp(126), safeMaxWidth)
     }
 
     private fun targetHeight(): Int {
         if (!expanded) return dp(heightDp)
         // Keep the expanded island compact. This is not a full-screen panel.
+        val showClock = AppPrefs.get(this).getBoolean(AppPrefs.SHOW_TIMER, true) && clockEventTitle.isNotBlank()
         return dp(when {
-            mediaTitle.isNotBlank() -> 184
-            notificationTitle.isNotBlank() -> 144
-            timerRunning || timerRemainingMs > 0L -> 144
-            else -> 142
-        }).coerceAtMost((resources.displayMetrics.heightPixels * 0.30f).toInt().coerceAtLeast(dp(142)))
+            mediaTitle.isNotBlank() -> 172
+            showClock -> 118
+            notificationTitle.isNotBlank() -> 132
+            else -> 112
+        }).coerceAtMost((resources.displayMetrics.heightPixels * 0.30f).toInt().coerceAtLeast(dp(112)))
     }
 
     private fun render(animateSize: Boolean = false) {
@@ -275,8 +318,11 @@ class IslandService : Service() {
         val showBattery = prefs.getBoolean(AppPrefs.SHOW_BATTERY, true)
         val showTimer = prefs.getBoolean(AppPrefs.SHOW_TIMER, true)
         val activeMedia = showMedia && mediaTitle.isNotBlank()
+        val activeClock = showTimer && clockEventTitle.isNotBlank()
         val activeNotification = showNotifications && notificationTitle.isNotBlank()
         val activeCharging = showCharging && charging
+        val lowBattery = showBattery && batteryPercent in 0..20
+        val hasLiveContent = activeCharging || activeMedia || activeClock || activeNotification || lowBattery
 
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -286,28 +332,32 @@ class IslandService : Service() {
         }
         val statusDot = TextView(this).apply {
             text = when {
+                activeClock -> "◴"
                 activeCharging -> "ϟ"
                 activeMedia -> "♫"
                 activeNotification -> "•"
-                else -> "◉"
+                lowBattery -> "▰"
+                else -> ""
             }
             textSize = 17f
             setTextColor(when {
                 activeCharging -> 0xFF7EF0B2.toInt()
                 activeMedia -> 0xFFB9A2FF.toInt()
+                activeClock -> 0xFFE7E7EE.toInt()
                 else -> Color.WHITE
             })
             gravity = Gravity.CENTER
+            visibility = if (hasLiveContent) View.VISIBLE else View.GONE
         }
-        header.addView(statusDot, LinearLayout.LayoutParams(dp(25), dp(28)))
+        if (hasLiveContent) header.addView(statusDot, LinearLayout.LayoutParams(dp(25), dp(28)))
         val heading = TextView(this).apply {
             text = when {
+                activeClock -> clockEventTitle
                 activeCharging -> "Đang sạc${if (showBattery && batteryPercent >= 0) " · $batteryPercent%" else ""}"
                 activeMedia -> mediaTitle
                 activeNotification -> notificationTitle
-                timerRunning && showTimer -> "Bộ đếm đang chạy"
-                showBattery && batteryPercent >= 0 && charging -> "Pin $batteryPercent%"
-                else -> "DigitalLiquid"
+                lowBattery -> "Pin $batteryPercent%"
+                else -> ""
             }
             setTextColor(Color.WHITE)
             textSize = if (expanded) 14f else 13f
@@ -316,29 +366,18 @@ class IslandService : Service() {
             ellipsize = android.text.TextUtils.TruncateAt.END
             gravity = Gravity.CENTER_VERTICAL
         }
-        header.addView(heading, LinearLayout.LayoutParams(0, dp(28), 1f))
-        if (expanded) {
-            val live = TextView(this).apply {
-                text = "LIVE"
-                textSize = 9f
-                letterSpacing = 0.08f
-                setTextColor(0xFFD7D9E3.toInt())
-                gravity = Gravity.CENTER
-                setPadding(dp(7), dp(3), dp(7), dp(3))
-                background = pillBackground(0x24FFFFFF, 30f)
-            }
-            header.addView(live)
-        }
+        clockTitleView = if (activeClock) heading else null
+        if (hasLiveContent) header.addView(heading, LinearLayout.LayoutParams(0, dp(28), 1f))
         rootContent.addView(header, LinearLayout.LayoutParams(-1, dp(if (expanded) 30 else 32)))
 
         if (expanded) {
             val secondaryText = when {
+                activeClock -> clockEventText.ifBlank { if (clockEventIsCountdown) "Hẹn giờ đang chạy" else "Bấm giờ đang chạy" }
                 activeMedia -> mediaArtist.ifBlank { "Điều khiển phát nhạc" }
                 activeNotification -> notificationText.ifBlank { "Thông báo mới" }
                 activeCharging -> "Đã kết nối nguồn điện"
-                showTimer && timerRemainingMs > 0L -> formatTimer(timerRemainingMs)
                 showBattery && batteryPercent >= 0 -> "Pin hiện tại $batteryPercent%"
-                else -> "Kính lỏng · chạm viên thuốc để thu gọn"
+                else -> "Chạm để thu gọn"
             }
             val detail = TextView(this).apply {
                 text = secondaryText
@@ -404,12 +443,8 @@ class IslandService : Service() {
                     }
                 }, equalButtonParams())
                 actions.addView(actionButton("››") { safeMediaAction { mediaController?.transportControls?.skipToNext() } }, equalButtonParams())
-            } else if (showTimer && (timerRunning || timerRemainingMs > 0L)) {
-                actions.addView(actionButton(if (timerRunning) "Tạm dừng" else "Tiếp tục") {
-                    if (timerRunning) pauseTimer() else resumeTimer()
-                    render()
-                }, equalButtonParams())
-                actions.addView(actionButton("Đặt lại") { resetTimer(); render() }, equalButtonParams())
+            } else if (activeClock) {
+                // Clock and Stopwatch stay controlled by the user's Clock app, not by this pill.
             } else if (activeNotification) {
                 if (notificationReplyAction?.remoteInputs?.any { it.allowFreeFormInput } == true) {
                     actions.addView(actionButton("Trả lời") { openReplyComposer() }, equalButtonParams())
@@ -417,11 +452,6 @@ class IslandService : Service() {
                 if (notificationIntent != null) {
                     actions.addView(actionButton("Mở") { openCurrentNotification() }, equalButtonParams())
                 }
-                if (actions.childCount == 0) {
-                    actions.addView(actionButton("Bộ đếm 5 phút") { startTimer(5); render() }, equalButtonParams())
-                }
-            } else {
-                actions.addView(actionButton("Bộ đếm 5 phút") { startTimer(5); render() }, equalButtonParams())
             }
             if (actions.childCount > 0) rootContent.addView(actions, LinearLayout.LayoutParams(-1, dp(38)))
             val bottom = LinearLayout(this).apply {
@@ -431,10 +461,10 @@ class IslandService : Service() {
             val state = TextView(this).apply {
                 text = when {
                     activeCharging -> "NGUỒN ĐIỆN"
-                    activeMedia -> "MEDIA SESSION"
+                    activeMedia -> "ĐANG PHÁT"
+                    activeClock -> if (clockEventIsCountdown) "ĐỒNG HỒ · HẸN GIỜ" else "ĐỒNG HỒ · BẤM GIỜ"
                     activeNotification -> "THÔNG BÁO"
-                    showTimer && timerRunning -> "COUNTDOWN"
-                    else -> "LIQUID GLASS"
+                    else -> ""
                 }
                 textSize = 9f
                 letterSpacing = 0.07f
@@ -460,6 +490,17 @@ class IslandService : Service() {
     }
 
     private fun toggleExpanded() {
+        val prefs = AppPrefs.get(this)
+        if (expanded && clockEventTitle.isNotBlank()) {
+            try { clockEventIntent?.send() } catch (_: Exception) { }
+            if (clockEventIntent != null) return
+        }
+        val showClock = prefs.getBoolean(AppPrefs.SHOW_TIMER, true) && clockEventTitle.isNotBlank()
+        val showMedia = prefs.getBoolean(AppPrefs.SHOW_MEDIA, true) && mediaTitle.isNotBlank()
+        val showNotifications = prefs.getBoolean(AppPrefs.SHOW_NOTIFICATIONS, true) && notificationTitle.isNotBlank()
+        val showCharging = prefs.getBoolean(AppPrefs.SHOW_CHARGING, true) && charging
+        val showLowBattery = prefs.getBoolean(AppPrefs.SHOW_BATTERY, true) && batteryPercent in 0..20
+        if (!(showClock || showMedia || showNotifications || showCharging || showLowBattery)) return
         expanded = !expanded
         islandRoot?.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
         render(animateSize = true)
@@ -563,58 +604,13 @@ class IslandService : Service() {
         }
     }
 
-    private fun startTimer(minutes: Int) {
-        timerRemainingMs = minutes.coerceIn(1, 180) * 60_000L
-        timerEndAt = System.currentTimeMillis() + timerRemainingMs
-        timerRunning = true
-        handler.removeCallbacks(timerTick)
-        handler.post(timerTick)
-    }
-
-    private fun pauseTimer() {
-        if (timerRunning) timerRemainingMs = (timerEndAt - System.currentTimeMillis()).coerceAtLeast(0L)
-        timerRunning = false
-        handler.removeCallbacks(timerTick)
-    }
-
-    private fun resumeTimer() {
-        if (timerRemainingMs <= 0L) timerRemainingMs = 5 * 60_000L
-        timerEndAt = System.currentTimeMillis() + timerRemainingMs
-        timerRunning = true
-        handler.removeCallbacks(timerTick)
-        handler.post(timerTick)
-    }
-
-    private fun resetTimer() {
-        timerRunning = false
-        timerRemainingMs = 0L
-        handler.removeCallbacks(timerTick)
-    }
-
-    private val timerTick = object : Runnable {
-        override fun run() {
-            if (!timerRunning) return
-            timerRemainingMs = (timerEndAt - System.currentTimeMillis()).coerceAtLeast(0L)
-            if (timerRemainingMs <= 0L) {
-                timerRunning = false
-                try {
-                    val manager = getSystemService(NotificationManager::class.java)
-                    manager.notify(43, Notification.Builder(this@IslandService, CHANNEL_ID)
-                        .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
-                        .setContentTitle("DigitalLiquid · Hết giờ")
-                        .setContentText("Bộ đếm thời gian đã kết thúc.")
-                        .setAutoCancel(true).build())
-                } catch (_: Exception) { }
-            } else {
-                handler.postDelayed(this, 1000L)
-            }
-            render()
-        }
-    }
-
-    private fun formatTimer(ms: Long): String {
-        val total = (ms.coerceAtLeast(0L) / 1000L)
-        return String.format(Locale.getDefault(), "%02d:%02d còn lại", total / 60, total % 60)
+    private fun formatClockDuration(ms: Long): String {
+        val totalSeconds = (ms.coerceAtLeast(0L) / 1000L)
+        val hours = totalSeconds / 3600L
+        val minutes = (totalSeconds % 3600L) / 60L
+        val seconds = totalSeconds % 60L
+        return if (hours > 0L) String.format(Locale.getDefault(), "%d:%02d:%02d", hours, minutes, seconds)
+        else String.format(Locale.getDefault(), "%02d:%02d", minutes, seconds)
     }
 
     private fun formatElapsed(ms: Long): String {
@@ -634,6 +630,7 @@ class IslandService : Service() {
         islandRoot?.let { try { windowManager.removeView(it) } catch (_: Exception) { } }
         islandRoot = null
         handler.removeCallbacksAndMessages(null)
+        clockTitleView = null
         mediaSeekBar = null
         mediaSeekLabel = null
         super.onDestroy()
@@ -695,12 +692,53 @@ class IslandService : Service() {
             }
         }
 
-        fun startQuickTimer(minutes: Int) {
-            instance?.let { service -> service.handler.post { service.startTimer(minutes); service.render() } }
+        fun updateClockEvent(
+            key: String,
+            title: String,
+            text: String,
+            pendingIntent: PendingIntent?,
+            isCountdown: Boolean,
+            whenMs: Long,
+            usesChronometer: Boolean
+        ) {
+            val service = instance ?: return
+            service.handler.post {
+                val isNewClockEvent = service.clockEventKey != key
+                service.clockEventKey = key
+                service.clockEventTitle = title
+                service.clockEventText = text
+                service.clockEventIntent = pendingIntent
+                service.clockEventIsCountdown = isCountdown
+                service.clockEventWhen = whenMs
+                service.clockEventUsesChronometer = usesChronometer
+                service.handler.removeCallbacks(service.clockEventTicker)
+                if (usesChronometer && whenMs > 0L) service.handler.post(service.clockEventTicker)
+                service.render(animateSize = isNewClockEvent)
+            }
         }
 
-        fun stopTimer() {
-            instance?.let { service -> service.handler.post { service.resetTimer(); service.render() } }
+        fun clearClockEvent(key: String) {
+            val service = instance ?: return
+            service.handler.post {
+                if (service.clockEventKey == key) {
+                    service.clockEventKey = ""
+                    service.clockEventTitle = ""
+                    service.clockEventText = ""
+                    service.clockEventIntent = null
+                    service.clockEventIsCountdown = false
+                    service.clockEventWhen = 0L
+                    service.clockEventUsesChronometer = false
+                    service.clockTitleView = null
+                    service.handler.removeCallbacks(service.clockEventTicker)
+                    val prefs = AppPrefs.get(service)
+                    val otherActivity = service.mediaTitle.isNotBlank() ||
+                        service.notificationTitle.isNotBlank() ||
+                        (prefs.getBoolean(AppPrefs.SHOW_CHARGING, true) && service.charging) ||
+                        (prefs.getBoolean(AppPrefs.SHOW_BATTERY, true) && service.batteryPercent in 0..20)
+                    if (!otherActivity) service.expanded = false
+                    service.render(animateSize = true)
+                }
+            }
         }
 
         fun sendQuickReply(text: String): Boolean = instance?.sendReply(text) ?: false
