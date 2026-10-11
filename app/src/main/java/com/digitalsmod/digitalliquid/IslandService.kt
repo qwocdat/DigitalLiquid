@@ -1,9 +1,9 @@
 package com.digitalsmod.digitalliquid
 
+import android.animation.ObjectAnimator
 import android.animation.ValueAnimator
 import android.app.Notification
 import android.app.NotificationChannel
-import android.app.RemoteInput
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
@@ -15,111 +15,70 @@ import android.content.pm.ServiceInfo
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
-import android.media.session.MediaController
-import android.os.BatteryManager
+import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.WindowManager
-import android.view.animation.OvershootInterpolator
+import android.view.animation.PathInterpolator
 import android.widget.FrameLayout
-import android.widget.SeekBar
-import android.widget.Toast
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
-import java.util.Locale
+import android.widget.VideoView
+import kotlin.math.abs
+import kotlin.math.roundToInt
+import kotlin.math.sin
 
+/**
+ * Minimal HyperOS companion: an always-present black pill, an iOS-like tap reaction,
+ * a long-press customization panel, and a recording-only live effect. Media playback,
+ * Clock, stopwatch, charging, battery and ordinary notifications are deliberately ignored.
+ */
 class IslandService : Service() {
     private lateinit var windowManager: WindowManager
+    private val handler = Handler(Looper.getMainLooper())
     private var islandRoot: FrameLayout? = null
     private var content: LinearLayout? = null
     private var glassView: LiquidGlassView? = null
+    private var backgroundHost: FrameLayout? = null
+    private var backgroundScrim: View? = null
     private var params: WindowManager.LayoutParams? = null
-    private val handler = Handler(Looper.getMainLooper())
-    private var expanded = false
-    private var charging = false
-    private var batteryPercent = -1
-    private var notificationTitle = ""
-    private var notificationText = ""
-    private var notificationKey = ""
-    private var notificationIntent: PendingIntent? = null
-    private var notificationReplyAction: Notification.Action? = null
-    private var mediaTitle = ""
-    private var mediaNotificationKey = ""
-    private var mediaArtist = ""
-    private var mediaController: MediaController? = null
-    private var clockEventKey = ""
-    private var clockEventTitle = ""
-    private var clockEventText = ""
-    private var clockEventIntent: PendingIntent? = null
-    private var clockEventIsCountdown = false
-    private var clockEventWhen = 0L
-    private var clockEventUsesChronometer = false
-    private var clockTitleView: TextView? = null
+
     private var widthDp = 148
     private var heightDp = 38
-    // Negative values let the pill overlap the status-bar inset/cutout area.
     private var topOffsetDp = 6
     private var alignment = "center"
     private var glassStrength = 72
     private var tint = "midnight"
+    private var panelOpen = false
+    private var screenRecording = false
+    private var playPanelIntro = false
+    private var lastBackgroundUri: String? = null
+    private var panelBrandTitle: TextView? = null
+    private var panelCustomizeLabel: TextView? = null
+    private var panelUploadButton: TextView? = null
+    private var panelTypewriter: Runnable? = null
     private var resizeAnimator: ValueAnimator? = null
-    private var mediaSeekBar: SeekBar? = null
-    private var mediaSeekLabel: TextView? = null
-
-    private val clockEventTicker = object : Runnable {
-        override fun run() {
-            if (clockEventKey.isBlank() || !clockEventUsesChronometer || clockEventWhen <= 0L) return
-            val now = System.currentTimeMillis()
-            val duration = if (clockEventIsCountdown) {
-                (clockEventWhen - now).coerceAtLeast(0L)
-            } else {
-                (now - clockEventWhen).coerceAtLeast(0L)
-            }
-            val display = formatClockDuration(duration)
-            clockEventTitle = display
-            clockTitleView?.text = display
-            if (!clockEventIsCountdown || duration > 0L) handler.postDelayed(this, 1000L)
-        }
-    }
-
-    private val mediaProgressTicker = object : Runnable {
-        override fun run() {
-            val seek = mediaSeekBar
-            val controller = mediaController
-            if (expanded && seek != null && controller != null) {
-                val duration = controller.metadata?.getLong(android.media.MediaMetadata.METADATA_KEY_DURATION) ?: 0L
-                val position = controller.playbackState?.position ?: 0L
-                if (duration > 0L && !seek.isPressed) seek.progress = position.coerceIn(0L, duration).toInt()
-                if (duration > 0L) mediaSeekLabel?.text = "${formatElapsed(position)} / ${formatElapsed(duration)}"
-            }
-            handler.postDelayed(this, 1000L)
-        }
-    }
-
-    private val batteryReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent == null) return
-            val status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
-            charging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
-                status == BatteryManager.BATTERY_STATUS_FULL
-            val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
-            val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 100).coerceAtLeast(1)
-            batteryPercent = if (level >= 0) (level * 100 / scale) else -1
-            render()
-        }
-    }
+    private var recordingPulse: ValueAnimator? = null
+    private var downX = 0f
+    private var downY = 0f
+    private var longPressTriggered = false
+    private val touchSlop by lazy { ViewConfiguration.get(this).scaledTouchSlop }
 
     private val configReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == ACTION_APPLY_CONFIG) {
-                applyPreferences()
-                render()
-                updatePosition()
-            }
+            if (intent?.action != ACTION_APPLY_CONFIG) return
+            applyPreferences()
+            render(animateSize = false)
+            updatePosition()
         }
     }
 
@@ -137,9 +96,6 @@ class IslandService : Service() {
         applyPreferences()
         AppPrefs.get(this).edit().putBoolean(AppPrefs.SERVICE_ENABLED, true).apply()
         try {
-            registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-        } catch (_: Exception) { }
-        try {
             if (Build.VERSION.SDK_INT >= 33) {
                 registerReceiver(configReceiver, IntentFilter(ACTION_APPLY_CONFIG), Context.RECEIVER_NOT_EXPORTED)
             } else {
@@ -148,7 +104,6 @@ class IslandService : Service() {
             }
         } catch (_: Exception) { }
         showIsland()
-        handler.postDelayed(mediaProgressTicker, 1000L)
         IslandNotificationListener.refreshFromServiceStart()
     }
 
@@ -157,7 +112,7 @@ class IslandService : Service() {
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(CHANNEL_ID, "DigitalLiquid", NotificationManager.IMPORTANCE_LOW).apply {
-                description = "Keeps the floating island available while it is enabled."
+                description = "Keeps the DigitalLiquid pill available while enabled."
             }
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
@@ -171,8 +126,8 @@ class IslandService : Service() {
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) Notification.Builder(this, CHANNEL_ID)
         else @Suppress("DEPRECATION") Notification.Builder(this)
         return builder.setContentTitle("DigitalLiquid đang hoạt động")
-            .setContentText("Chạm để mở cài đặt viên thuốc")
-            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setContentText("Chạm để hiệu ứng viên thuốc · Giữ để tùy chỉnh")
+            .setSmallIcon(android.R.drawable.ic_menu_view)
             .setContentIntent(openIntent)
             .setOngoing(true)
             .build()
@@ -192,67 +147,179 @@ class IslandService : Service() {
     private fun showIsland() {
         if (islandRoot != null) return
         val glass = LiquidGlassView(this).apply {
-            configure(glassStrength, tint, expanded)
-            contentDescription = "DigitalLiquid liquid glass"
+            configure(glassStrength, tint, expandedNow = false)
+            contentDescription = "DigitalLiquid black pill"
+        }
+        val mediaBackground = FrameLayout(this).apply {
+            visibility = View.GONE
+            clipChildren = true
+            clipToPadding = true
+        }
+        val scrim = View(this).apply {
+            setBackgroundColor(0x70000000)
+            visibility = View.GONE
         }
         val innerContent = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setPadding(dp(12), dp(6), dp(12), dp(6))
-            background = null
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            setBackgroundColor(Color.TRANSPARENT)
             isClickable = false
+            isFocusable = false
         }
         val root = FrameLayout(this).apply {
-            setBackgroundColor(Color.TRANSPARENT)
-            // The window must be only the pill's bounds; never use a full-screen overlay.
+            background = roundedBackground(if (panelOpen) 28f else heightDp / 2f, Color.BLACK)
+            clipToOutline = false
             clipChildren = true
             clipToPadding = true
             isClickable = true
             isFocusable = false
+            setLayerType(View.LAYER_TYPE_HARDWARE, null)
             addView(glass, FrameLayout.LayoutParams(-1, -1))
+            addView(mediaBackground, FrameLayout.LayoutParams(-1, -1))
+            addView(scrim, FrameLayout.LayoutParams(-1, -1))
             addView(innerContent, FrameLayout.LayoutParams(-1, -1))
-            setOnClickListener { toggleExpanded() }
-            contentDescription = "DigitalLiquid black Dynamic Island. Chạm để mở rộng."
+            setOnTouchListener { view, event -> handlePillTouch(view, event) }
+            contentDescription = "DigitalLiquid. Chạm một lần để tạo hiệu ứng; giữ để tùy chỉnh."
         }
         glassView = glass
+        backgroundHost = mediaBackground
+        backgroundScrim = scrim
         content = innerContent
         islandRoot = root
-        params = WindowManager.LayoutParams(
+
+        val initialParams = WindowManager.LayoutParams(
             targetWidth(),
-            dp(heightDp),
+            targetHeight(),
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
             else WindowManager.LayoutParams.TYPE_PHONE,
-            // Keep taps on the pill working and let taps outside pass to the app below.
-            // Never blur-behind the overlay; the pill shader draws its own dark surface.
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = gravityForAlignment()
             x = horizontalOffset()
             y = dp(topOffsetDp)
-            // Allow placement inside the cutout/status-bar zone on newer Android versions.
             if (Build.VERSION.SDK_INT >= 28) {
                 layoutInDisplayCutoutMode = if (Build.VERSION.SDK_INT >= 30) {
                     WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
-                } else {
-                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-                }
+                } else WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             }
-            // Do not let system-bar insets push the overlay down from the physical display edge.
             if (Build.VERSION.SDK_INT >= 30) {
                 try { setFitInsetsTypes(0) } catch (_: Exception) { }
             }
         }
+        params = initialParams
         try {
-            windowManager.addView(root, params)
-        } catch (e: Exception) {
+            windowManager.addView(root, initialParams)
+        } catch (_: Exception) {
             stopSelf()
             return
         }
         render()
+    }
+
+    private fun handlePillTouch(view: View, event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                downX = event.rawX
+                downY = event.rawY
+                longPressTriggered = false
+                handler.removeCallbacks(longPressRunnable)
+                handler.postDelayed(longPressRunnable, LONG_PRESS_MS)
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (abs(event.rawX - downX) > touchSlop || abs(event.rawY - downY) > touchSlop) {
+                    handler.removeCallbacks(longPressRunnable)
+                }
+                return true
+            }
+            MotionEvent.ACTION_UP -> {
+                handler.removeCallbacks(longPressRunnable)
+                if (!longPressTriggered && abs(event.rawX - downX) <= touchSlop * 1.5f && abs(event.rawY - downY) <= touchSlop * 1.5f) {
+                    view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                    wobblePill()
+                }
+                return true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                handler.removeCallbacks(longPressRunnable)
+                return true
+            }
+        }
+        return true
+    }
+
+    private val longPressRunnable = Runnable {
+        longPressTriggered = true
+        islandRoot?.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        openCustomizationPanel()
+    }
+
+    private fun wobblePill() {
+        val root = islandRoot ?: return
+        val lp = params ?: return
+        if (panelOpen) return
+        val reduceMotion = AppPrefs.get(this).getBoolean(AppPrefs.REDUCE_MOTION, false)
+        if (reduceMotion) {
+            root.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+            return
+        }
+        val baseX = horizontalOffset()
+        val distance = dp(5).toFloat()
+        glassView?.setMotionBlur(0f)
+        ValueAnimator.ofFloat(0f, -distance, distance * 0.82f, -distance * 0.52f, distance * 0.25f, 0f).apply {
+            duration = 330L
+            interpolator = PathInterpolator(0.2f, 0.82f, 0.25f, 1f)
+            addUpdateListener { animator ->
+                lp.x = baseX + (animator.animatedValue as Float).roundToInt()
+                try { windowManager.updateViewLayout(root, lp) } catch (_: Exception) { }
+                val progress = animator.animatedFraction
+                glassView?.setMotionBlur(sin(progress * Math.PI).toFloat())
+            }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    lp.x = baseX
+                    glassView?.setMotionBlur(0f)
+                    try { windowManager.updateViewLayout(root, lp) } catch (_: Exception) { }
+                }
+            })
+            start()
+        }
+    }
+
+    private fun openCustomizationPanel() {
+        if (panelOpen) return
+        panelOpen = true
+        playPanelIntro = true
+        render(animateSize = true)
+    }
+
+    private fun closeCustomizationPanel() {
+        if (!panelOpen) return
+        panelTypewriter?.let { handler.removeCallbacks(it) }
+        panelOpen = false
+        panelTypewriter = null
+        panelBrandTitle = null
+        panelCustomizeLabel = null
+        panelUploadButton = null
+        render(animateSize = true)
+    }
+
+    private fun targetWidth(): Int {
+        val density = resources.displayMetrics.density.coerceAtLeast(1f)
+        val screenWidthPx = resources.displayMetrics.widthPixels.coerceAtLeast(dp(180))
+        val screenWidthDp = (screenWidthPx / density).toInt().coerceAtLeast(180)
+        val desiredDp = if (panelOpen) screenWidthDp - 24 else if (screenRecording) maxOf(widthDp, 178) else widthDp
+        return dp(desiredDp).coerceIn(dp(126), (screenWidthPx - dp(12)).coerceAtLeast(dp(126)))
+    }
+
+    private fun targetHeight(): Int = when {
+        panelOpen -> dp(250)
+        screenRecording -> dp(maxOf(heightDp, 42))
+        else -> dp(heightDp)
     }
 
     private fun gravityForAlignment(): Int = when (alignment) {
@@ -272,238 +339,245 @@ class IslandService : Service() {
         lp.x = horizontalOffset()
         lp.y = dp(topOffsetDp)
         try { windowManager.updateViewLayout(root, lp) } catch (_: Exception) { }
-        glassView?.configure(glassStrength, tint, expanded)
-    }
-
-    private fun targetWidth(): Int {
-        val screenWidth = resources.displayMetrics.widthPixels.coerceAtLeast(dp(180))
-        val minWidth = dp(126)
-        val safeMaxWidth = (screenWidth - dp(16)).coerceAtLeast(minWidth)
-        val prefs = AppPrefs.get(this)
-        val showClock = prefs.getBoolean(AppPrefs.SHOW_TIMER, true) && clockEventTitle.isNotBlank()
-        val requested = when {
-            expanded -> maxOf(widthDp + 56, 276)
-            showClock -> maxOf(widthDp, 166)
-            mediaTitle.isNotBlank() -> maxOf(widthDp, 166)
-            else -> widthDp
-        }
-        return dp(requested).coerceIn(dp(126), safeMaxWidth)
-    }
-
-    private fun targetHeight(): Int {
-        if (!expanded) return dp(heightDp)
-        // Keep the expanded island compact. This is not a full-screen panel.
-        val showClock = AppPrefs.get(this).getBoolean(AppPrefs.SHOW_TIMER, true) && clockEventTitle.isNotBlank()
-        return dp(when {
-            mediaTitle.isNotBlank() -> 172
-            showClock -> 118
-            notificationTitle.isNotBlank() -> 132
-            else -> 112
-        }).coerceAtMost((resources.displayMetrics.heightPixels * 0.30f).toInt().coerceAtLeast(dp(112)))
+        root.background = roundedBackground(if (panelOpen) 28f else heightDp / 2f, Color.BLACK)
+        glassView?.configure(glassStrength, tint, expandedNow = panelOpen)
     }
 
     private fun render(animateSize: Boolean = false) {
-        val rootContent = content ?: return
         val root = islandRoot ?: return
-        rootContent.removeAllViews()
-        mediaSeekBar = null
-        mediaSeekLabel = null
-        rootContent.setPadding(dp(12), dp(if (expanded) 9 else 4), dp(12), dp(if (expanded) 8 else 4))
-        glassView?.configure(glassStrength, tint, expanded)
-
+        val rootContent = content ?: return
         val prefs = AppPrefs.get(this)
-        val showMedia = prefs.getBoolean(AppPrefs.SHOW_MEDIA, true)
-        val showNotifications = prefs.getBoolean(AppPrefs.SHOW_NOTIFICATIONS, true)
-        val showCharging = prefs.getBoolean(AppPrefs.SHOW_CHARGING, true)
-        val showBattery = prefs.getBoolean(AppPrefs.SHOW_BATTERY, true)
-        val showTimer = prefs.getBoolean(AppPrefs.SHOW_TIMER, true)
-        val activeMedia = showMedia && mediaTitle.isNotBlank()
-        val activeClock = showTimer && clockEventTitle.isNotBlank()
-        val activeNotification = showNotifications && notificationTitle.isNotBlank()
-        val activeCharging = showCharging && charging
-        val lowBattery = showBattery && batteryPercent in 0..20
-        val hasLiveContent = activeCharging || activeMedia || activeClock || activeNotification || lowBattery
+        resizeAnimator?.cancel()
+        rootContent.removeAllViews()
+        recordingPulse?.cancel()
+        recordingPulse = null
+        rootContent.setPadding(dp(if (panelOpen) 18 else 8), dp(if (panelOpen) 15 else 2), dp(if (panelOpen) 18 else 8), dp(if (panelOpen) 14 else 2))
+        root.background = roundedBackground(if (panelOpen) 28f else heightDp / 2f, Color.BLACK)
+        root.clipToOutline = panelOpen
+        glassView?.configure(glassStrength, tint, expandedNow = panelOpen)
+        glassView?.visibility = if (panelOpen) View.GONE else View.VISIBLE
+        syncPanelBackground()
 
-        val header = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            isClickable = true
-            setOnClickListener { toggleExpanded() }
-        }
-        val statusDot = TextView(this).apply {
-            text = when {
-                activeClock -> "◴"
-                activeCharging -> "ϟ"
-                activeMedia -> "♫"
-                activeNotification -> "•"
-                lowBattery -> "▰"
-                else -> ""
-            }
-            textSize = 17f
-            setTextColor(when {
-                activeCharging -> 0xFF7EF0B2.toInt()
-                activeMedia -> 0xFFB9A2FF.toInt()
-                activeClock -> 0xFFE7E7EE.toInt()
-                else -> Color.WHITE
-            })
-            gravity = Gravity.CENTER
-            visibility = if (hasLiveContent) View.VISIBLE else View.GONE
-        }
-        if (hasLiveContent) header.addView(statusDot, LinearLayout.LayoutParams(dp(25), dp(28)))
-        val heading = TextView(this).apply {
-            text = when {
-                activeClock -> clockEventTitle
-                activeCharging -> "Đang sạc${if (showBattery && batteryPercent >= 0) " · $batteryPercent%" else ""}"
-                activeMedia -> mediaTitle
-                activeNotification -> notificationTitle
-                lowBattery -> "Pin $batteryPercent%"
-                else -> ""
-            }
-            setTextColor(Color.WHITE)
-            textSize = if (expanded) 14f else 13f
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            maxLines = 1
-            ellipsize = android.text.TextUtils.TruncateAt.END
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        clockTitleView = if (activeClock) heading else null
-        if (hasLiveContent) header.addView(heading, LinearLayout.LayoutParams(0, dp(28), 1f))
-        rootContent.addView(header, LinearLayout.LayoutParams(-1, dp(if (expanded) 30 else 32)))
-
-        if (expanded) {
-            val secondaryText = when {
-                activeClock -> clockEventText.ifBlank { if (clockEventIsCountdown) "Hẹn giờ đang chạy" else "Bấm giờ đang chạy" }
-                activeMedia -> mediaArtist.ifBlank { "Điều khiển phát nhạc" }
-                activeNotification -> notificationText.ifBlank { "Thông báo mới" }
-                activeCharging -> "Đã kết nối nguồn điện"
-                showBattery && batteryPercent >= 0 -> "Pin hiện tại $batteryPercent%"
-                else -> "Chạm để thu gọn"
-            }
-            val detail = TextView(this).apply {
-                text = secondaryText
-                textSize = 12f
-                setTextColor(0xFFD2D5DE.toInt())
-                maxLines = 1
-                ellipsize = android.text.TextUtils.TruncateAt.END
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(4), 0, dp(4), dp(4))
-            }
-            rootContent.addView(detail, LinearLayout.LayoutParams(-1, dp(27)))
-
-            if (activeMedia) {
-                val duration = mediaController?.metadata?.getLong(android.media.MediaMetadata.METADATA_KEY_DURATION) ?: 0L
-                if (duration > 0L) {
-                    val seekRow = LinearLayout(this).apply {
-                        orientation = LinearLayout.VERTICAL
-                        setPadding(0, 0, 0, dp(1))
-                    }
-                    val seek = SeekBar(this).apply {
-                        max = duration.coerceAtMost(Int.MAX_VALUE.toLong()).toInt().coerceAtLeast(1)
-                        progress = (mediaController?.playbackState?.position ?: 0L).coerceIn(0L, duration).toInt()
-                        isFocusable = true
-                        contentDescription = "Tua nhạc"
-                        setPadding(dp(2), 0, dp(2), 0)
-                        setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                            override fun onProgressChanged(bar: SeekBar?, progress: Int, fromUser: Boolean) {
-                                if (fromUser) mediaSeekLabel?.text = "${formatElapsed(progress.toLong())} / ${formatElapsed(duration)}"
-                            }
-                            override fun onStartTrackingTouch(bar: SeekBar?) { }
-                            override fun onStopTrackingTouch(bar: SeekBar?) {
-                                val position = bar?.progress?.toLong() ?: return
-                                safeMediaAction { mediaController?.transportControls?.seekTo(position) }
-                            }
-                        })
-                    }
-                    mediaSeekBar = seek
-                    seekRow.addView(seek, LinearLayout.LayoutParams(-1, dp(22)))
-                    val seekLabel = TextView(this).apply {
-                        text = "${formatElapsed(seek.progress.toLong())} / ${formatElapsed(duration)}"
-                        textSize = 9f
-                        gravity = Gravity.END
-                        setTextColor(0xFFB5B8C5.toInt())
-                    }
-                    mediaSeekLabel = seekLabel
-                    seekRow.addView(seekLabel, LinearLayout.LayoutParams(-1, dp(14)))
-                    rootContent.addView(seekRow, LinearLayout.LayoutParams(-1, dp(36)))
-                }
-            }
-
-            val actions = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER
-            }
-            if (activeMedia) {
-                actions.addView(actionButton("‹‹") { safeMediaAction { mediaController?.transportControls?.skipToPrevious() } }, equalButtonParams())
-                val isPlaying = mediaController?.playbackState?.state == android.media.session.PlaybackState.STATE_PLAYING
-                actions.addView(actionButton(if (isPlaying) "Ⅱ" else "▶") {
-                    safeMediaAction {
-                        val controller = mediaController ?: return@safeMediaAction
-                        if (controller.playbackState?.state == android.media.session.PlaybackState.STATE_PLAYING) controller.transportControls.pause()
-                        else controller.transportControls.play()
-                    }
-                }, equalButtonParams())
-                actions.addView(actionButton("››") { safeMediaAction { mediaController?.transportControls?.skipToNext() } }, equalButtonParams())
-            } else if (activeClock) {
-                // Clock and Stopwatch stay controlled by the user's Clock app, not by this pill.
-            } else if (activeNotification) {
-                if (notificationReplyAction?.remoteInputs?.any { it.allowFreeFormInput } == true) {
-                    actions.addView(actionButton("Trả lời") { openReplyComposer() }, equalButtonParams())
-                }
-                if (notificationIntent != null) {
-                    actions.addView(actionButton("Mở") { openCurrentNotification() }, equalButtonParams())
-                }
-            }
-            if (actions.childCount > 0) rootContent.addView(actions, LinearLayout.LayoutParams(-1, dp(38)))
-            val bottom = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-            }
-            val state = TextView(this).apply {
-                text = when {
-                    activeCharging -> "NGUỒN ĐIỆN"
-                    activeMedia -> "ĐANG PHÁT"
-                    activeClock -> if (clockEventIsCountdown) "ĐỒNG HỒ · HẸN GIỜ" else "ĐỒNG HỒ · BẤM GIỜ"
-                    activeNotification -> "THÔNG BÁO"
-                    else -> ""
-                }
-                textSize = 9f
-                letterSpacing = 0.07f
-                setTextColor(0xFF9298A7.toInt())
-            }
-            bottom.addView(state, LinearLayout.LayoutParams(0, dp(18), 1f))
-            bottom.addView(actionButton("Thu gọn") { expanded = false; render(animateSize = true) }, LinearLayout.LayoutParams(-2, dp(26)))
-            rootContent.addView(bottom, LinearLayout.LayoutParams(-1, dp(27)))
+        if (panelOpen) {
+            val runIntro = playPanelIntro
+            playPanelIntro = false
+            renderCustomizationPanel(rootContent, runIntro)
+        } else if (screenRecording) {
+            renderRecordingIndicator(rootContent)
         }
 
-        if (animateSize) animateToTargetSize()
-        else {
-            params?.let { lp ->
-                val desiredWidth = targetWidth()
-                val desiredHeight = targetHeight()
-                if (lp.width != desiredWidth || lp.height != desiredHeight) {
-                    lp.width = desiredWidth
-                    lp.height = desiredHeight
-                    try { windowManager.updateViewLayout(root, lp) } catch (_: Exception) { }
-                }
+        val lp = params
+        if (lp != null) {
+            if (animateSize) animateToTargetSize()
+            else {
+                lp.width = targetWidth()
+                lp.height = targetHeight()
+                lp.gravity = gravityForAlignment()
+                lp.x = horizontalOffset()
+                lp.y = dp(topOffsetDp)
+                try { windowManager.updateViewLayout(root, lp) } catch (_: Exception) { }
             }
         }
     }
 
-    private fun toggleExpanded() {
-        val prefs = AppPrefs.get(this)
-        if (expanded && clockEventTitle.isNotBlank()) {
-            try { clockEventIntent?.send() } catch (_: Exception) { }
-            if (clockEventIntent != null) return
+    private fun renderRecordingIndicator(target: LinearLayout) {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            isClickable = false
         }
-        val showClock = prefs.getBoolean(AppPrefs.SHOW_TIMER, true) && clockEventTitle.isNotBlank()
-        val showMedia = prefs.getBoolean(AppPrefs.SHOW_MEDIA, true) && mediaTitle.isNotBlank()
-        val showNotifications = prefs.getBoolean(AppPrefs.SHOW_NOTIFICATIONS, true) && notificationTitle.isNotBlank()
-        val showCharging = prefs.getBoolean(AppPrefs.SHOW_CHARGING, true) && charging
-        val showLowBattery = prefs.getBoolean(AppPrefs.SHOW_BATTERY, true) && batteryPercent in 0..20
-        if (!(showClock || showMedia || showNotifications || showCharging || showLowBattery)) return
-        expanded = !expanded
-        islandRoot?.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
-        render(animateSize = true)
+        val dotWrap = FrameLayout(this)
+        val ring = View(this).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.TRANSPARENT)
+                setStroke(dp(1), 0x99FF4D5F.toInt())
+            }
+        }
+        val dot = View(this).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(0xFFFF4054.toInt())
+            }
+        }
+        dotWrap.addView(ring, FrameLayout.LayoutParams(dp(16), dp(16), Gravity.CENTER))
+        dotWrap.addView(dot, FrameLayout.LayoutParams(dp(7), dp(7), Gravity.CENTER))
+        row.addView(dotWrap, LinearLayout.LayoutParams(dp(20), dp(22)))
+        row.addView(TextView(this).apply {
+            text = "ĐANG QUAY MÀN HÌNH"
+            textSize = 10.5f
+            letterSpacing = 0.06f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER_VERTICAL
+        }, LinearLayout.LayoutParams(-2, dp(22)))
+        target.addView(row, LinearLayout.LayoutParams(-1, -1))
+
+        recordingPulse?.cancel()
+        recordingPulse = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 980L
+            repeatCount = ValueAnimator.INFINITE
+            interpolator = android.view.animation.LinearInterpolator()
+            addUpdateListener { animator ->
+                val phase = animator.animatedValue as Float
+                val wave = (sin(phase * Math.PI * 2.0).toFloat() + 1f) * 0.5f
+                dot.scaleX = 0.78f + wave * 0.22f
+                dot.scaleY = 0.78f + wave * 0.22f
+                dot.alpha = 0.66f + wave * 0.34f
+                ring.scaleX = 0.78f + phase * 0.55f
+                ring.scaleY = 0.78f + phase * 0.55f
+                ring.alpha = 0.82f * (1f - phase)
+            }
+            start()
+        }
+    }
+
+    private fun renderCustomizationPanel(target: LinearLayout, animateIntro: Boolean) {
+        val topRow = FrameLayout(this).apply { clipChildren = false }
+        val brand = TextView(this).apply {
+            text = if (animateIntro) "" else "DigitalLiquid"
+            textSize = 24f
+            letterSpacing = -0.025f
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+        }
+        topRow.addView(brand, FrameLayout.LayoutParams(-1, dp(44), Gravity.CENTER))
+        val close = TextView(this).apply {
+            text = "×"
+            textSize = 23f
+            setTextColor(0xFFE7E7EB.toInt())
+            gravity = Gravity.CENTER
+            background = roundedBackground(18f, 0x28000000)
+            isClickable = true
+            setOnClickListener { closeCustomizationPanel() }
+        }
+        topRow.addView(close, FrameLayout.LayoutParams(dp(34), dp(34), Gravity.RIGHT or Gravity.TOP))
+        target.addView(topRow, LinearLayout.LayoutParams(-1, dp(44)))
+
+        val customize = TextView(this).apply {
+            text = "Tùy chỉnh"
+            textSize = 15f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(0xFFE5E5EB.toInt())
+            gravity = Gravity.CENTER
+            alpha = if (animateIntro) 0f else 1f
+            translationY = if (animateIntro) dp(5).toFloat() else 0f
+        }
+        target.addView(customize, LinearLayout.LayoutParams(-1, dp(30)))
+
+        val upload = TextView(this).apply {
+            text = "Tải ảnh hoặc video từ thiết bị"
+            textSize = 13f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            setPadding(dp(12), 0, dp(12), 0)
+            background = roundedBackground(17f, 0xFF24242A.toInt())
+            isClickable = true
+            alpha = if (animateIntro) 0f else 1f
+            translationY = if (animateIntro) dp(7).toFloat() else 0f
+            setOnClickListener { requestBackgroundPicker() }
+        }
+        val uploadParams = LinearLayout.LayoutParams(-1, dp(48)).apply {
+            topMargin = dp(7)
+        }
+        target.addView(upload, uploadParams)
+
+        val hint = TextView(this).apply {
+            text = "Ảnh hoặc video sẽ phủ nền bảng này. Tệp chỉ được đọc từ thiết bị của bạn."
+            textSize = 10.5f
+            setTextColor(0xFFB9BAC3.toInt())
+            gravity = Gravity.CENTER
+            maxLines = 2
+            alpha = if (animateIntro) 0f else 1f
+        }
+        target.addView(hint, LinearLayout.LayoutParams(-1, dp(38)))
+
+        panelBrandTitle = brand
+        panelCustomizeLabel = customize
+        panelUploadButton = upload
+        if (animateIntro) startPanelTypewriter(brand, customize, upload, hint)
+    }
+
+    private fun startPanelTypewriter(brand: TextView, customize: TextView, upload: TextView, hint: TextView) {
+        panelTypewriter?.let { handler.removeCallbacks(it) }
+        val label = "DigitalLiquid"
+        var index = 0
+        val task = object : Runnable {
+            override fun run() {
+                if (!panelOpen || panelBrandTitle !== brand) return
+                index = (index + 1).coerceAtMost(label.length)
+                brand.text = label.substring(0, index)
+                if (index < label.length) {
+                    handler.postDelayed(this, 43L)
+                } else {
+                    customize.animate().alpha(1f).translationY(0f).setDuration(240L).setInterpolator(PathInterpolator(0.18f, 0.82f, 0.25f, 1f)).start()
+                    upload.animate().alpha(1f).translationY(0f).setDuration(280L).setStartDelay(45L).setInterpolator(PathInterpolator(0.18f, 0.82f, 0.25f, 1f)).start()
+                    hint.animate().alpha(1f).setDuration(220L).setStartDelay(85L).start()
+                }
+            }
+        }
+        panelTypewriter = task
+        handler.postDelayed(task, 75L)
+    }
+
+    private fun requestBackgroundPicker() {
+        try {
+            val intent = Intent(this, MainActivity::class.java)
+                .putExtra(EXTRA_PICK_PANEL_BACKGROUND, true)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            startActivity(intent)
+        } catch (_: Exception) {
+            android.widget.Toast.makeText(this, "Không mở được trình chọn tệp.", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun syncPanelBackground() {
+        val host = backgroundHost ?: return
+        val scrim = backgroundScrim ?: return
+        val prefs = AppPrefs.get(this)
+        val uriString = prefs.getString(PANEL_BACKGROUND_URI, null)
+        val shouldShow = panelOpen && !uriString.isNullOrBlank()
+        if (!shouldShow) {
+            if (host.childCount > 0 || lastBackgroundUri != null) {
+                (host.getChildAt(0) as? VideoView)?.stopPlayback()
+                host.removeAllViews()
+                lastBackgroundUri = null
+            }
+            host.visibility = View.GONE
+            scrim.visibility = View.GONE
+            return
+        }
+        host.visibility = View.VISIBLE
+        scrim.visibility = View.VISIBLE
+        if (lastBackgroundUri == uriString && host.childCount > 0) return
+        (host.getChildAt(0) as? VideoView)?.stopPlayback()
+        host.removeAllViews()
+        lastBackgroundUri = uriString
+        val uri = Uri.parse(uriString)
+        val mime = try { contentResolver.getType(uri).orEmpty() } catch (_: Exception) { "" }
+        if (mime.startsWith("video/", ignoreCase = true)) {
+            val video = VideoView(this).apply {
+                setBackgroundColor(Color.BLACK)
+                setVideoURI(uri)
+                setOnPreparedListener { player ->
+                    player.isLooping = true
+                    try { player.setVolume(0f, 0f) } catch (_: Exception) { }
+                    start()
+                }
+                setOnErrorListener { _, _, _ -> true }
+            }
+            host.addView(video, FrameLayout.LayoutParams(-1, -1))
+        } else {
+            val image = ImageView(this).apply {
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                setBackgroundColor(Color.BLACK)
+                contentDescription = "Nền tùy chỉnh DigitalLiquid"
+                try { setImageURI(uri) } catch (_: Exception) { }
+            }
+            host.addView(image, FrameLayout.LayoutParams(-1, -1))
+        }
     }
 
     private fun animateToTargetSize() {
@@ -514,233 +588,69 @@ class IslandService : Service() {
         val startHeight = lp.height.toFloat()
         val endWidth = targetWidth().toFloat()
         val endHeight = targetHeight().toFloat()
-        val reduceMotion = AppPrefs.get(this).getBoolean(AppPrefs.REDUCE_MOTION, false)
-        if (reduceMotion) {
-            lp.width = endWidth.toInt(); lp.height = endHeight.toInt()
+        if (AppPrefs.get(this).getBoolean(AppPrefs.REDUCE_MOTION, false)) {
+            lp.width = endWidth.roundToInt()
+            lp.height = endHeight.roundToInt()
+            root.background = roundedBackground(if (panelOpen) 28f else heightDp / 2f, Color.BLACK)
             try { windowManager.updateViewLayout(root, lp) } catch (_: Exception) { }
-            glassView?.setPhase(1f)
             return
         }
         resizeAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 360L
-            interpolator = OvershootInterpolator(0.72f)
+            duration = if (panelOpen) 310L else 260L
+            interpolator = PathInterpolator(0.18f, 0.82f, 0.25f, 1f)
             addUpdateListener { animator ->
-                val f = animator.animatedValue as Float
-                val maxWidth = (resources.displayMetrics.widthPixels - dp(16)).coerceAtLeast(dp(164))
-                val maxHeight = (resources.displayMetrics.heightPixels * 0.30f).toInt().coerceAtLeast(dp(142))
-                lp.width = (startWidth + (endWidth - startWidth) * f).toInt().coerceIn(dp(140), maxWidth)
-                lp.height = (startHeight + (endHeight - startHeight) * f).toInt().coerceIn(dp(32), maxHeight)
+                val t = animator.animatedValue as Float
+                lp.width = (startWidth + (endWidth - startWidth) * t).roundToInt()
+                lp.height = (startHeight + (endHeight - startHeight) * t).roundToInt()
+                root.background = roundedBackground(
+                    if (panelOpen) 28f else (lp.height / resources.displayMetrics.density) / 2f,
+                    Color.BLACK
+                )
                 try { windowManager.updateViewLayout(root, lp) } catch (_: Exception) { }
-                glassView?.setPhase(f)
             }
             start()
         }
     }
 
-    private fun equalButtonParams() = LinearLayout.LayoutParams(0, dp(34), 1f).apply {
-        marginStart = dp(3); marginEnd = dp(3)
-    }
-
-    private fun actionButton(label: String, action: () -> Unit) = TextView(this).apply {
-        text = label
-        textSize = 11f
-        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-        setTextColor(Color.WHITE)
-        gravity = Gravity.CENTER
-        setPadding(dp(7), dp(4), dp(7), dp(4))
-        background = pillBackground(0x22FFFFFF, 16f)
-        isClickable = true
-        isFocusable = false
-        setOnClickListener {
-            performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
-            action()
-        }
-    }
-
-    private fun pillBackground(color: Int, radiusDp: Float) = android.graphics.drawable.GradientDrawable().apply {
+    private fun roundedBackground(radiusDp: Float, color: Int) = GradientDrawable().apply {
+        shape = GradientDrawable.RECTANGLE
         setColor(color)
-        cornerRadius = dp(radiusDp.toInt()).toFloat()
-        setStroke(dp(1), 0x26FFFFFF)
+        cornerRadius = dp(radiusDp.roundToInt()).toFloat()
     }
 
-    private fun safeMediaAction(action: () -> Unit) {
-        try { action() } catch (_: Exception) { }
-        handler.postDelayed({ render() }, 180)
-    }
-
-    private fun openCurrentNotification() {
-        try { notificationIntent?.send() } catch (_: Exception) { }
-        expanded = false
-        render(animateSize = true)
-    }
-
-    private fun openReplyComposer() {
-        try {
-            startActivity(
-                Intent(this, MainActivity::class.java)
-                    .putExtra(EXTRA_SHOW_REPLY, true)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            )
-        } catch (_: Exception) {
-            Toast.makeText(this, "Không mở được khung trả lời.", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    private fun sendReply(text: String): Boolean {
-        val action = notificationReplyAction ?: return false
-        val inputs = action.remoteInputs ?: return false
-        val targetInput = inputs.firstOrNull { it.allowFreeFormInput } ?: return false
-        if (text.isBlank()) return false
-        return try {
-            val fillIn = Intent()
-            val results = android.os.Bundle().apply { putCharSequence(targetInput.resultKey, text) }
-            RemoteInput.addResultsToIntent(inputs, fillIn, results)
-            action.actionIntent.send(this, 0, fillIn)
-            notificationReplyAction = null
-            render()
-            true
-        } catch (_: Exception) {
-            false
-        }
-    }
-
-    private fun formatClockDuration(ms: Long): String {
-        val totalSeconds = (ms.coerceAtLeast(0L) / 1000L)
-        val hours = totalSeconds / 3600L
-        val minutes = (totalSeconds % 3600L) / 60L
-        val seconds = totalSeconds % 60L
-        return if (hours > 0L) String.format(Locale.getDefault(), "%d:%02d:%02d", hours, minutes, seconds)
-        else String.format(Locale.getDefault(), "%02d:%02d", minutes, seconds)
-    }
-
-    private fun formatElapsed(ms: Long): String {
-        val total = (ms.coerceAtLeast(0L) / 1000L)
-        return String.format(Locale.getDefault(), "%d:%02d", total / 60, total % 60)
-    }
-
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).roundToInt()
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
         instance = null
         AppPrefs.get(this).edit().putBoolean(AppPrefs.SERVICE_ENABLED, false).apply()
         resizeAnimator?.cancel()
-        try { unregisterReceiver(batteryReceiver) } catch (_: Exception) { }
+        recordingPulse?.cancel()
+        panelTypewriter?.let { handler.removeCallbacks(it) }
+        (backgroundHost?.getChildAt(0) as? VideoView)?.stopPlayback()
         try { unregisterReceiver(configReceiver) } catch (_: Exception) { }
         islandRoot?.let { try { windowManager.removeView(it) } catch (_: Exception) { } }
         islandRoot = null
         handler.removeCallbacksAndMessages(null)
-        clockTitleView = null
-        mediaSeekBar = null
-        mediaSeekLabel = null
         super.onDestroy()
     }
 
     companion object {
         const val ACTION_APPLY_CONFIG = "com.digitalsmod.digitalliquid.APPLY_CONFIG"
-        const val EXTRA_SHOW_REPLY = "com.digitalsmod.digitalliquid.SHOW_REPLY_COMPOSER"
+        const val EXTRA_PICK_PANEL_BACKGROUND = "com.digitalsmod.digitalliquid.PICK_PANEL_BACKGROUND"
+        const val PANEL_BACKGROUND_URI = "custom_panel_background_uri"
         private const val CHANNEL_ID = "digitalliquid_overlay"
+        private const val LONG_PRESS_MS = 430L
         @Volatile private var instance: IslandService? = null
 
-        fun updateNotification(
-            title: String,
-            text: String,
-            isMedia: Boolean,
-            key: String,
-            pendingIntent: PendingIntent?,
-            controller: MediaController?,
-            replyAction: Notification.Action?
-        ) {
+        fun setScreenRecordingActive(active: Boolean) {
             val service = instance ?: return
             service.handler.post {
-                if (isMedia) {
-                    service.mediaNotificationKey = key
-                    val metadata = controller?.metadata
-                    service.mediaTitle = metadata?.getString(android.media.MediaMetadata.METADATA_KEY_TITLE)
-                        ?.takeIf { it.isNotBlank() } ?: title
-                    service.mediaArtist = metadata?.getString(android.media.MediaMetadata.METADATA_KEY_ARTIST)
-                        ?.takeIf { it.isNotBlank() }
-                        ?: metadata?.getString(android.media.MediaMetadata.METADATA_KEY_ALBUM_ARTIST).orEmpty()
-                    service.mediaController = controller
-                } else {
-                    service.notificationTitle = title
-                    service.notificationText = text
-                    service.notificationKey = key
-                    service.notificationIntent = pendingIntent
-                    service.notificationReplyAction = replyAction
-                }
-                service.render()
+                if (service.screenRecording == active) return@post
+                service.screenRecording = active
+                service.render(animateSize = true)
             }
         }
 
-        fun clearNotification(key: String, isMedia: Boolean) {
-            val service = instance ?: return
-            service.handler.post {
-                if (isMedia && service.mediaNotificationKey == key) {
-                    service.mediaTitle = ""
-                    service.mediaArtist = ""
-                    service.mediaController = null
-                    service.mediaNotificationKey = ""
-                } else if (service.notificationKey == key) {
-                    service.notificationTitle = ""
-                    service.notificationText = ""
-                    service.notificationIntent = null
-                    service.notificationReplyAction = null
-                    service.notificationKey = ""
-                }
-                service.render()
-            }
-        }
-
-        fun updateClockEvent(
-            key: String,
-            title: String,
-            text: String,
-            pendingIntent: PendingIntent?,
-            isCountdown: Boolean,
-            whenMs: Long,
-            usesChronometer: Boolean
-        ) {
-            val service = instance ?: return
-            service.handler.post {
-                val isNewClockEvent = service.clockEventKey != key
-                service.clockEventKey = key
-                service.clockEventTitle = title
-                service.clockEventText = text
-                service.clockEventIntent = pendingIntent
-                service.clockEventIsCountdown = isCountdown
-                service.clockEventWhen = whenMs
-                service.clockEventUsesChronometer = usesChronometer
-                service.handler.removeCallbacks(service.clockEventTicker)
-                if (usesChronometer && whenMs > 0L) service.handler.post(service.clockEventTicker)
-                service.render(animateSize = isNewClockEvent)
-            }
-        }
-
-        fun clearClockEvent(key: String) {
-            val service = instance ?: return
-            service.handler.post {
-                if (service.clockEventKey == key) {
-                    service.clockEventKey = ""
-                    service.clockEventTitle = ""
-                    service.clockEventText = ""
-                    service.clockEventIntent = null
-                    service.clockEventIsCountdown = false
-                    service.clockEventWhen = 0L
-                    service.clockEventUsesChronometer = false
-                    service.clockTitleView = null
-                    service.handler.removeCallbacks(service.clockEventTicker)
-                    val prefs = AppPrefs.get(service)
-                    val otherActivity = service.mediaTitle.isNotBlank() ||
-                        service.notificationTitle.isNotBlank() ||
-                        (prefs.getBoolean(AppPrefs.SHOW_CHARGING, true) && service.charging) ||
-                        (prefs.getBoolean(AppPrefs.SHOW_BATTERY, true) && service.batteryPercent in 0..20)
-                    if (!otherActivity) service.expanded = false
-                    service.render(animateSize = true)
-                }
-            }
-        }
-
-        fun sendQuickReply(text: String): Boolean = instance?.sendReply(text) ?: false
     }
 }
