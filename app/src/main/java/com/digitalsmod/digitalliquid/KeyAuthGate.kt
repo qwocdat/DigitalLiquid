@@ -23,6 +23,9 @@ import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.UUID
+import java.security.MessageDigest
+import java.net.URLEncoder
+import java.util.Locale
 import java.util.concurrent.Executors
 
 /**
@@ -31,9 +34,10 @@ import java.util.concurrent.Executors
  * for the remaining valid session and is never trusted from local storage on the next app launch.
  */
 object KeyAuthGate {
-    private const val API_BASE = "https://asia-southeast1-quocdat-396fe.cloudfunctions.net/keyApi"
-    // Canonical GitHub Pages route backed by get-key/index.html.
-    private const val KEY_PAGE_BASE = "https://digitalsmod.site/get-key"
+    private const val FIREBASE_API_KEY = "AIzaSyAVuB8m14zkMPs-JTLAKB0Bp18QBKAMBt4"
+    private const val AUTH_SIGNUP_URL = "https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=$FIREBASE_API_KEY"
+    private const val DATABASE_BASE = "https://ideo-dd376-default-rtdb.asia-southeast1.firebasedatabase.app"
+    private const val GET_KEY_URL = "https://digitalsmod.site/get-key/"
     private const val PREFS = "digitalsmod_key_auth"
     private const val INSTALL_ID = "install_id"
     private val executor = Executors.newSingleThreadExecutor()
@@ -128,8 +132,8 @@ object KeyAuthGate {
                 dialog.getButton(AlertDialog.BUTTON_NEGATIVE).isEnabled = false
                 executor.execute {
                     val result = runCatching {
-                        postJson("/verify-key", JSONObject().put("key", typedKey).put("installId", installId))
-                    }.getOrElse { JSONObject().put("valid", false).put("reason", "Không kết nối được máy chủ. Kiểm tra Internet và thử lại.") }
+                        verifyKeyInRealtimeDatabase(typedKey, installId)
+                    }.getOrElse { JSONObject().put("valid", false).put("reason", it.message ?: "Không kết nối được Firebase. Kiểm tra Internet và Database Rules.") }
                     mainHandler.post {
                         if (activity.isFinishing || activity.isDestroyed) return@post
                         val valid = result.optBoolean("valid", false)
@@ -152,21 +156,11 @@ object KeyAuthGate {
                 dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = false
                 dialog.getButton(AlertDialog.BUTTON_NEGATIVE).isEnabled = false
                 executor.execute {
-                    val result = runCatching {
-                        postJson("/create-session", JSONObject().put("installId", installId))
-                    }.getOrElse { JSONObject().put("ok", false).put("error", "Không kết nối được máy chủ. Kiểm tra Internet và thử lại.") }
+                    val webUrl = GET_KEY_URL + "?installId=" + Uri.encode(installId)
                     mainHandler.post {
                         if (activity.isFinishing || activity.isDestroyed) return@post
-                        val sessionId = result.optString("sessionId")
-                        if (result.optBoolean("ok", false) && sessionId.matches(Regex("^[a-fA-F0-9]{48}$"))) {
-                            // Use the exact extensionless route requested for the GitHub Pages site.
-                            // Do not trust a stale webUrl returned by an older deployed backend.
-                            val webUrl = "$KEY_PAGE_BASE?sid=${Uri.encode(sessionId)}"
-                            runCatching { activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(webUrl))) }
-                                .onFailure { status.text = "Không mở được trình duyệt trên thiết bị này." }
-                        } else {
-                            status.text = result.optString("error", "Không tạo được phiên Get Key.")
-                        }
+                        runCatching { activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(webUrl))) }
+                            .onFailure { status.text = "Không mở được trình duyệt trên thiết bị này." }
                         dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
                         dialog.getButton(AlertDialog.BUTTON_NEGATIVE).isEnabled = true
                     }
@@ -184,24 +178,74 @@ object KeyAuthGate {
         if (stroke != null) setStroke(1, stroke)
     }
 
-    private fun postJson(path: String, body: JSONObject): JSONObject {
-        val connection = (URL(API_BASE.trimEnd('/') + path).openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
+    private fun verifyKeyInRealtimeDatabase(typedKey: String, installId: String): JSONObject {
+        val normalizedKey = typedKey.trim().uppercase(Locale.US)
+        val tokenResponse = requestJson(
+            AUTH_SIGNUP_URL,
+            JSONObject().put("returnSecureToken", true),
+            "POST"
+        )
+        val idToken = tokenResponse.optString("idToken")
+        if (idToken.isBlank()) throw IllegalStateException("Firebase không cấp được phiên đăng nhập ẩn danh. Hãy bật Anonymous trong Authentication.")
+
+        val keyHash = sha256(normalizedKey)
+        val authToken = URLEncoder.encode(idToken, "UTF-8")
+        val keyUrl = "$DATABASE_BASE/keySystem/keys/$keyHash.json?auth=$authToken"
+        val keyRecord = requestJson(keyUrl, null, "GET")
+        if (keyRecord.length() == 0 || keyRecord == JSONObject.NULL) {
+            return JSONObject().put("valid", false).put("reason", "Key không tồn tại hoặc đã bị thu hồi.")
+        }
+        if (keyRecord.optString("status") != "active") {
+            return JSONObject().put("valid", false).put("reason", "Key đã bị vô hiệu hóa.")
+        }
+        val expiresAt = keyRecord.optLong("expiresAt", 0L)
+        if (expiresAt <= System.currentTimeMillis()) {
+            return JSONObject().put("valid", false).put("reason", "Key đã hết hạn.")
+        }
+        val expectedDeviceHash = sha256(installId.trim())
+        if (keyRecord.optString("deviceHash") != expectedDeviceHash) {
+            return JSONObject().put("valid", false).put("reason", "Key này được cấp cho một mã cài đặt khác.")
+        }
+        return JSONObject().put("valid", true).put("expiresAt", expiresAt)
+    }
+
+    private fun sha256(value: String): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
+        return digest.joinToString("") { "%02x".format(it) }
+    }
+
+    private fun requestJson(url: String, body: JSONObject?, method: String): JSONObject {
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = method
             connectTimeout = 12000
             readTimeout = 15000
-            doOutput = true
-            setRequestProperty("Content-Type", "application/json; charset=utf-8")
             setRequestProperty("Accept", "application/json")
+            if (body != null) {
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            }
         }
         try {
-            OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(body.toString()) }
+            if (body != null) {
+                OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(body.toString()) }
+            }
             val status = connection.responseCode
             val stream = if (status in 200..299) connection.inputStream else connection.errorStream
             val text = stream?.let { input -> BufferedReader(InputStreamReader(input, Charsets.UTF_8)).use { it.readText() } }.orEmpty()
-            if (text.isBlank()) throw IllegalStateException("Empty server response (HTTP $status)")
-            return JSONObject(text)
+            if (text.isBlank()) throw IllegalStateException("Firebase trả về phản hồi rỗng (HTTP $status). Kiểm tra Anonymous Auth và Database Rules.")
+            val json = if (text.trim() == "null") JSONObject() else JSONObject(text)
+            if (status !in 200..299) {
+                val errorMessage = json.optJSONObject("error")?.optString("message").orEmpty()
+                throw IllegalStateException(when {
+                    errorMessage.contains("PERMISSION_DENIED", true) -> "Firebase từ chối quyền đọc key. Kiểm tra Realtime Database Rules."
+                    errorMessage.contains("OPERATION_NOT_ALLOWED", true) -> "Chưa bật đăng nhập ẩn danh trong Firebase Authentication."
+                    else -> "Firebase trả HTTP $status: ${errorMessage.ifBlank { "yêu cầu thất bại" }}"
+                })
+            }
+            return json
         } finally {
             connection.disconnect()
         }
     }
+
 }
