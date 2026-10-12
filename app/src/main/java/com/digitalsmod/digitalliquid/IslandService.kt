@@ -136,7 +136,6 @@ class IslandService : Service() {
         }
     }
 
-    // SỬA ACTION_USER_PRESENT Ở ĐÂY
     private val unlockReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == Intent.ACTION_USER_PRESENT) playFaceUnlockAnimation()
@@ -179,8 +178,6 @@ class IslandService : Service() {
         }
         applyPreferences()
         AppPrefs.get(this).edit().putBoolean(AppPrefs.SERVICE_ENABLED, true).apply()
-        
-        // SỬA ACTION_USER_PRESENT Ở ĐÂY
         try {
             if (Build.VERSION.SDK_INT >= 33) {
                 registerReceiver(configReceiver, IntentFilter(ACTION_APPLY_CONFIG), Context.RECEIVER_NOT_EXPORTED)
@@ -985,9 +982,8 @@ class IslandService : Service() {
                     faceUnlockRemoval = null
                 }
             }
-            // SỬA THỜI GIAN ĐỒNG BỘ 1800L Ở ĐÂY
             faceUnlockRemoval = remove
-            handler.postDelayed(remove, 1800L)
+            handler.postDelayed(remove, 2200L)
         } catch (_: Exception) {
             faceUnlockOverlay = null
             faceUnlockOverlayManager = null
@@ -1291,7 +1287,7 @@ class IslandService : Service() {
         val videoAspect = videoWidth.toFloat() / videoHeight.toFloat()
         val viewAspect = viewWidth / viewHeight
         val scaleX = if (videoAspect > viewAspect) videoAspect / viewAspect else 1f
-        val scaleY = if (videoAspect < viewAspect) viewAspect / videoAspect else 1f
+        val scaleY = if (videoAspect < viewAspect) viewAspect / viewAspect else 1f
         val matrix = Matrix()
         matrix.setScale(scaleX, scaleY, viewWidth / 2f, viewHeight / 2f)
         texture.setTransform(matrix)
