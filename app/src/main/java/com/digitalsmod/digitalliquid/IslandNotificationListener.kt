@@ -10,11 +10,6 @@ import android.service.notification.StatusBarNotification
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * Reads only the existence/type of ongoing system notifications.
- * Screen recording drives DigitalLiquid's REC animation. Media, Clock, calls and
- * audio-recording activities suppress this overlay so HyperOS can remain in control.
- */
 class IslandNotificationListener : NotificationListenerService() {
     override fun onCreate() {
         super.onCreate()
@@ -75,13 +70,11 @@ class IslandNotificationListener : NotificationListenerService() {
         val pkg = sbn.packageName.lowercase(Locale.ROOT)
         val extras = notification.extras
 
-        // 1. Bắt buộc phải là thông báo dạng duy trì (ongoing)
         val ongoing = sbn.isOngoing ||
             (notification.flags and Notification.FLAG_ONGOING_EVENT) != 0 ||
             (notification.flags and Notification.FLAG_NO_CLEAR) != 0
         if (!ongoing) return false
 
-        // 2. LOẠI BỎ NGHÊM NGẶT thông báo Trình phát đa phương tiện (YouTube, Music, MediaSession)
         if (extras != null) {
             if (extras.containsKey(Notification.EXTRA_MEDIA_SESSION)) return false
             val template = extras.getString(Notification.EXTRA_TEMPLATE).orEmpty()
@@ -89,11 +82,9 @@ class IslandNotificationListener : NotificationListenerService() {
         }
         if (notification.category == Notification.CATEGORY_TRANSPORT) return false
 
-        // 3. Kiểm tra Channel ID (Android 8+): Bỏ qua tất cả các kênh Media/Playback/Music
         val channelId = if (Build.VERSION.SDK_INT >= 26) notification.channelId.orEmpty().lowercase(Locale.ROOT) else ""
         if (channelId.contains("media") || channelId.contains("playback") || channelId.contains("music")) return false
 
-        // 4. Chỉ chấp nhận gói ứng dụng Quay màn hình chuyên dụng hoặc SystemUI
         val recorderPackage = isScreenRecorderPackage(pkg)
         val systemUiPackage = pkg == "com.android.systemui" || pkg == "com.miui.systemui" ||
             pkg == "com.miui.systemui.plugin"
@@ -101,7 +92,6 @@ class IslandNotificationListener : NotificationListenerService() {
 
         val text = notificationText(sbn)
 
-        // 5. LOẠI BỎ thông báo Ghi âm âm thanh / Cuộc gọi
         val audioRecordingWords = listOf(
             "call recording", "voice recording", "audio recording", "recording audio", "sound recorder",
             "ghi âm cuộc gọi", "ghi âm giọng nói", "ghi âm âm thanh", "đang ghi âm", "máy ghi âm", "录音", "通话录音"
@@ -109,7 +99,6 @@ class IslandNotificationListener : NotificationListenerService() {
         if (audioRecordingWords.any(text::contains)) return false
         if (pkg.contains("soundrecorder") || pkg.contains("voicerecorder") || pkg.contains("audio.recorder")) return false
 
-        // 6. Kiểm tra ngữ cảnh từ khóa quay màn hình
         val recorderContextWords = listOf(
             "screen recorder", "screen recording", "screenrecord", "screen_record",
             "quay màn hình", "ghi màn hình", "录屏", "屏幕录制", "录制屏幕"
@@ -130,10 +119,8 @@ class IslandNotificationListener : NotificationListenerService() {
         )
         val hasActivePhrase = explicitActiveWords.any(text::contains)
 
-        // Nếu là ứng dụng quay màn hình chuyên dụng và có câu xác nhận đang quay
         if (recorderPackage && hasActivePhrase) return true
 
-        // Kiểm tra nút điều khiển của thông báo (Actions)
         val actions = notification.actions
         if (actions != null) {
             val stopWords = listOf("stop", "finish", "end recording", "dừng", "kết thúc", "停止", "结束")
@@ -157,7 +144,6 @@ class IslandNotificationListener : NotificationListenerService() {
             }
         }
 
-        // Trường hợp SystemUI khi thực sự đang quay màn hình
         if (systemUiPackage && hasActivePhrase) {
             return true
         }
