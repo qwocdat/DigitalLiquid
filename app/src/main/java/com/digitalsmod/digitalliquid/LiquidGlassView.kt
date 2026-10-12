@@ -156,7 +156,8 @@ class LiquidGlassView(context: Context) : View(context) {
 
         rimPaint.shader = LinearGradient(
             0f, 0f, w, h,
-            intArrayOf(0x75FFFFFF, 0x18D9E7FF, 0x4AFFFFFF, 0x12FFFFFF),
+            // A barely visible edge at rest; the bright smear is driven by motion only.
+            intArrayOf(0x20FFFFFF, 0x08D9E7FF, 0x18FFFFFF, 0x06FFFFFF),
             floatArrayOf(0f, 0.38f, 0.74f, 1f), Shader.TileMode.CLAMP
         )
         canvas.drawRoundRect(bodyRect, radius, radius, rimPaint)
@@ -231,7 +232,7 @@ class LiquidGlassView(context: Context) : View(context) {
                 float lowerSheen = exp(-pow((uv.y - 0.91) * 17.0, 2.0));
                 float sheenX = fract(uPhase * 0.72);
                 float movingSheen = exp(-pow((uv.x - sheenX) * 28.0, 2.0));
-                float light = (topSheen * 0.12 + lowerSheen * 0.032 + movingSheen * 0.105) * uIntensity;
+                float light = (topSheen * 0.055 + lowerSheen * 0.014 + movingSheen * 0.048) * uIntensity;
 
                 float motion = clamp(uMotion, 0.0, 1.0);
                 float displacement = uDirection * motion * 21.0;
@@ -246,7 +247,8 @@ class LiquidGlassView(context: Context) : View(context) {
                 float3 body = uTint.rgb * (0.83 + uv.y * 0.09);
                 float3 color = body;
                 color += float3(0.54, 0.61, 0.76) * light;
-                color += float3(0.48, 0.55, 0.70) * rim * (0.12 + uIntensity * 0.23);
+                // Keep the rim subdued when idle. It gains a hint of brightness only while moving.
+                color += float3(0.48, 0.55, 0.70) * rim * (0.025 + motion * 0.075);
                 color += float3(0.20, 0.24, 0.34) * trail;
                 color += float3(0.72, 0.80, 0.96) * leading;
                 float alpha = max(mask * 0.985, trail * 0.30);
