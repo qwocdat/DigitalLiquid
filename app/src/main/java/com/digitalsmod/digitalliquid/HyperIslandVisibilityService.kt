@@ -167,7 +167,6 @@ class HyperIslandVisibilityService : AccessibilityService() {
                 )
             }
         } catch (_: Exception) {
-            // If accessibility data is temporarily unavailable, don't permanently hide the pill.
             IslandService.setHyperIslandVisibilityOverride(false)
             IslandService.setAccessibilityScreenRecordingActive(false)
             IslandService.setCameraActivityActive(cameraForegroundActive)
@@ -217,8 +216,6 @@ class HyperIslandVisibilityService : AccessibilityService() {
             "cuộc gọi", "đang sạc", "chia sẻ", "định vị", "播放", "计时",
             "通话", "充电", "导航", "正在播放"
         )
-        // Only phrases that imply a live capture count. Merely opening the recorder UI
-        // often exposes labels like "Screen recorder" or "Screen recording" in its tree.
         val recordingWords = listOf(
             "screen is being recorded", "recording your screen", "recording screen",
             "recording in progress", "tap to stop recording", "stop screen recording", "stop recording",
@@ -314,8 +311,6 @@ class HyperIslandVisibilityService : AccessibilityService() {
                 val labelHint = activityWords.any(visibleLabel::contains)
                 val longVisibleLabel = visibleLabel.isNotBlank() &&
                     width >= (132 * density).toInt() && height >= (22 * density).toInt()
-                // Do not mistake the recorder chip/label for HyperIsland itself: recording
-                // is exactly the activity this companion is meant to add an effect for.
                 if (allowIslandDetection && !isScreenRecordingNode && atCameraPosition && pillShape &&
                     (idHint || labelHint || longVisibleLabel)) {
                     result.hyperIslandVisible = true
@@ -334,16 +329,12 @@ class HyperIslandVisibilityService : AccessibilityService() {
             try { queue.removeFirst().first.recycle() } catch (_: Exception) { }
         }
 
-        // Bỏ qua nếu giao diện thuộc màn hình Cài đặt của ứng dụng quay phim
         if (hasSettingsUi) {
             return
         }
 
         val activeRecordingTrigger = explicitActivePhraseVisible || (hasTimerText && !hasMediaContext)
 
-        // Do not let ordinary foreground-app text (for example a YouTube title or caption)
-        // set REC. A positive must come from the recorder's own package, or from a SystemUI
-        // recording indicator/notification with explicit recorder context and no Start action.
         if (recorderAppRoot && (activeRecordingTrigger || (stopActionVisible && !startActionVisible))) {
             result.screenRecordingVisible = true
         } else if (sourcePkgIsSystemUi(sourcePackage) && !hasMediaContext && recorderContextVisible &&
