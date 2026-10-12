@@ -136,9 +136,10 @@ class IslandService : Service() {
         }
     }
 
+    // SỬA ACTION_USER_PRESENT Ở ĐÂY
     private val unlockReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == Intent.ACTION_SCREEN_ON) playFaceUnlockAnimation()
+            if (intent?.action == Intent.ACTION_USER_PRESENT) playFaceUnlockAnimation()
         }
     }
 
@@ -178,17 +179,19 @@ class IslandService : Service() {
         }
         applyPreferences()
         AppPrefs.get(this).edit().putBoolean(AppPrefs.SERVICE_ENABLED, true).apply()
+        
+        // SỬA ACTION_USER_PRESENT Ở ĐÂY
         try {
             if (Build.VERSION.SDK_INT >= 33) {
                 registerReceiver(configReceiver, IntentFilter(ACTION_APPLY_CONFIG), Context.RECEIVER_NOT_EXPORTED)
                 registerReceiver(orientationReceiver, IntentFilter(Intent.ACTION_CONFIGURATION_CHANGED), Context.RECEIVER_NOT_EXPORTED)
-                registerReceiver(unlockReceiver, IntentFilter(Intent.ACTION_SCREEN_ON), Context.RECEIVER_NOT_EXPORTED)
+                registerReceiver(unlockReceiver, IntentFilter(Intent.ACTION_USER_PRESENT), Context.RECEIVER_NOT_EXPORTED)
             } else {
                 @Suppress("DEPRECATION")
                 registerReceiver(configReceiver, IntentFilter(ACTION_APPLY_CONFIG))
                 @Suppress("DEPRECATION")
                 registerReceiver(orientationReceiver, IntentFilter(Intent.ACTION_CONFIGURATION_CHANGED))
-                registerReceiver(unlockReceiver, IntentFilter(Intent.ACTION_SCREEN_ON))
+                registerReceiver(unlockReceiver, IntentFilter(Intent.ACTION_USER_PRESENT))
             }
         } catch (_: Exception) { }
         waitForAccessibilityOverlay()
@@ -982,8 +985,9 @@ class IslandService : Service() {
                     faceUnlockRemoval = null
                 }
             }
+            // SỬA THỜI GIAN ĐỒNG BỘ 1800L Ở ĐÂY
             faceUnlockRemoval = remove
-            handler.postDelayed(remove, 1900L)
+            handler.postDelayed(remove, 1800L)
         } catch (_: Exception) {
             faceUnlockOverlay = null
             faceUnlockOverlayManager = null
