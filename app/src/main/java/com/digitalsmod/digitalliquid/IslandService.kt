@@ -71,7 +71,9 @@ class IslandService : Service() {
     private var backgroundScrim: View? = null
     private var params: WindowManager.LayoutParams? = null
 
+    // TRẠNG THÁI FACE ID HỢP NHẤT TẠI VIÊN THUỐC
     private var faceUnlocking = false
+    private var isFaceUnlockShrinking = false
     private var currentMorphProgress = 0f
 
     private var widthDp = 148
@@ -260,7 +262,7 @@ class IslandService : Service() {
 
     private fun isRecordingControlExpanded(): Boolean = panelOpen && screenRecording && recordingExpanded
 
-    private fun targetHostInsetPx(): Int = if (panelOpen || isRecordingControlExpanded() || faceUnlocking) 0 else dp(TRAIL_EXTENT_DP)
+    private fun targetHostInsetPx(): Int = if (panelOpen || isRecordingControlExpanded() || faceUnlocking || isFaceUnlockShrinking) 0 else dp(TRAIL_EXTENT_DP)
 
     private fun targetWindowWidth(): Int = if (isRecordingControlExpanded()) {
         (displayWidthPx() - dp(12)).coerceAtLeast(dp(180))
@@ -286,10 +288,11 @@ class IslandService : Service() {
 
     private fun windowY(): Int = if (isRecordingControlExpanded()) 0 else positionY(targetHeight(), panelOpen)
 
+    // TÍNH BO TRÒN BIẾN THIÊN TỰ ĐỘNG - KHÔNG BỊ GIẬT MẶT VUÔNG KHI ĐÓNG
     private fun currentCornerRadiusDp(): Float {
         val defaultRadius = heightDp / 2f
         return when {
-            faceUnlocking -> {
+            faceUnlocking || isFaceUnlockShrinking -> {
                 lerp(defaultRadius, 38f, currentMorphProgress)
             }
             isRecordingControlExpanded() -> (targetHeight() / resources.displayMetrics.density.coerceAtLeast(1f)) / 2f
@@ -307,7 +310,7 @@ class IslandService : Service() {
         ghostLayers.forEach { ghost ->
             ghost.layoutParams = FrameLayout.LayoutParams(pillWidth, pillHeight, Gravity.CENTER)
             ghost.background = ghostCapsule(pillHeight)
-            ghost.visibility = if (wobbleAnimator != null && !panelOpen && !faceUnlocking) View.VISIBLE else View.INVISIBLE
+            ghost.visibility = if (wobbleAnimator != null && !panelOpen && !faceUnlocking && !isFaceUnlockShrinking) View.VISIBLE else View.INVISIBLE
         }
     }
 
@@ -579,7 +582,7 @@ class IslandService : Service() {
 
     private fun wobblePill() {
         val root = islandRoot ?: return
-        if (panelOpen || faceUnlocking) return
+        if (panelOpen || faceUnlocking || isFaceUnlockShrinking) return
         val motionPrefs = AppPrefs.get(this)
         if (motionPrefs.getBoolean(AppPrefs.REDUCE_MOTION, false) ||
             !motionPrefs.getBoolean(AppPrefs.TAP_WOBBLE, true)) {
@@ -708,7 +711,7 @@ class IslandService : Service() {
     }
 
     private fun openCustomizationPanel() {
-        if (panelOpen || faceUnlocking) return
+        if (panelOpen || faceUnlocking || isFaceUnlockShrinking) return
         closingPanelWithMedia = false
         panelOpen = true
         playPanelIntro = true
@@ -803,7 +806,7 @@ class IslandService : Service() {
     }
 
     private fun positionX(windowWidth: Int = targetWidth(), expanded: Boolean = panelOpen): Int {
-        if (isRecordingControlExpanded() || faceUnlocking) return 0
+        if (isRecordingControlExpanded() || faceUnlocking || isFaceUnlockShrinking) return 0
         if (isPortraitWithTopCutout()) {
             val cutout = currentCameraCutoutBounds()
             if (cutout != null) return cutout.centerX() - displayWidthPx() / 2
@@ -844,7 +847,7 @@ class IslandService : Service() {
         rootContent.removeAllViews()
         rootContent.visibility = View.VISIBLE
 
-        if (faceUnlocking) {
+        if (faceUnlocking || isFaceUnlockShrinking) {
             rootContent.setPadding(0, 0, 0, 0)
             val faceView = FaceUnlockAnimationView(this) {
                 dismissFaceUnlock()
@@ -860,14 +863,14 @@ class IslandService : Service() {
         root.clipToOutline = true
         root.clipChildren = true
         root.clipToPadding = true
-        glassView?.configure(glassStrength, tint, expandedNow = panelOpen || faceUnlocking)
-        glassView?.visibility = if (panelOpen || faceUnlocking) View.GONE else View.VISIBLE
+        glassView?.configure(glassStrength, tint, expandedNow = panelOpen || faceUnlocking || isFaceUnlockShrinking)
+        glassView?.visibility = if (panelOpen || faceUnlocking || isFaceUnlockShrinking) View.GONE else View.VISIBLE
         updatePrivacyDot()
 
         val customUri = prefs.getString(PANEL_BACKGROUND_URI, null)
-        val showMediaOnTop = !isRecordingControlExpanded() && !faceUnlocking && (panelOpen || closingPanelWithMedia) && !customUri.isNullOrBlank()
+        val showMediaOnTop = !isRecordingControlExpanded() && !faceUnlocking && !isFaceUnlockShrinking && (panelOpen || closingPanelWithMedia) && !customUri.isNullOrBlank()
 
-        if (!faceUnlocking) {
+        if (!faceUnlocking && !isFaceUnlockShrinking) {
             if (isRecordingControlExpanded()) {
                 renderRecordingControlPanel(rootContent)
             } else if (panelOpen) {
@@ -903,10 +906,10 @@ class IslandService : Service() {
 
     private fun updatePrivacyDot() {
         val dot = idleDot ?: return
-        val color = if (cameraActive) 0xFF30D158.toInt() else 0xFFFF9F0A.toInt()
+        val color = if (cameraActive) 0xFF30D158.toInt() else 0xFFFFD36E.toInt()
         (dot.background as? GradientDrawable)?.setColor(color)
-        dot.alpha = if (cameraActive) 1f else 0.96f
-        dot.visibility = if (!panelOpen && !screenRecording && !faceUnlocking) View.VISIBLE else View.GONE
+        dot.alpha = if (cameraActive) 1f else 0.95f
+        dot.visibility = if (!panelOpen && !screenRecording && !faceUnlocking && !isFaceUnlockShrinking) View.VISIBLE else View.GONE
         dot.contentDescription = if (cameraActive) "Camera đang hoạt động" else "DigitalLiquid trạng thái chờ"
     }
 
@@ -915,7 +918,7 @@ class IslandService : Service() {
         val host = overlayHost ?: return
         val lp = params ?: return
         val nativeIslandVisible = hyperIslandVisibilityOverride == true || nativeActivityActive
-        val suppress = !screenRecording && !cameraActive && nativeIslandVisible && !faceUnlocking
+        val suppress = !screenRecording && !cameraActive && nativeIslandVisible && !faceUnlocking && !isFaceUnlockShrinking
         val wantedVisibility = if (suppress) View.GONE else View.VISIBLE
         val hasNotTouchable = (lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) != 0
         if (host.visibility != wantedVisibility || hasNotTouchable != suppress) {
@@ -941,15 +944,22 @@ class IslandService : Service() {
         if (!prefs.getBoolean(AppPrefs.FACE_UNLOCK_EFFECT, true) ||
             prefs.getBoolean(AppPrefs.REDUCE_MOTION, false)) return
 
-        if (faceUnlocking) return
+        if (faceUnlocking || isFaceUnlockShrinking) return
         faceUnlocking = true
+        isFaceUnlockShrinking = false
         render(animateSize = true)
     }
 
+    // DUY TRÌ THU NHỎ MƯỢT MÀ KHÔNG BỊ GIẬT MẶT VUÔNG
     private fun dismissFaceUnlock() {
-        if (!faceUnlocking) return
+        if (!faceUnlocking || isFaceUnlockShrinking) return
+        isFaceUnlockShrinking = true
         faceUnlocking = false
-        render(animateSize = true)
+
+        animateToTargetSize {
+            isFaceUnlockShrinking = false
+            render(animateSize = false)
+        }
     }
 
     private fun renderRecordingControlPanel(target: LinearLayout) {
@@ -1152,14 +1162,14 @@ class IslandService : Service() {
         val uriString = AppPrefs.get(this).getString(PANEL_BACKGROUND_URI, null)
         val recordingControlOwnsOverlay = isRecordingControlExpanded()
         if (recordingControlOwnsOverlay) closingPanelWithMedia = false
-        val shouldShow = !recordingControlOwnsOverlay && !faceUnlocking && (panelOpen || closingPanelWithMedia) && !uriString.isNullOrBlank()
+        val shouldShow = !recordingControlOwnsOverlay && !faceUnlocking && !isFaceUnlockShrinking && (panelOpen || closingPanelWithMedia) && !uriString.isNullOrBlank()
         if (!shouldShow) {
             stopPanelMedia()
             host.removeAllViews()
             lastBackgroundUri = null
             host.visibility = View.GONE
             scrim.visibility = View.GONE
-            rootContent.visibility = if (panelOpen || faceUnlocking) View.VISIBLE else View.VISIBLE
+            rootContent.visibility = if (panelOpen || faceUnlocking || isFaceUnlockShrinking) View.VISIBLE else View.VISIBLE
             return
         }
 
@@ -1274,7 +1284,7 @@ class IslandService : Service() {
         }
     }
 
-    private fun animateToTargetSize() {
+    private fun animateToTargetSize(onEnd: (() -> Unit)? = null) {
         val root = islandRoot ?: return
         val host = overlayHost ?: return
         val lp = params ?: return
@@ -1311,6 +1321,7 @@ class IslandService : Service() {
                 syncPanelBackground()
             }
             applyNativeActivityVisibility()
+            onEnd?.invoke()
             return
         }
 
@@ -1319,7 +1330,7 @@ class IslandService : Service() {
         val targetMorph = if (opening) 1f else 0f
 
         resizeAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = if (faceUnlocking) 360L else if (opening) 420L else 460L
+            duration = if (faceUnlocking || isFaceUnlockShrinking) 380L else if (opening) 420L else 460L
             interpolator = PathInterpolator(0.22f, 1f, 0.36f, 1f)
             addUpdateListener { animator ->
                 val t = animator.animatedValue as Float
@@ -1361,6 +1372,7 @@ class IslandService : Service() {
                         syncPanelBackground()
                     }
                     applyNativeActivityVisibility()
+                    onEnd?.invoke()
                 }
             })
             start()
