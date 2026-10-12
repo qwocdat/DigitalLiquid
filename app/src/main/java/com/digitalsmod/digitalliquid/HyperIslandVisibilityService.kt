@@ -61,6 +61,51 @@ class HyperIslandVisibilityService : AccessibilityService() {
         scheduleScan(35L)
     }
 
+    private fun clickVisibleStopRecordingAction(): Boolean {
+        val stopPhrases = listOf(
+            "stop screen recording", "stop recording", "end recording", "finish recording",
+            "dừng quay màn hình", "dừng ghi màn hình", "kết thúc quay", "kết thúc ghi màn hình",
+            "停止录屏", "停止屏幕录制", "停止录制", "结束录屏", "结束录制"
+        )
+        val shortStopLabels = listOf("stop", "dừng", "kết thúc", "停止", "结束")
+        val startLabels = listOf("start recording", "record screen", "begin recording", "bắt đầu quay", "开始录制", "开始")
+        val contextWords = listOf("screen recorder", "screen recording", "screenrecord", "screen_record", "quay màn hình", "录屏", "屏幕录制")
+        val currentWindows = try { windows ?: emptyList() } catch (_: Exception) { emptyList() }
+        for (window in currentWindows) {
+            val root = try { window.root } catch (_: Exception) { null } ?: continue
+            val nodes = ArrayList<AccessibilityNodeInfo>()
+            val queue = ArrayDeque<AccessibilityNodeInfo>()
+            queue.add(root)
+            var visited = 0
+            try {
+                while (queue.isNotEmpty() && visited < 500) {
+                    val node = queue.removeFirst()
+                    nodes.add(node)
+                    visited++
+                    for (i in 0 until node.childCount) {
+                        try { node.getChild(i)?.let(queue::add) } catch (_: Exception) { }
+                    }
+                }
+                val pkg = root.packageName?.toString().orEmpty().lowercase()
+                val labels = nodes.map { "${it.text ?: ""} ${it.contentDescription ?: ""} ${it.viewIdResourceName.orEmpty()}".lowercase() }
+                val hasRecorderContext = isScreenRecorderPackage(pkg) || labels.any { label -> contextWords.any(label::contains) }
+                val hasStartAction = nodes.indices.any { i -> nodes[i].isClickable && startLabels.any(labels[i]::contains) }
+                val directMatch = nodes.indices.firstOrNull { i ->
+                    nodes[i].isVisibleToUser && nodes[i].isEnabled && nodes[i].isClickable && stopPhrases.any(labels[i]::contains)
+                }
+                val contextualStop = if (hasRecorderContext && !hasStartAction) nodes.indices.firstOrNull { i ->
+                    nodes[i].isVisibleToUser && nodes[i].isEnabled && nodes[i].isClickable && shortStopLabels.any(labels[i]::contains)
+                } else null
+                val chosen = directMatch ?: contextualStop
+                if (chosen != null && nodes[chosen].performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+            } catch (_: Exception) {
+            } finally {
+                nodes.forEach { try { it.recycle() } catch (_: Exception) { } }
+            }
+        }
+        return false
+    }
+
     private fun isCameraPackage(packageName: String): Boolean =
         packageName in CAMERA_PACKAGES ||
             (packageName.startsWith("com.") && packageName.contains("camera") &&
@@ -184,6 +229,15 @@ class HyperIslandVisibilityService : AccessibilityService() {
             "máy ảnh đang được sử dụng", "đang sử dụng máy ảnh", "camera đang hoạt động",
             "đang dùng camera", "正在使用相机", "正在使用摄像头"
         )
+        var recorderContextVisible = isScreenRecorderPackage(root.packageName?.toString().orEmpty().lowercase())
+        var stopActionVisible = false
+        var startActionVisible = false
+        val recorderContextWords = listOf(
+            "screen recorder", "screen recording", "screenrecord", "screen_record",
+            "quay màn hình", "ghi màn hình", "录屏", "屏幕录制", "录制屏幕"
+        )
+        val stopActionWords = listOf("stop", "finish", "end recording", "dừng", "kết thúc", "停止", "结束")
+        val startActionWords = listOf("start recording", "record screen", "begin recording", "bắt đầu quay", "开始录制", "开始")
         while (queue.isNotEmpty() && visited < 700) {
             val (node, depth) = queue.removeFirst()
             visited++
@@ -198,6 +252,12 @@ class HyperIslandVisibilityService : AccessibilityService() {
                 val resourceId = try { node.viewIdResourceName.orEmpty().lowercase() } catch (_: Exception) { "" }
                 val visibleLabel = "$text $description".lowercase()
                 val searchableLabel = "$visibleLabel $resourceId"
+                if (recorderContextWords.any(searchableLabel::contains) ||
+                    listOf("screen_recording_indicator", "recording_indicator", "screen_recording_chip").any(resourceId::contains)) {
+                    recorderContextVisible = true
+                }
+                if (node.isClickable && stopActionWords.any(searchableLabel::contains)) stopActionVisible = true
+                if (node.isClickable && startActionWords.any(searchableLabel::contains)) startActionVisible = true
 
                 val isScreenRecordingNode = recordingWords.any(searchableLabel::contains)
                 if (!result.screenRecordingVisible && isScreenRecordingNode) {
@@ -243,6 +303,9 @@ class HyperIslandVisibilityService : AccessibilityService() {
         while (queue.isNotEmpty()) {
             try { queue.removeFirst().first.recycle() } catch (_: Exception) { }
         }
+        if (!result.screenRecordingVisible && recorderContextVisible && stopActionVisible && !startActionVisible) {
+            result.screenRecordingVisible = true
+        }
     }
 
     override fun onInterrupt() = Unit
@@ -265,6 +328,11 @@ class HyperIslandVisibilityService : AccessibilityService() {
         fun overlayWindowManager(): WindowManager? {
             val service = connectedInstance ?: return null
             return try { service.getSystemService(WINDOW_SERVICE) as? WindowManager } catch (_: Exception) { null }
+        }
+
+        fun requestStopRecordingFromAccessibility(): Boolean {
+            val service = connectedInstance ?: return false
+            return try { service.clickVisibleStopRecordingAction() } catch (_: Exception) { false }
         }
 
         private val SYSTEM_UI_PACKAGES = setOf(
