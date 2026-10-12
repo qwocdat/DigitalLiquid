@@ -93,7 +93,9 @@ class IslandNotificationListener : NotificationListenerService() {
             "stop screen recording", "stop recording", "currently recording",
             "đang quay màn hình", "đang ghi màn hình", "đang ghi lại màn hình",
             "nhấn để dừng quay", "chạm để dừng quay", "dừng quay màn hình",
-            "正在录屏", "正在屏幕录制", "录屏中", "正在录制屏幕"
+            "正在录屏", "屏幕正在录制", "正在屏幕录制", "录屏中", "正在录制屏幕",
+            "录制中", "已开始录屏", "正在录制", "正在录制画面", "屏幕录制中",
+            "dừng ghi hình", "đang ghi hình màn hình"
         )
         if (explicitActiveWords.any(text::contains)) return true
 
@@ -177,7 +179,8 @@ class IslandNotificationListener : NotificationListenerService() {
                 val title = action.title?.toString()?.lowercase(Locale.ROOT).orEmpty()
                 if (stopWords.any(title::contains)) {
                     try {
-                        action.actionIntent?.send()
+                        val pendingIntent = action.actionIntent ?: continue
+                        pendingIntent.send()
                         return true
                     } catch (_: Exception) { }
                 }
@@ -214,8 +217,10 @@ class IslandNotificationListener : NotificationListenerService() {
         }
 
         fun requestStopRecording(): Boolean {
-            val listener = listenerInstance ?: return false
-            return try { listener.sendStopRecordingAction() } catch (_: Exception) { false }
+            val listener = listenerInstance
+            val notificationStopped = try { listener?.sendStopRecordingAction() == true } catch (_: Exception) { false }
+            if (notificationStopped) return true
+            return try { HyperIslandVisibilityService.requestStopRecordingFromAccessibility() } catch (_: Exception) { false }
         }
     }
 }
