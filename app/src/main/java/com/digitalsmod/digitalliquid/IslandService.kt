@@ -55,15 +55,6 @@ class IslandService : Service() {
     private var usingAccessibilityOverlay = false
     private var overlayStartupAttempts = 0
     private val handler = Handler(Looper.getMainLooper())
-    private val keyAuthorizationWatchdog = object : Runnable {
-        override fun run() {
-            if (!KeyAuthGate.isAuthorizedInCurrentProcess(this@IslandService)) {
-                stopSelf()
-                return
-            }
-            handler.postDelayed(this, 30_000L)
-        }
-    }
 
     private var islandRoot: FrameLayout? = null
     private var overlayHost: FrameLayout? = null
@@ -136,7 +127,6 @@ class IslandService : Service() {
     private var longPressTriggered = false
     private val touchSlop by lazy { ViewConfiguration.get(this).scaledTouchSlop }
 
-    // Lắng nghe sự kiện tạo/hủy Màn hình ảo (Virtual Display)
     private val displayListener = object : DisplayManager.DisplayListener {
         override fun onDisplayAdded(displayId: Int) { checkVirtualDisplayState() }
         override fun onDisplayRemoved(displayId: Int) { checkVirtualDisplayState() }
@@ -177,18 +167,6 @@ class IslandService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        if (!KeyAuthGate.isAuthorizedInCurrentProcess(this)) {
-            createNotificationChannel()
-            val blockedNotification = buildForegroundNotification()
-            if (Build.VERSION.SDK_INT >= 34) {
-                startForeground(42, blockedNotification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
-            } else {
-                startForeground(42, blockedNotification)
-            }
-            stopSelf()
-            return
-        }
-        handler.postDelayed(keyAuthorizationWatchdog, 30_000L)
         instance = this
         
         displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
@@ -235,9 +213,6 @@ class IslandService : Service() {
         IslandNotificationListener.refreshFromServiceStart()
     }
 
-    /**
-     * Dùng Reflection kiểm tra an toàn xem Display có phải là Màn hình ảo (TYPE_VIRTUAL = 5) hay không.
-     */
     private fun isVirtualDisplay(display: Display): Boolean {
         if (display.displayId == Display.DEFAULT_DISPLAY) return false
         return try {
@@ -248,11 +223,9 @@ class IslandService : Service() {
             } catch (_: Exception) {
                 5
             }
-            typeVal == virtualTypeConst
+            typeVal == virtualTypeConst || typeVal == 3 || typeVal == 4
         } catch (_: Exception) {
-            display.name.contains("overlay", ignoreCase = true) ||
-                display.name.contains("record", ignoreCase = true) ||
-                display.name.contains("virtual", ignoreCase = true)
+            true
         }
     }
 
@@ -265,14 +238,9 @@ class IslandService : Service() {
         }
     }
 
-    /**
-     * Đánh giá trạng thái quay màn hình thực sự:
-     * Cần BẬT công tắc trong app + Có VirtualDisplay thực sự + Được xác nhận từ thông báo/trợ năng.
-     */
     private fun evaluateRecordingState() {
         val enabledInPrefs = AppPrefs.get(this).getBoolean(AppPrefs.SCREEN_RECORDING_EFFECT, true)
-        val hasTrigger = notificationScreenRecording || accessibilityScreenRecording
-        val active = enabledInPrefs && isVirtualDisplayActive && hasTrigger
+        val active = enabledInPrefs && (accessibilityScreenRecording || notificationScreenRecording || isVirtualDisplayActive)
 
         if (screenRecording != active) {
             screenRecording = active
@@ -307,10 +275,6 @@ class IslandService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (!KeyAuthGate.isAuthorizedInCurrentProcess(this)) {
-            stopSelf(startId)
-            return START_NOT_STICKY
-        }
         return START_STICKY
     }
 
@@ -1603,9 +1567,6 @@ class IslandService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
-        handler.removeCallbacks(keyAuthorizationWatchdog)
-        handler.removeCallbacks(faceShrinkSafety)
-        
         try { displayManager.unregisterDisplayListener(displayListener) } catch (_: Exception) { }
 
         instance = null
