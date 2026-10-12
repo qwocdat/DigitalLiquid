@@ -64,7 +64,12 @@ class IslandService : Service() {
             handler.postDelayed(this, 30_000L)
         }
     }
+    // islandRoot is the interactive pill. overlayHost is the wider, transparent window
+    // that gives the temporal echo layers real space beyond the pill's silhouette.
     private var islandRoot: FrameLayout? = null
+    private var overlayHost: FrameLayout? = null
+    private val ghostLayers = mutableListOf<View>()
+    private var hostInsetPx = 0
     private var content: LinearLayout? = null
     private var glassView: LiquidGlassView? = null
     private var backgroundHost: FrameLayout? = null
@@ -87,6 +92,7 @@ class IslandService : Service() {
     private var hyperIslandVisibilityOverride: Boolean? = null
     private var idleDot: View? = null
     private var wobbleAnimator: ValueAnimator? = null
+    private var preservingWobbleOnCancel = false
     private var panelMediaPlayer: MediaPlayer? = null
     private var panelVideoSurface: Surface? = null
     private var panelTextureView: TextureView? = null
@@ -241,6 +247,64 @@ class IslandService : Service() {
         tint = prefs.getString(AppPrefs.TINT, "midnight") ?: "midnight"
     }
 
+    private fun isRecordingControlExpanded(): Boolean = panelOpen && screenRecording && recordingExpanded
+
+    private fun targetHostInsetPx(): Int = if (panelOpen || isRecordingControlExpanded()) 0 else dp(TRAIL_EXTENT_DP)
+
+    private fun targetWindowWidth(): Int = if (isRecordingControlExpanded()) {
+        displayWidthPx()
+    } else {
+        targetWidth() + targetHostInsetPx() * 2
+    }
+
+    private fun windowGravity(): Int = if (isRecordingControlExpanded()) {
+        Gravity.TOP or Gravity.CENTER_HORIZONTAL
+    } else gravityForWindow()
+
+    private fun windowX(): Int {
+        if (isRecordingControlExpanded()) return 0
+        val inset = targetHostInsetPx()
+        val pillX = positionX(targetWidth(), panelOpen)
+        val gravity = windowGravity()
+        return when {
+            (gravity and Gravity.HORIZONTAL_GRAVITY_MASK) == Gravity.LEFT -> pillX - inset
+            (gravity and Gravity.HORIZONTAL_GRAVITY_MASK) == Gravity.RIGHT -> pillX - inset
+            else -> pillX
+        }
+    }
+
+    private fun windowY(): Int = if (isRecordingControlExpanded()) 0 else positionY(targetHeight(), panelOpen)
+
+    private fun currentCornerRadiusDp(): Float = when {
+        isRecordingControlExpanded() -> 0f
+        panelOpen -> 30f
+        else -> heightDp / 2f
+    }
+
+    private fun syncOverlayChildBounds(pillWidth: Int = targetWidth(), pillHeight: Int = targetHeight()) {
+        val root = islandRoot ?: return
+        val centeredParams = FrameLayout.LayoutParams(pillWidth, pillHeight, Gravity.CENTER)
+        root.layoutParams = centeredParams
+        ghostLayers.forEach { ghost ->
+            ghost.layoutParams = FrameLayout.LayoutParams(pillWidth, pillHeight, Gravity.CENTER)
+            ghost.background = ghostCapsule(pillHeight)
+            ghost.visibility = if (wobbleAnimator != null && !panelOpen) View.VISIBLE else View.INVISIBLE
+        }
+    }
+
+    private fun ghostCapsule(heightPx: Int): GradientDrawable = GradientDrawable().apply {
+        shape = GradientDrawable.RECTANGLE
+        setColor(0xFF080A10.toInt())
+        setStroke(dp(1), 0x446F7D96)
+        cornerRadius = heightPx / 2f
+    }
+
+    private fun updateOverlayWindow(lp: WindowManager.LayoutParams? = params) {
+        val host = overlayHost ?: return
+        val layout = lp ?: return
+        try { windowManager.updateViewLayout(host, layout) } catch (_: Exception) { }
+    }
+
     @Suppress("DEPRECATION")
     private fun showIsland() {
         if (islandRoot != null) return
@@ -272,7 +336,7 @@ class IslandService : Service() {
             isFocusable = false
         }
         val root = FrameLayout(this).apply {
-            background = roundedBackground(if (panelOpen) 30f else heightDp / 2f, Color.BLACK)
+            background = roundedBackground(currentCornerRadiusDp(), Color.BLACK)
             clipToOutline = true
             clipChildren = true
             clipToPadding = true
@@ -325,8 +389,44 @@ class IslandService : Service() {
         content = innerContent
         islandRoot = root
 
+        val host = FrameLayout(this).apply {
+            setBackgroundColor(Color.TRANSPARENT)
+            clipChildren = false
+            clipToPadding = false
+            isClickable = false
+            isFocusable = false
+            setLayerType(View.LAYER_TYPE_HARDWARE, null)
+        }
+        ghostLayers.clear()
+        // Seven independently blurred afterimages. The user requested visual richness over
+        // conserving GPU work, so keep the longer, multi-layer trail rather than collapsing it
+        // into a single blur pass.
+        val ghostBlurDp = floatArrayOf(1.2f, 2.0f, 2.9f, 4.1f, 5.5f, 7.2f, 9.2f)
+        val ghostBaseAlpha = floatArrayOf(0.44f, 0.37f, 0.31f, 0.25f, 0.20f, 0.15f, 0.10f)
+        for (i in ghostBlurDp.indices) {
+            val ghost = View(this).apply {
+                background = ghostCapsule(targetHeight())
+                alpha = ghostBaseAlpha[i]
+                visibility = View.INVISIBLE
+                isClickable = false
+                isFocusable = false
+                if (Build.VERSION.SDK_INT >= 31) {
+                    try {
+                        setRenderEffect(android.graphics.RenderEffect.createBlurEffect(
+                            dp(ghostBlurDp[i]), dp(ghostBlurDp[i] * 0.45f), android.graphics.Shader.TileMode.CLAMP
+                        ))
+                    } catch (_: Exception) { }
+                }
+            }
+            ghostLayers.add(ghost)
+            host.addView(ghost, FrameLayout.LayoutParams(targetWidth(), targetHeight(), Gravity.CENTER))
+        }
+        host.addView(root, FrameLayout.LayoutParams(targetWidth(), targetHeight(), Gravity.CENTER))
+        overlayHost = host
+        hostInsetPx = targetHostInsetPx()
+
         val initialParams = WindowManager.LayoutParams(
-            targetWidth(),
+            targetWindowWidth(),
             targetHeight(),
             overlayWindowType(),
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
@@ -335,12 +435,27 @@ class IslandService : Service() {
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = gravityForWindow()
-            x = positionX(width, panelOpen)
-            y = positionY(height, panelOpen)
-            if (Build.VERSION.SDK_INT >= 30) {
-                // Request high-refresh rendering where the panel/display supports it.
-                preferredRefreshRate = 120f
+            gravity = windowGravity()
+            x = windowX()
+            y = windowY()
+            if (Build.VERSION.SDK_INT >= 23) {
+                // Request the fastest supported display mode capped at 120 Hz for this window.
+                // ValueAnimator then follows Choreographer/VSync instead of a timer loop.
+                try {
+                    @Suppress("DEPRECATION")
+                    val supported = windowManager.defaultDisplay.supportedModes.toList()
+                    val selected = supported.filter { it.refreshRate <= 120.5f }
+                        .maxByOrNull { it.refreshRate }
+                        ?: supported.minByOrNull { kotlin.math.abs(it.refreshRate - 120f) }
+                    if (selected != null) {
+                        preferredDisplayModeId = selected.modeId
+                        preferredRefreshRate = selected.refreshRate
+                    } else {
+                        preferredRefreshRate = 120f
+                    }
+                } catch (_: Exception) {
+                    preferredRefreshRate = 120f
+                }
             }
             if (Build.VERSION.SDK_INT >= 28) {
                 layoutInDisplayCutoutMode = if (Build.VERSION.SDK_INT >= 30) {
@@ -353,7 +468,7 @@ class IslandService : Service() {
         }
         params = initialParams
         try {
-            windowManager.addView(root, initialParams)
+            windowManager.addView(host, initialParams)
         } catch (_: Exception) {
             // Never silently fall back to TYPE_APPLICATION_OVERLAY: it can be below the
             // status bar, recreating the invisible/non-responsive pill bug.
@@ -361,6 +476,7 @@ class IslandService : Service() {
             stopSelf()
             return
         }
+        syncOverlayChildBounds(targetWidth(), targetHeight())
         render()
     }
 
@@ -382,6 +498,7 @@ class IslandService : Service() {
 
     private fun rebuildOverlayForAccessibilityMode() {
         val root = islandRoot ?: return
+        val host = overlayHost ?: return
         val shouldUseTrusted = HyperIslandVisibilityService.overlayWindowManager() != null
         if (!shouldUseTrusted && usingAccessibilityOverlay) {
             // Accessibility was disabled while running. Stop rather than regress to an
@@ -390,9 +507,11 @@ class IslandService : Service() {
             return
         }
         if (shouldUseTrusted == usingAccessibilityOverlay) return
-        try { windowManager.removeView(root) } catch (_: Exception) { }
+        try { windowManager.removeView(host) } catch (_: Exception) { }
         stopPanelMedia()
         islandRoot = null
+        overlayHost = null
+        ghostLayers.clear()
         content = null
         glassView = null
         backgroundHost = null
@@ -448,54 +567,113 @@ class IslandService : Service() {
 
     private fun wobblePill() {
         val root = islandRoot ?: return
-        val lp = params ?: return
         if (panelOpen) return
         if (AppPrefs.get(this).getBoolean(AppPrefs.REDUCE_MOTION, false)) {
             root.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
             return
         }
 
-        // Cancel the previous response first so its end callback restores its own starting point.
-        wobbleAnimator?.cancel()
-        val baseX = lp.x
-        val baseY = lp.y
-        val distance = dp(11).toFloat()
-        var lastOffset = 0f
-        glassView?.setMotionBlur(0f)
-        root.scaleX = 1f
-        root.scaleY = 1f
-
-        // Slow damped oscillation: less springy than the old rubber-like overshoot.
-        val animator = ValueAnimator.ofFloat(0f, 1f)
-        wobbleAnimator = animator
-        animator.duration = 1080L
-        animator.interpolator = android.view.animation.LinearInterpolator()
-        animator.addUpdateListener { frame ->
-            val t = frame.animatedValue as Float
-            val envelope = exp(-4.15f * t)
-            val phase = t * Math.PI.toFloat() * 5.0f
-            val offset = -distance * envelope * sin(phase)
-            lp.x = baseX + offset.roundToInt()
-            lp.y = baseY
-            try { windowManager.updateViewLayout(root, lp) } catch (_: Exception) { }
-
-            // Blur strength follows per-frame travel; there is no permanent halo around the pill.
-            val frameTravel = abs(offset - lastOffset)
-            val blur = (frameTravel * 0.82f).coerceIn(0f, 1f)
-            val direction = if (offset < lastOffset) -1f else 1f
-            glassView?.setMotionBlur(blur, direction)
-            lastOffset = offset
+        val wasRunning = wobbleAnimator?.isRunning == true
+        val startOffset = if (wasRunning) root.translationX else 0f
+        val startOffsetY = if (wasRunning) root.translationY else 0f
+        val startGhostOffsets = ghostLayers.mapIndexed { i, ghost ->
+            if (wasRunning) ghost.translationX else 0f
         }
+        val baseAlphas = floatArrayOf(0.44f, 0.37f, 0.31f, 0.25f, 0.20f, 0.15f, 0.10f)
+        val startGhostAlphas = ghostLayers.mapIndexed { index, ghost ->
+            if (wasRunning) ghost.alpha else baseAlphas[index]
+        }
+
+        // Retarget an active gesture from its current visual state, not from zero. This keeps
+        // repeated taps continuous instead of snapping the pill and its echoes back to centre.
+        preservingWobbleOnCancel = wasRunning
+        wobbleAnimator?.cancel()
+        preservingWobbleOnCancel = false
+        if (!wasRunning) {
+            root.translationX = 0f
+            root.translationY = 0f
+        }
+
+        val distance = dp(24).toFloat()
+        // Sampling different points in the same wave produces a genuine multi-position echo.
+        // Each copy also has its own blur radius and opacity, growing softer toward the tail.
+        val lags = floatArrayOf(0.018f, 0.036f, 0.054f, 0.072f, 0.090f, 0.108f, 0.126f)
+        val ghostBlurOrder = floatArrayOf(0.44f, 0.37f, 0.31f, 0.25f, 0.20f, 0.15f, 0.10f)
+        ghostLayers.forEachIndexed { index, ghost ->
+            if (!wasRunning) {
+                ghost.translationX = 0f
+                ghost.translationY = 0f
+                ghost.alpha = ghostBlurOrder[index]
+            }
+            ghost.visibility = View.VISIBLE
+        }
+        glassView?.setMotionBlur(0f)
+
+        fun smooth(progress: Float): Float {
+            val t = progress.coerceIn(0f, 1f)
+            return t * t * (3f - 2f * t)
+        }
+        fun waveAt(progress: Float): Float {
+            val t = progress.coerceIn(0f, 1f)
+            // Three full cycles keep left/right travel even. During the final quarter,
+            // a smooth envelope draws the pill back to rest instead of snapping at the end.
+            val settle = if (t < 0.75f) 1f else {
+                val u = ((t - 0.75f) / 0.25f).coerceIn(0f, 1f)
+                1f - u * u * (3f - 2f * u)
+            }
+            val envelope = exp(-0.62f * t) * settle
+            val phase = t * Math.PI.toFloat() * 6f
+            return -distance * envelope * sin(phase)
+        }
+        fun offsetAt(progress: Float): Float {
+            val t = progress.coerceIn(0f, 1f)
+            return startOffset * (1f - smooth(t)) + waveAt(t)
+        }
+
+        var lastOffset = startOffset
+        val animator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 1120L
+            interpolator = android.view.animation.LinearInterpolator()
+            addUpdateListener { frame ->
+                val t = frame.animatedValue as Float
+                val offset = offsetAt(t)
+                root.translationX = offset
+                root.translationY = startOffsetY * (1f - smooth(t)) +
+                    (abs(waveAt(t)) / distance.coerceAtLeast(1f)) * dp(0.55f) * sin(t * Math.PI.toFloat() * 2f)
+
+                ghostLayers.forEachIndexed { index, ghost ->
+                    val delayed = waveAt((t - lags[index]).coerceAtLeast(0f))
+                    ghost.translationX = startGhostOffsets[index] * (1f - smooth(t)) + delayed
+                    ghost.translationY = (index + 1) * dp(0.18f).toFloat() * (1f - smooth(t))
+                    val tailFade = if (t < 0.74f) 1f else (1f - (t - 0.74f) / 0.26f).coerceIn(0f, 1f)
+                    ghost.alpha = startGhostAlphas[index] * (1f - smooth(t)) +
+                        ghostBlurOrder[index] * tailFade * smooth(t)
+                }
+                val travel = abs(offset - lastOffset)
+                val direction = if (offset < lastOffset) -1f else 1f
+                val normalizedVelocity = (travel / dp(3).coerceAtLeast(1)).coerceIn(0f, 1f)
+                glassView?.setMotionBlur((normalizedVelocity * 0.98f).coerceIn(0f, 1f), direction)
+                lastOffset = offset
+            }
+        }
+        wobbleAnimator = animator
         animator.addListener(object : android.animation.AnimatorListenerAdapter() {
             override fun onAnimationEnd(animation: android.animation.Animator) {
-                lp.x = baseX
-                lp.y = baseY
+                if (preservingWobbleOnCancel) {
+                    if (wobbleAnimator === animator) wobbleAnimator = null
+                    return
+                }
                 root.translationX = 0f
                 root.translationY = 0f
                 root.scaleX = 1f
                 root.scaleY = 1f
+                ghostLayers.forEach { ghost ->
+                    ghost.translationX = 0f
+                    ghost.translationY = 0f
+                    ghost.alpha = 0f
+                    ghost.visibility = View.INVISIBLE
+                }
                 glassView?.setMotionBlur(0f, 1f)
-                try { windowManager.updateViewLayout(root, lp) } catch (_: Exception) { }
                 if (wobbleAnimator === animator) wobbleAnimator = null
             }
         })
@@ -524,6 +702,7 @@ class IslandService : Service() {
         val density = resources.displayMetrics.density.coerceAtLeast(1f)
         val screenWidthPx = displayWidthPx().coerceAtLeast(dp(180))
         val screenWidthDp = (screenWidthPx / density).toInt().coerceAtLeast(180)
+        if (isRecordingControlExpanded()) return screenWidthPx
         val desiredDp = when {
             panelOpen && screenRecording -> 238
             panelOpen -> screenWidthDp - 24
@@ -536,6 +715,7 @@ class IslandService : Service() {
     }
 
     private fun targetHeight(): Int = when {
+        isRecordingControlExpanded() -> maxOf(statusBarHeightPx() + dp(24), dp(50))
         panelOpen && screenRecording -> dp(66)
         panelOpen -> dp(252)
         isLandscapeWithSideCutout() -> dp(if (screenRecording) maxOf(widthDp, 178) else widthDp)
@@ -604,6 +784,7 @@ class IslandService : Service() {
     }
 
     private fun positionX(windowWidth: Int = targetWidth(), expanded: Boolean = panelOpen): Int {
+        if (isRecordingControlExpanded()) return 0
         if (isLandscapeWithSideCutout()) {
             if (expanded) return ((displayWidthPx() - windowWidth) / 2).coerceAtLeast(0)
             val cutout = currentCameraCutoutBounds()
@@ -617,6 +798,7 @@ class IslandService : Service() {
     }
 
     private fun positionY(windowHeight: Int = targetHeight(), expanded: Boolean = panelOpen): Int {
+        if (isRecordingControlExpanded()) return 0
         if (isLandscapeWithSideCutout()) {
             if (expanded) return dp(topOffsetDp)
             val cutout = currentCameraCutoutBounds()
@@ -628,14 +810,16 @@ class IslandService : Service() {
     private fun updatePosition() {
         val root = islandRoot ?: return
         val lp = params ?: return
-        lp.width = targetWidth()
+        lp.width = targetWindowWidth()
         lp.height = targetHeight()
-        lp.gravity = gravityForWindow()
-        lp.x = positionX(lp.width, panelOpen)
-        lp.y = positionY(lp.height, panelOpen)
-        try { windowManager.updateViewLayout(root, lp) } catch (_: Exception) { }
-        root.background = roundedBackground(if (panelOpen) 30f else heightDp / 2f, Color.BLACK)
+        lp.gravity = windowGravity()
+        lp.x = windowX()
+        lp.y = windowY()
+        hostInsetPx = targetHostInsetPx()
+        syncOverlayChildBounds(targetWidth(), targetHeight())
+        root.background = roundedBackground(currentCornerRadiusDp(), Color.BLACK)
         glassView?.configure(glassStrength, tint, expandedNow = panelOpen)
+        updateOverlayWindow(lp)
     }
 
     private fun render(animateSize: Boolean = false) {
@@ -650,8 +834,12 @@ class IslandService : Service() {
         recordingTextTypewriter = null
         rootContent.removeAllViews()
         rootContent.visibility = View.VISIBLE
-        rootContent.setPadding(dp(if (panelOpen) 18 else 8), dp(if (panelOpen) 15 else 2), dp(if (panelOpen) 18 else 8), dp(if (panelOpen) 14 else 2))
-        root.background = roundedBackground(if (panelOpen) 30f else heightDp / 2f, Color.BLACK)
+        if (isRecordingControlExpanded()) {
+            rootContent.setPadding(dp(20), 0, dp(18), 0)
+        } else {
+            rootContent.setPadding(dp(if (panelOpen) 18 else 10), dp(if (panelOpen) 15 else 2), dp(if (panelOpen) 18 else 10), dp(if (panelOpen) 14 else 2))
+        }
+        root.background = roundedBackground(currentCornerRadiusDp(), Color.BLACK)
         root.clipToOutline = true
         root.clipChildren = true
         root.clipToPadding = true
@@ -660,8 +848,9 @@ class IslandService : Service() {
         updatePrivacyDot()
 
         val customUri = prefs.getString(PANEL_BACKGROUND_URI, null)
-        val showMediaOnTop = (panelOpen || closingPanelWithMedia) && !customUri.isNullOrBlank()
-        if (panelOpen && screenRecording && recordingExpanded) {
+        // The recording control is a separate UI mode and always outranks the user wallpaper.
+        val showMediaOnTop = !isRecordingControlExpanded() && (panelOpen || closingPanelWithMedia) && !customUri.isNullOrBlank()
+        if (isRecordingControlExpanded()) {
             renderRecordingControlPanel(rootContent)
         } else if (panelOpen) {
             if (showMediaOnTop) {
@@ -681,12 +870,14 @@ class IslandService : Service() {
         if (lp != null) {
             if (animateSize) animateToTargetSize()
             else {
-                lp.width = targetWidth()
+                lp.width = targetWindowWidth()
                 lp.height = targetHeight()
-                lp.gravity = gravityForWindow()
-                lp.x = positionX(lp.width, panelOpen)
-                lp.y = positionY(lp.height, panelOpen)
-                try { windowManager.updateViewLayout(root, lp) } catch (_: Exception) { }
+                lp.gravity = windowGravity()
+                lp.x = windowX()
+                lp.y = windowY()
+                hostInsetPx = targetHostInsetPx()
+                syncOverlayChildBounds(targetWidth(), targetHeight())
+                updateOverlayWindow(lp)
             }
         }
         applyNativeActivityVisibility()
@@ -703,22 +894,21 @@ class IslandService : Service() {
 
     private fun applyNativeActivityVisibility() {
         val root = islandRoot ?: return
+        val host = overlayHost ?: return
         val lp = params ?: return
-        // Native media/timer activities suppress the idle pill even when an accessibility scan
-        // temporarily misses HyperIsland. Screen recording and camera mode take priority because
-        // DigitalLiquid's recording indicator/privacy dot is the requested companion effect.
+        // Hide pill, echoes and all child content as a unit when the native HyperIsland owns the slot.
         val nativeIslandVisible = hyperIslandVisibilityOverride == true || nativeActivityActive
         val suppress = !screenRecording && !cameraActive && nativeIslandVisible
         val wantedVisibility = if (suppress) View.GONE else View.VISIBLE
         val hasNotTouchable = (lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) != 0
-        if (root.visibility != wantedVisibility || hasNotTouchable != suppress) {
-            root.visibility = wantedVisibility
+        if (host.visibility != wantedVisibility || hasNotTouchable != suppress) {
+            host.visibility = wantedVisibility
             lp.flags = if (suppress) {
                 lp.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
             } else {
                 lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
             }
-            try { windowManager.updateViewLayout(root, lp) } catch (_: Exception) { }
+            updateOverlayWindow(lp)
         }
     }
 
@@ -735,46 +925,55 @@ class IslandService : Service() {
     private fun renderRecordingControlPanel(target: LinearLayout) {
         target.orientation = LinearLayout.HORIZONTAL
         target.gravity = Gravity.CENTER_VERTICAL
-        target.setPadding(dp(14), dp(8), dp(10), dp(8))
+        target.setPadding(dp(24), 0, dp(22), 0)
+        target.background = null
 
         val timer = TextView(this).apply {
-            textSize = 15f
+            text = "00:00"
+            textSize = 16f
+            letterSpacing = 0.035f
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER_VERTICAL
+            gravity = Gravity.CENTER_VERTICAL or Gravity.START
             contentDescription = "Thời gian quay màn hình"
         }
         target.addView(timer, LinearLayout.LayoutParams(0, -1, 1f))
 
-        val stop = TextView(this).apply {
-            text = "■"
-            textSize = 19f
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
+        val stop = FrameLayout(this).apply {
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
-                setColor(0xFFFF4054.toInt())
+                setColor(0xFFFF3B50.toInt())
+                setStroke(dp(1), 0x66FFFFFF)
             }
             isClickable = true
             isFocusable = true
+            elevation = dp(2).toFloat()
             contentDescription = "Dừng quay màn hình"
-            setOnClickListener {
-                val stopped = IslandNotificationListener.requestStopRecording()
-                if (!stopped) {
-                    Toast.makeText(this@IslandService, "Không tìm thấy nút dừng của trình quay. Hãy dừng từ thông báo hệ thống.", Toast.LENGTH_SHORT).show()
-                }
+        }
+        val stopGlyph = View(this).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                setColor(Color.WHITE)
+                cornerRadius = dp(2).toFloat()
             }
         }
-        target.addView(stop, LinearLayout.LayoutParams(dp(38), dp(38)))
+        stop.addView(stopGlyph, FrameLayout.LayoutParams(dp(12), dp(12), Gravity.CENTER))
+        stop.setOnClickListener {
+            val stopped = IslandNotificationListener.requestStopRecording()
+            if (!stopped) {
+                Toast.makeText(this@IslandService, "Không tìm thấy hành động dừng của trình quay. Hãy dừng từ thông báo hệ thống.", Toast.LENGTH_SHORT).show()
+            }
+        }
+        target.addView(stop, LinearLayout.LayoutParams(dp(34), dp(34)))
 
         recordingTimerTask?.let { handler.removeCallbacks(it) }
         val task = object : Runnable {
             override fun run() {
-                if (!screenRecording || !recordingExpanded || !timer.isAttachedToWindow) return
+                if (!screenRecording || !isRecordingControlExpanded() || !timer.isAttachedToWindow) return
                 val start = recordingStartedAtElapsed.takeIf { it > 0L } ?: android.os.SystemClock.elapsedRealtime()
-                val seconds = ((android.os.SystemClock.elapsedRealtime() - start) / 1000L).coerceAtLeast(0L)
-                timer.text = String.format(java.util.Locale.ROOT, "%02d:%02d", seconds / 60L, seconds % 60L)
-                handler.postDelayed(this, 250L)
+                val elapsed = ((android.os.SystemClock.elapsedRealtime() - start) / 1000L).coerceAtLeast(0L)
+                timer.text = String.format(java.util.Locale.ROOT, "%02d:%02d", elapsed / 60L, elapsed % 60L)
+                handler.postDelayed(this, 100L)
             }
         }
         recordingTimerTask = task
@@ -782,94 +981,65 @@ class IslandService : Service() {
     }
 
     private fun renderRecordingIndicator(target: LinearLayout) {
+        target.orientation = LinearLayout.VERTICAL
+        target.gravity = Gravity.CENTER_VERTICAL or Gravity.START
+        target.setPadding(dp(9), 0, dp(8), 0)
         val row = LinearLayout(this).apply {
-            orientation = if (isLandscapeWithSideCutout()) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL or Gravity.START
             isClickable = false
         }
         val dotWrap = FrameLayout(this)
-        val ring = View(this).apply {
+        val halo = View(this).apply {
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
-                setColor(Color.TRANSPARENT)
-                setStroke(dp(1), 0x99FF4D5F.toInt())
+                setColor(0x22FF354D)
+                setStroke(dp(1), 0x66FF5266)
             }
         }
         val dot = View(this).apply {
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
-                setColor(0xFFFF4054.toInt())
+                setColor(0xFFFF304B.toInt())
             }
         }
-        dotWrap.addView(ring, FrameLayout.LayoutParams(dp(16), dp(16), Gravity.CENTER))
+        dotWrap.addView(halo, FrameLayout.LayoutParams(dp(19), dp(19), Gravity.CENTER))
         dotWrap.addView(dot, FrameLayout.LayoutParams(dp(7), dp(7), Gravity.CENTER))
-        row.addView(dotWrap, LinearLayout.LayoutParams(dp(20), dp(22)))
+        row.addView(dotWrap, LinearLayout.LayoutParams(dp(23), dp(23)))
         val recLabel = TextView(this).apply {
-            text = ""
+            text = "REC"
             textSize = 11f
-            letterSpacing = 0.08f
+            letterSpacing = 0.10f
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER_VERTICAL
+            setTextColor(0xFFFFE9EC.toInt())
+            gravity = Gravity.CENTER_VERTICAL or Gravity.START
+            setPadding(dp(2), 0, 0, 0)
             setLayerType(View.LAYER_TYPE_HARDWARE, null)
+            if (Build.VERSION.SDK_INT >= 31) {
+                try { setRenderEffect(android.graphics.RenderEffect.createBlurEffect(0.18f, 0f, android.graphics.Shader.TileMode.CLAMP)) } catch (_: Exception) { }
+            }
         }
-        row.addView(recLabel, LinearLayout.LayoutParams(-2, dp(22)))
+        row.addView(recLabel, LinearLayout.LayoutParams(-2, dp(23)))
         target.addView(row, LinearLayout.LayoutParams(-1, -1))
-        startRecordingTypewriter(recLabel)
 
         recordingPulse?.cancel()
         recordingPulse = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 980L
+            duration = 760L
             repeatCount = ValueAnimator.INFINITE
             interpolator = android.view.animation.LinearInterpolator()
             addUpdateListener { animator ->
                 val phase = animator.animatedValue as Float
                 val wave = (sin(phase * Math.PI * 2.0).toFloat() + 1f) * 0.5f
-                dot.scaleX = 0.78f + wave * 0.22f
-                dot.scaleY = 0.78f + wave * 0.22f
-                dot.alpha = 0.66f + wave * 0.34f
-                ring.scaleX = 0.78f + phase * 0.55f
-                ring.scaleY = 0.78f + phase * 0.55f
-                ring.alpha = 0.82f * (1f - phase)
+                dot.scaleX = 0.90f + wave * 0.10f
+                dot.scaleY = 0.90f + wave * 0.10f
+                dot.alpha = 0.72f + wave * 0.28f
+                halo.scaleX = 0.78f + phase * 0.48f
+                halo.scaleY = 0.78f + phase * 0.48f
+                halo.alpha = 0.60f * (1f - phase)
+                recLabel.alpha = 0.82f + wave * 0.18f
             }
             start()
         }
-    }
-
-    private fun startRecordingTypewriter(labelView: TextView) {
-        recordingTextTypewriter?.let { handler.removeCallbacks(it) }
-        val phrase = "REC"
-        var index = 0
-        var deleting = false
-        val task = object : Runnable {
-            override fun run() {
-                if (!screenRecording || islandRoot == null || !labelView.isAttachedToWindow) return
-                index = if (deleting) (index - 1).coerceAtLeast(0) else (index + 1).coerceAtMost(phrase.length)
-                labelView.text = phrase.substring(0, index)
-                labelView.translationX = if (deleting) dp(1).toFloat() else -dp(1).toFloat()
-                labelView.alpha = 0.72f + 0.28f * index / phrase.length.toFloat()
-                if (Build.VERSION.SDK_INT >= 31) {
-                    val blur = if (deleting) 0.8f else 0.35f
-                    try { labelView.setRenderEffect(android.graphics.RenderEffect.createBlurEffect(blur, 0f, android.graphics.Shader.TileMode.CLAMP)) } catch (_: Exception) { }
-                }
-                if (!deleting && index >= phrase.length) {
-                    deleting = true
-                    handler.postDelayed(this, 460L)
-                    return
-                }
-                if (deleting && index <= 0) {
-                    labelView.translationX = 0f
-                    labelView.alpha = 1f
-                    if (Build.VERSION.SDK_INT >= 31) try { labelView.setRenderEffect(null) } catch (_: Exception) { }
-                    deleting = false
-                    handler.postDelayed(this, 160L)
-                    return
-                }
-                handler.postDelayed(this, if (deleting) 55L else 70L)
-            }
-        }
-        recordingTextTypewriter = task
-        handler.postDelayed(task, 80L)
     }
 
     private fun renderCustomizationPanel(target: LinearLayout, animateIntro: Boolean) {
@@ -948,7 +1118,9 @@ class IslandService : Service() {
         val scrim = backgroundScrim ?: return
         val rootContent = content ?: return
         val uriString = AppPrefs.get(this).getString(PANEL_BACKGROUND_URI, null)
-        val shouldShow = (panelOpen || closingPanelWithMedia) && !uriString.isNullOrBlank()
+        val recordingControlOwnsOverlay = isRecordingControlExpanded()
+        if (recordingControlOwnsOverlay) closingPanelWithMedia = false
+        val shouldShow = !recordingControlOwnsOverlay && (panelOpen || closingPanelWithMedia) && !uriString.isNullOrBlank()
         if (!shouldShow) {
             stopPanelMedia()
             host.removeAllViews()
@@ -1072,27 +1244,34 @@ class IslandService : Service() {
 
     private fun animateToTargetSize() {
         val root = islandRoot ?: return
+        val host = overlayHost ?: return
         val lp = params ?: return
         resizeAnimator?.cancel()
         val opening = panelOpen
-        val startWidth = lp.width.toFloat()
+        val startWindowWidth = lp.width.toFloat()
         val startHeight = lp.height.toFloat()
         val startX = lp.x.toFloat()
         val startY = lp.y.toFloat()
-        val endWidth = targetWidth().toFloat()
+        val startPillWidth = (root.width.takeIf { it > 0 } ?: (lp.width - 2 * hostInsetPx)).toFloat()
+        val endPillWidth = targetWidth().toFloat()
+        val endWidth = targetWindowWidth().toFloat()
         val endHeight = targetHeight().toFloat()
-        val endX = positionX(endWidth.roundToInt(), panelOpen).toFloat()
-        val endY = positionY(endHeight.roundToInt(), panelOpen).toFloat()
-        lp.gravity = gravityForWindow()
+        val endX = windowX().toFloat()
+        val endY = windowY().toFloat()
+        val startInset = hostInsetPx.toFloat()
+        val endInset = targetHostInsetPx().toFloat()
+        lp.gravity = windowGravity()
         if (AppPrefs.get(this).getBoolean(AppPrefs.REDUCE_MOTION, false)) {
             lp.width = endWidth.roundToInt()
             lp.height = endHeight.roundToInt()
             lp.x = endX.roundToInt()
             lp.y = endY.roundToInt()
-            root.background = roundedBackground(if (panelOpen) 30f else heightDp / 2f, Color.BLACK)
+            hostInsetPx = endInset.roundToInt()
+            syncOverlayChildBounds(endPillWidth.roundToInt(), endHeight.roundToInt())
+            root.background = roundedBackground(currentCornerRadiusDp(), Color.BLACK)
             root.scaleX = 1f
             root.scaleY = 1f
-            try { windowManager.updateViewLayout(root, lp) } catch (_: Exception) { }
+            updateOverlayWindow(lp)
             if (closingPanelWithMedia) {
                 closingPanelWithMedia = false
                 syncPanelBackground()
@@ -1100,32 +1279,35 @@ class IslandService : Service() {
             applyNativeActivityVisibility()
             return
         }
-        root.alpha = 0.98f
+        root.alpha = 0.985f
         root.scaleX = if (opening) 0.94f else 1.045f
         root.scaleY = if (opening) 0.90f else 1.035f
         resizeAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = if (panelOpen) 420L else 360L
+            duration = if (panelOpen) 440L else 380L
             interpolator = PathInterpolator(0.16f, 0.92f, 0.18f, 1f)
             addUpdateListener { animator ->
                 val t = animator.animatedValue as Float
-                lp.width = (startWidth + (endWidth - startWidth) * t).roundToInt()
+                lp.width = (startWindowWidth + (endWidth - startWindowWidth) * t).roundToInt()
                 lp.height = (startHeight + (endHeight - startHeight) * t).roundToInt()
                 lp.x = (startX + (endX - startX) * t).roundToInt()
                 lp.y = (startY + (endY - startY) * t).roundToInt()
-                root.background = roundedBackground(
-                    if (panelOpen) 30f else (lp.height / resources.displayMetrics.density) / 2f,
-                    Color.BLACK
-                )
+                hostInsetPx = (startInset + (endInset - startInset) * t).roundToInt()
+                val pillW = (startPillWidth + (endPillWidth - startPillWidth) * t).roundToInt()
+                val pillH = (startHeight + (endHeight - startHeight) * t).roundToInt()
+                syncOverlayChildBounds(pillW, pillH)
+                root.background = roundedBackground(currentCornerRadiusDp(), Color.BLACK)
                 root.scaleX = if (opening) 0.94f + 0.06f * t else 1.045f - 0.045f * t
                 root.scaleY = if (opening) 0.90f + 0.10f * t else 1.035f - 0.035f * t
                 if (Build.VERSION.SDK_INT >= 31) {
-                    val blur = (if (opening) 1f - t else t) * 1.15f
+                    val blur = (if (opening) 1f - t else t) * 1.25f
                     try { root.setRenderEffect(android.graphics.RenderEffect.createBlurEffect(blur, blur, android.graphics.Shader.TileMode.CLAMP)) } catch (_: Exception) { }
                 }
-                try { windowManager.updateViewLayout(root, lp) } catch (_: Exception) { }
+                updateOverlayWindow(lp)
             }
             addListener(object : android.animation.AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: android.animation.Animator) {
+                    hostInsetPx = endInset.roundToInt()
+                    syncOverlayChildBounds(endPillWidth.roundToInt(), endHeight.roundToInt())
                     root.scaleX = 1f
                     root.scaleY = 1f
                     root.alpha = 1f
@@ -1148,6 +1330,7 @@ class IslandService : Service() {
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).roundToInt()
+    private fun dp(value: Float): Float = value * resources.displayMetrics.density
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
@@ -1163,8 +1346,10 @@ class IslandService : Service() {
         stopPanelMedia()
         try { unregisterReceiver(configReceiver) } catch (_: Exception) { }
         try { unregisterReceiver(orientationReceiver) } catch (_: Exception) { }
-        islandRoot?.let { try { windowManager.removeView(it) } catch (_: Exception) { } }
+        overlayHost?.let { try { windowManager.removeView(it) } catch (_: Exception) { } }
+        overlayHost = null
         islandRoot = null
+        ghostLayers.clear()
         handler.removeCallbacksAndMessages(null)
         super.onDestroy()
     }
@@ -1175,6 +1360,7 @@ class IslandService : Service() {
         const val PANEL_BACKGROUND_URI = "custom_panel_background_uri"
         private const val CHANNEL_ID = "digitalliquid_overlay"
         private const val LONG_PRESS_MS = 430L
+        private const val TRAIL_EXTENT_DP = 38
         @Volatile private var instance: IslandService? = null
         @Volatile private var lastHyperIslandVisibilityOverride: Boolean? = null
 
