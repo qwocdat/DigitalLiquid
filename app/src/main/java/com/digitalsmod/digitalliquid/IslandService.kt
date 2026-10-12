@@ -950,7 +950,7 @@ class IslandService : Service() {
         }
         val overlay = FrameLayout(this).apply {
             setBackgroundColor(Color.TRANSPARENT)
-            isClickable = false
+            isClickable = true
             isFocusable = false
         }
         overlay.addView(FaceUnlockAnimationView(this), FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
@@ -959,7 +959,6 @@ class IslandService : Service() {
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
@@ -983,7 +982,7 @@ class IslandService : Service() {
                 }
             }
             faceUnlockRemoval = remove
-            handler.postDelayed(remove, 2200L)
+            handler.postDelayed(remove, 4400L)
         } catch (_: Exception) {
             faceUnlockOverlay = null
             faceUnlockOverlayManager = null
