@@ -89,16 +89,15 @@ class IslandNotificationListener : NotificationListenerService() {
             "đang ghi màn hình", "đang ghi lại màn hình", "ghi lại màn hình", "dừng quay màn hình",
             "录屏", "屏幕录制", "正在录屏", "正在屏幕录制"
         )
-        val knownRecorderPackage = pkg.contains("screenrecorder") || pkg.contains("screen_recorder") ||
-            pkg.contains("screenrecord") || pkg.contains("screen_record") ||
-            pkg == "com.miui.screenrecorder" || pkg == "com.android.screenrecord"
         val ongoing = sbn.isOngoing ||
             (notification.flags and Notification.FLAG_ONGOING_EVENT) != 0 ||
             (notification.flags and Notification.FLAG_NO_CLEAR) != 0
         if (!ongoing) return false
         if (screenWords.any(text::contains)) return true
-        // Xiaomi commonly posts the recorder notification from its dedicated recorder package.
-        return knownRecorderPackage && !audioRecordingWords.any(text::contains)
+        // Do not treat opening the recorder app as an active recording. Xiaomi may
+        // post an ongoing notification before the user presses Record, so package name
+        // alone is not sufficient evidence that capture has actually started.
+        return false
     }
 
 
@@ -162,6 +161,25 @@ class IslandNotificationListener : NotificationListenerService() {
             (pkg.contains("music") || pkg.contains("audio") || pkg.contains("media"))
     }
 
+    private fun sendStopRecordingAction(): Boolean {
+        val notifications = try { activeNotifications } catch (_: Exception) { null } ?: return false
+        val stopWords = listOf("stop", "end", "finish", "dừng", "kết thúc", "停止", "结束")
+        for (sbn in notifications) {
+            if (!isActiveScreenRecordingNotification(sbn)) continue
+            val actions = sbn.notification.actions ?: continue
+            for (action in actions) {
+                val title = action.title?.toString()?.lowercase(Locale.ROOT).orEmpty()
+                if (stopWords.any(title::contains)) {
+                    try {
+                        action.actionIntent?.send()
+                        return true
+                    } catch (_: Exception) { }
+                }
+            }
+        }
+        return false
+    }
+
     override fun onListenerConnected() {
         super.onListenerConnected()
         refreshActiveNotifications()
@@ -187,6 +205,11 @@ class IslandNotificationListener : NotificationListenerService() {
             listenerInstance?.let { listener ->
                 try { listener.refreshActiveNotifications() } catch (_: Exception) { }
             }
+        }
+
+        fun requestStopRecording(): Boolean {
+            val listener = listenerInstance ?: return false
+            return try { listener.sendStopRecordingAction() } catch (_: Exception) { false }
         }
     }
 }
