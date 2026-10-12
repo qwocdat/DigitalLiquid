@@ -73,31 +73,37 @@ class IslandNotificationListener : NotificationListenerService() {
     private fun isActiveScreenRecordingNotification(sbn: StatusBarNotification): Boolean {
         val notification = sbn.notification
         val text = notificationText(sbn)
-        val pkg = sbn.packageName.lowercase(Locale.ROOT)
+        val ongoing = sbn.isOngoing ||
+            (notification.flags and Notification.FLAG_ONGOING_EVENT) != 0 ||
+            (notification.flags and Notification.FLAG_NO_CLEAR) != 0
+        if (!ongoing) return false
 
+        // Recorder apps often post a notification as soon as their control panel opens.
+        // Generic labels such as "Screen recorder" or "Screen recording" are not evidence
+        // that capture has started. Require an active-session phrase or a real Stop action.
         val audioRecordingWords = listOf(
             "call recording", "voice recording", "audio recording", "recording audio",
             "ghi âm cuộc gọi", "ghi âm giọng nói", "ghi âm âm thanh", "đang ghi âm"
         )
         if (audioRecordingWords.any(text::contains)) return false
 
-        val screenWords = listOf(
-            "screen recording", "screen recorder", "recording screen", "record your screen",
-            "screen is being recorded", "screen capture recording", "screen recording active",
-            "tap to stop recording", "stop screen recording", "recording your screen",
-            "đang quay màn hình", "quay màn hình", "ghi màn hình", "trình ghi màn hình",
-            "đang ghi màn hình", "đang ghi lại màn hình", "ghi lại màn hình", "dừng quay màn hình",
-            "录屏", "屏幕录制", "正在录屏", "正在屏幕录制"
+        val explicitActiveWords = listOf(
+            "screen is being recorded", "recording your screen", "recording screen",
+            "recording in progress", "tap to stop recording", "tap stop to finish",
+            "stop screen recording", "stop recording", "currently recording",
+            "đang quay màn hình", "đang ghi màn hình", "đang ghi lại màn hình",
+            "nhấn để dừng quay", "chạm để dừng quay", "dừng quay màn hình",
+            "正在录屏", "正在屏幕录制", "录屏中", "正在录制屏幕"
         )
-        val ongoing = sbn.isOngoing ||
-            (notification.flags and Notification.FLAG_ONGOING_EVENT) != 0 ||
-            (notification.flags and Notification.FLAG_NO_CLEAR) != 0
-        if (!ongoing) return false
-        if (screenWords.any(text::contains)) return true
-        // Do not treat opening the recorder app as an active recording. Xiaomi may
-        // post an ongoing notification before the user presses Record, so package name
-        // alone is not sufficient evidence that capture has actually started.
-        return false
+        if (explicitActiveWords.any(text::contains)) return true
+
+        val actions = notification.actions ?: return false
+        val stopWords = listOf("stop", "finish", "end recording", "dừng", "kết thúc", "停止", "结束")
+        val startWords = listOf("start recording", "record screen", "begin recording", "bắt đầu", "开始录制", "开始")
+        val actionTitles = actions.map { it.title?.toString()?.lowercase(Locale.ROOT).orEmpty() }
+        val hasStop = actionTitles.any { title -> stopWords.any(title::contains) }
+        val hasStart = actionTitles.any { title -> startWords.any(title::contains) }
+        return hasStop && !hasStart
     }
 
 
