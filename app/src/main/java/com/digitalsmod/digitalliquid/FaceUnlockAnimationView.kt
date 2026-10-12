@@ -13,21 +13,18 @@ import android.view.animation.LinearInterpolator
 import kotlin.math.cos
 import kotlin.math.hypot
 
-class FaceUnlockAnimationView(context: Context) : View(context) {
+class FaceUnlockAnimationView(
+    context: Context,
+    private val onDismissRequested: () -> Unit
+) : View(context) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
     }
-    private val tile = RectF()
     private var progress = 0f
     private var animator: ValueAnimator? = null
     private val density = resources.displayMetrics.density
     private fun dp(v: Float) = v * density
-    private fun lerp(a: Float, b: Float, t: Float) = a + (b - a) * t
-    private fun ease(t0: Float): Float {
-        val t = t0.coerceIn(0f, 1f)
-        return t * t * (3f - 2f * t)
-    }
 
     private var touchStartX = 0f
     private var touchStartY = 0f
@@ -40,16 +37,19 @@ class FaceUnlockAnimationView(context: Context) : View(context) {
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
-        startMainAnimation()
-    }
-
-    private fun startMainAnimation() {
         animator?.cancel()
         animator = ValueAnimator.ofFloat(0f, 1f).apply {
-            // Tổng thời gian 4.4s: Mở rộng (0.3s) + Quét mặt xoay 3D (0.8s) + Vẽ tick (0.5s) + Giữ 3s + Thu nhỏ (0.3s)
-            duration = 4400L 
+            duration = 4400L // 0.3s nở/hiện + 0.8s quét xoay 3D + 0.3s tick + 3.0s giữ nguyên
             interpolator = LinearInterpolator()
-            addUpdateListener { progress = it.animatedValue as Float; invalidate() }
+            addUpdateListener {
+                progress = it.animatedValue as Float
+                invalidate()
+            }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    onDismissRequested()
+                }
+            })
             start()
         }
     }
@@ -60,7 +60,6 @@ class FaceUnlockAnimationView(context: Context) : View(context) {
         super.onDetachedFromWindow()
     }
 
-    // Xử lý sự kiện vuốt hoặc chạm để đóng ngay lập tức
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
@@ -72,31 +71,16 @@ class FaceUnlockAnimationView(context: Context) : View(context) {
                 val dx = event.x - touchStartX
                 val dy = event.y - touchStartY
                 if (hypot(dx, dy) > dp(8f)) {
-                    dismissImmediately()
+                    animator?.cancel()
+                    onDismissRequested()
                 }
             }
             MotionEvent.ACTION_UP -> {
-                dismissImmediately()
+                animator?.cancel()
+                onDismissRequested()
             }
         }
         return true
-    }
-
-    // Thu nhỏ ngay về viên thuốc khi người dùng vuốt/chạm
-    fun dismissImmediately() {
-        if (progress in 0.05f..0.91f) {
-            animator?.cancel()
-            val current = progress
-            animator = ValueAnimator.ofFloat(current, 1f).apply {
-                duration = 250L
-                interpolator = LinearInterpolator()
-                addUpdateListener {
-                    progress = it.animatedValue as Float
-                    invalidate()
-                }
-                start()
-            }
-        }
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -104,78 +88,41 @@ class FaceUnlockAnimationView(context: Context) : View(context) {
         if (width <= 0 || height <= 0) return
         val t = progress.coerceIn(0f, 1f)
 
-        // TIMELINE CHUẨN:
-        // t: 0.00 -> 0.07 (300ms)  : Phóng to từ viên thuốc Dynamic Island
-        // t: 0.07 -> 0.12 (220ms)  : Icon Face ID hiện lên
-        // t: 0.12 -> 0.25 (570ms)  : Icon Face ID xoay 3D + nhả bóng mờ
-        // t: 0.25 -> 0.31 (260ms)  : Vẽ vòng tròn xanh
-        // t: 0.31 -> 0.36 (220ms)  : Vẽ dấu tick xanh
-        // t: 0.36 -> 0.92 (2460ms) : GIỮ NGUYÊN TICK XANH TRONG 3 GIÂY
-        // t: 0.92 -> 1.00 (350ms)  : Thu nhỏ hoàn toàn về viên thuốc
-
-        val morph = when {
-            t < 0.07f -> ease(t / 0.07f)
-            t > 0.92f -> ease((1f - t) / 0.08f)
-            else -> 1f
-        }
-
         val faceAppearAlpha = when {
-            t in 0.07f..0.12f -> (t - 0.07f) / 0.05f
-            t in 0.12f..0.25f -> 1f
+            t in 0.00f..0.07f -> t / 0.07f
+            t in 0.07f..0.25f -> 1f
             else -> 0f
         }
 
         val spinT = when {
-            t in 0.12f..0.25f -> ease((t - 0.12f) / 0.13f)
+            t in 0.07f..0.25f -> (t - 0.07f) / 0.18f
             t > 0.25f -> 1f
             else -> 0f
         }
 
         val circleProgress = when {
-            t in 0.25f..0.31f -> (t - 0.25f) / 0.06f
-            t > 0.31f -> 1f
+            t in 0.25f..0.32f -> (t - 0.25f) / 0.07f
+            t > 0.32f -> 1f
             else -> 0f
         }
 
         val checkmarkProgress = when {
-            t in 0.31f..0.36f -> (t - 0.31f) / 0.05f
-            t > 0.36f -> 1f
+            t in 0.32f..0.38f -> (t - 0.32f) / 0.06f
+            t > 0.38f -> 1f
             else -> 0f
         }
 
         val successAlpha = when {
-            t in 0.25f..0.92f -> 1f
-            t > 0.92f -> ease((1f - t) / 0.08f)
+            t >= 0.25f -> 1f
             else -> 0f
         }
 
-        // BƯỚC 1: BIẾN ĐỔI TỪ CHÍNH KÍCH THƯỚC VIÊN THUỐC
         val cx = width * 0.5f
-        val startW = dp(148f)
-        val startH = dp(38f)
-        val startTop = dp(6f)
+        val cy = height * 0.5f
 
-        val endW = dp(150f)
-        val endH = dp(150f)
-        val endTop = dp(16f)
-
-        val currentW = lerp(startW, endW, morph)
-        val currentH = lerp(startH, endH, morph)
-        val currentTop = lerp(startTop, endTop, morph)
-        val currentRadius = lerp(startH * 0.5f, dp(38f), morph)
-
-        tile.set(cx - currentW * 0.5f, currentTop, cx + currentW * 0.5f, currentTop + currentH)
-        val cy = currentTop + currentH * 0.5f
-
-        // Vẽ ô nền đen phóng to trực tiếp từ viên thuốc
-        paint.style = Paint.Style.FILL
-        paint.color = Color.BLACK
-        canvas.drawRoundRect(tile, currentRadius, currentRadius, paint)
-
-        // BƯỚC 2: VẼ ICON FACE ID + XOAY 3D + BÓNG MỜ
+        // 1. Vẽ Icon Face ID (Xoay 3D + Bóng mờ Motion Blur)
         if (faceAppearAlpha > 0f) {
             val baseAlpha = (255 * faceAppearAlpha).toInt()
-
             val ghostCount = 5
             val ghostDelay = 0.03f
 
@@ -199,7 +146,7 @@ class FaceUnlockAnimationView(context: Context) : View(context) {
             drawFaceIcon(canvas, cx, cy, mainScaleX, mainFaceAlpha)
         }
 
-        // BƯỚC 3: VẼ VÒNG TRÒN VÀ TICK XANH (GIỮ 3 GIÂY)
+        // 2. Vẽ Vòng tròn & Tick Xanh (Giữ nguyên 3s)
         val sAlpha = (255 * successAlpha).toInt()
         if (sAlpha > 0) {
             paint.style = Paint.Style.STROKE
