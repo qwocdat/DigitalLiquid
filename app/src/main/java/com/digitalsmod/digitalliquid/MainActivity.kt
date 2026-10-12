@@ -577,7 +577,10 @@ class MainActivity : Activity() {
 
         target.addView(sectionTitle("Hiệu ứng DigitalLiquid"), marginTop(18))
         target.addView(toggleCard("Hiệu ứng REC khi quay màn hình", "Hiện chấm đỏ và pill điều khiển khi hệ thống xác nhận đang quay thật.", AppPrefs.SCREEN_RECORDING_EFFECT), marginTop(8))
-        target.addView(toggleCard("Hiệu ứng mở khóa", "Bắt đầu từ lúc bật màn hình: pill đi xuống, nở thành ô bo góc rồi quét khuôn mặt. Android không cho ứng dụng biết chắc mở bằng khuôn mặt hay PIN/vân tay.", AppPrefs.FACE_UNLOCK_EFFECT), marginTop(8))
+        
+        // DÒNG ĐÃ SỬA VỀ MÔ TẢ HIỆU ỨNG MỞ KHÓA Ở DƯỚI ĐÂY:
+        target.addView(toggleCard("Hiệu ứng mở khóa", "Xuất hiện chính xác lúc vừa mở khoá thành công: pill đi xuống, nở thành ô vuông rồi hiển thị icon Face ID và tick xanh 100% giống iOS. (Đã khắc phục lỗi xuất hiện sớm)", AppPrefs.FACE_UNLOCK_EFFECT), marginTop(8))
+        
         target.addView(toggleCard("Rung nhẹ khi chạm", "Mỗi lần chạm dùng hướng ngẫu nhiên, biên độ nhỏ hơn và chuyển động cân bằng hơn.", AppPrefs.TAP_WOBBLE), marginTop(8))
         target.addView(toggleCard("Motion blur", "Bật/tắt vệt mờ theo hướng chuyển động của viên thuốc.", AppPrefs.MOTION_BLUR), marginTop(8))
         target.addView(toggleCard("Nút dừng quay trong pill mở rộng", "Hiện nút dừng trong bảng toàn chiều ngang khi giữ pill lúc đang quay. Nút chỉ dừng được nếu HyperOS cung cấp action dừng.", AppPrefs.RECORDING_STOP_CONTROL), marginTop(8))
