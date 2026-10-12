@@ -128,16 +128,13 @@ class IslandService : Service() {
         }
     }
 
-    // NHẬN DIỆN MỞ KHÓA TỪ HỆ THỐNG XIAOMI/REDMI/POCO
     private val unlockReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
                 Intent.ACTION_SCREEN_ON -> {
-                    // Màn hình sáng lên: Lắc nhẹ Dynamic Island báo hiệu đang chờ quét
                     wobblePill()
                 }
                 Intent.ACTION_USER_PRESENT -> {
-                    // Hệ thống quét khuôn mặt thành công: Kích hoạt hiệu ứng Face ID 3D full
                     playFaceUnlockAnimation()
                 }
             }
@@ -289,12 +286,10 @@ class IslandService : Service() {
 
     private fun windowY(): Int = if (isRecordingControlExpanded()) 0 else positionY(targetHeight(), panelOpen)
 
-    // TÍNH TOÁN BO TRÒN BIẾN THIÊN TỰ ĐỘNG - NÓI KHÔNG VỚI LỖI GÓC VUÔNG
     private fun currentCornerRadiusDp(): Float {
         val defaultRadius = heightDp / 2f
         return when {
             faceUnlocking -> {
-                // Biến thiên liên tục từ 19dp (viên thuốc) -> 38dp (ô vuông) và ngược lại
                 lerp(defaultRadius, 38f, currentMorphProgress)
             }
             isRecordingControlExpanded() -> (targetHeight() / resources.displayMetrics.density.coerceAtLeast(1f)) / 2f
@@ -582,7 +577,6 @@ class IslandService : Service() {
         } else if (panelOpen) closeCustomizationPanel() else openCustomizationPanel()
     }
 
-    // HIỆU ỨNG RUNG LẮC (WOBBLE) KÈM SHADER BLUR & BÓNG MA CHÂN THỰC
     private fun wobblePill() {
         val root = islandRoot ?: return
         if (panelOpen || faceUnlocking) return
@@ -871,7 +865,7 @@ class IslandService : Service() {
         updatePrivacyDot()
 
         val customUri = prefs.getString(PANEL_BACKGROUND_URI, null)
-        val showMediaOnTop = !isRecordingControlExpanded() && !faceUnlocking && (panelOpen || closingPanelWithMedia) && !uriString.isNullOrBlank()
+        val showMediaOnTop = !isRecordingControlExpanded() && !faceUnlocking && (panelOpen || closingPanelWithMedia) && !customUri.isNullOrBlank()
 
         if (!faceUnlocking) {
             if (isRecordingControlExpanded()) {
@@ -1280,7 +1274,6 @@ class IslandService : Service() {
         }
     }
 
-    // TÍNH TOÁN DYNAMICAL SCALE VÀ GHOST TRAIL KHI THU / NỞ VIÊN THUỐC
     private fun animateToTargetSize() {
         val root = islandRoot ?: return
         val host = overlayHost ?: return
@@ -1326,7 +1319,6 @@ class IslandService : Service() {
         val targetMorph = if (opening) 1f else 0f
 
         resizeAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            // Đóng thu nhỏ lại chậm hơn 1 chút để hiệu ứng Ghost Trail bám đuổi rõ ràng hơn
             duration = if (faceUnlocking) 360L else if (opening) 420L else 460L
             interpolator = PathInterpolator(0.22f, 1f, 0.36f, 1f)
             addUpdateListener { animator ->
@@ -1344,7 +1336,6 @@ class IslandService : Service() {
 
                 syncOverlayChildBounds(pillW, pillH)
 
-                // Cập nhật góc bo tròn mượt mà từng frame
                 root.background = roundedBackground(currentCornerRadiusDp(), Color.BLACK)
                 root.scaleX = if (opening) 0.94f + 0.06f * t else 1.045f - 0.045f * t
                 root.scaleY = if (opening) 0.90f + 0.10f * t else 1.035f - 0.035f * t
