@@ -1,6 +1,7 @@
 package com.digitalsmod.digitalliquid
 
-import android.animation.ObjectAnimator
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
 import android.app.Notification
 import android.app.NotificationChannel
@@ -15,6 +16,7 @@ import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.graphics.Color
 import android.graphics.Matrix
+import android.graphics.Outline
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.graphics.Typeface
@@ -41,7 +43,6 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import kotlin.math.abs
-import kotlin.math.exp
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.random.Random
@@ -71,10 +72,35 @@ class IslandService : Service() {
     private var backgroundScrim: View? = null
     private var params: WindowManager.LayoutParams? = null
 
-    // TRẠNG THÁI FACE ID HỢP NHẤT TẠI VIÊN THUỐC
+    // ---- Face ID state -------------------------------------------------------------
+    // faceUnlocking          = container is expanded / expanding (view alive and playing)
+    // isFaceUnlockShrinking  = container is shrinking back to the pill; stays TRUE until the
+    //                          shrink animator has completely finished, only then the view is
+    //                          detached and the normal pill is rendered again.
     private var faceUnlocking = false
     private var isFaceUnlockShrinking = false
-    private var currentMorphProgress = 0f
+    private var faceFailed = false
+    private var faceView: FaceUnlockAnimationView? = null
+    private var faceGhostsActive = false
+    private var currentMorphProgress = 0f      // 0 = capsule, 1 = expanded shape
+    private var expandedRadiusDp = 30f         // 38 for Face ID squircle, 30 for panel
+
+    // The root uses ONE background drawable + ONE outline provider whose radius is updated
+    // every frame from the real pill size, so a square corner can never appear.
+    private val rootBackground = GradientDrawable().apply {
+        shape = GradientDrawable.RECTANGLE
+        setColor(Color.BLACK)
+    }
+    private val cornerOutline = object : ViewOutlineProvider() {
+        var radiusPx = 0f
+        override fun getOutline(view: View, outline: Outline) {
+            outline.setRoundRect(0, 0, view.width, view.height, radiusPx)
+        }
+    }
+    private val faceShrinkSafety = Runnable {
+        resizeAnimator?.cancel()
+        finishFaceUnlockShrink()
+    }
 
     private var widthDp = 148
     private var heightDp = 38
@@ -113,6 +139,7 @@ class IslandService : Service() {
     private val configReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != ACTION_APPLY_CONFIG) return
+            if (isFaceUnlockShrinking) return // applied by finishFaceUnlockShrink()
             applyPreferences()
             screenRecording = AppPrefs.get(this@IslandService).getBoolean(AppPrefs.SCREEN_RECORDING_EFFECT, true) &&
                 (notificationScreenRecording || accessibilityScreenRecording)
@@ -124,6 +151,7 @@ class IslandService : Service() {
     private val orientationReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != Intent.ACTION_CONFIGURATION_CHANGED) return
+            if (isFaceUnlockShrinking) return
             applyPreferences()
             render(animateSize = true)
             updatePosition()
@@ -133,12 +161,10 @@ class IslandService : Service() {
     private val unlockReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
-                Intent.ACTION_SCREEN_ON -> {
-                    wobblePill()
-                }
-                Intent.ACTION_USER_PRESENT -> {
-                    playFaceUnlockAnimation()
-                }
+                Intent.ACTION_SCREEN_ON -> wobblePill()
+                Intent.ACTION_SCREEN_OFF -> abortFaceUnlock()
+                Intent.ACTION_USER_PRESENT -> playFaceUnlockAnimation(failed = false)
+                ACTION_FACE_UNLOCK_FAILED -> playFaceUnlockAnimation(failed = true)
             }
         }
     }
@@ -178,7 +204,9 @@ class IslandService : Service() {
         try {
             val filter = IntentFilter().apply {
                 addAction(Intent.ACTION_SCREEN_ON)
+                addAction(Intent.ACTION_SCREEN_OFF)
                 addAction(Intent.ACTION_USER_PRESENT)
+                addAction(ACTION_FACE_UNLOCK_FAILED)
             }
             if (Build.VERSION.SDK_INT >= 33) {
                 registerReceiver(configReceiver, IntentFilter(ACTION_APPLY_CONFIG), Context.RECEIVER_NOT_EXPORTED)
@@ -221,6 +249,7 @@ class IslandService : Service() {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        if (isFaceUnlockShrinking) return
         applyPreferences()
         render(animateSize = false)
         updatePosition()
@@ -262,7 +291,9 @@ class IslandService : Service() {
 
     private fun isRecordingControlExpanded(): Boolean = panelOpen && screenRecording && recordingExpanded
 
-    private fun targetHostInsetPx(): Int = if (panelOpen || isRecordingControlExpanded() || faceUnlocking || isFaceUnlockShrinking) 0 else dp(TRAIL_EXTENT_DP)
+    // NOTE: only `faceUnlocking` (not the shrinking flag) forces inset 0 / centred position, so
+    // the shrink animator already targets the final resting window and nothing snaps at the end.
+    private fun targetHostInsetPx(): Int = if (panelOpen || isRecordingControlExpanded() || faceUnlocking) 0 else dp(TRAIL_EXTENT_DP)
 
     private fun targetWindowWidth(): Int = if (isRecordingControlExpanded()) {
         (displayWidthPx() - dp(12)).coerceAtLeast(dp(180))
@@ -288,37 +319,53 @@ class IslandService : Service() {
 
     private fun windowY(): Int = if (isRecordingControlExpanded()) 0 else positionY(targetHeight(), panelOpen)
 
-    // TÍNH BO TRÒN BIẾN THIÊN TỰ ĐỘNG - KHÔNG BỊ GIẬT MẶT VUÔNG KHI ĐÓNG
-    private fun currentCornerRadiusDp(): Float {
-        val defaultRadius = heightDp / 2f
-        return when {
-            faceUnlocking || isFaceUnlockShrinking -> {
-                lerp(defaultRadius, 38f, currentMorphProgress)
-            }
-            isRecordingControlExpanded() -> (targetHeight() / resources.displayMetrics.density.coerceAtLeast(1f)) / 2f
-            panelOpen -> 30f
-            else -> defaultRadius
-        }
+    private fun lerp(a: Float, b: Float, t: Float) = a + (b - a) * t
+
+    /** Morph target of the CURRENT state: 1 = expanded shape (squircle / panel), 0 = capsule. */
+    private fun targetMorph(): Float = when {
+        faceUnlocking -> 1f
+        isFaceUnlockShrinking -> 0f
+        panelOpen && !isRecordingControlExpanded() -> 1f
+        else -> 0f
     }
 
-    private fun lerp(a: Float, b: Float, t: Float) = a + (b - a) * t
+    private fun updateExpandedRadius() {
+        if (faceUnlocking) expandedRadiusDp = FACE_SQUIRCLE_RADIUS_DP
+        else if (panelOpen && !isRecordingControlExpanded()) expandedRadiusDp = 30f
+        // while closing keep the previous value so the curve goes expanded -> capsule
+    }
+
+    /**
+     * Corner radius for ONE frame, derived from the real pill size of that frame:
+     *   r = lerp(currentHeight / 2, expandedRadius, morph)  clamped to min(w, h) / 2
+     * Capsule at both ends of the shrink (38dp -> 19dp), never a square in between.
+     */
+    private fun applyRootCorner(pillW: Int = targetWidth(), pillH: Int = targetHeight()) {
+        val root = islandRoot ?: return
+        val r = lerp(pillH / 2f, dp(expandedRadiusDp), currentMorphProgress)
+            .coerceIn(0f, minOf(pillW, pillH) / 2f)
+        rootBackground.cornerRadius = r
+        cornerOutline.radiusPx = r
+        root.invalidateOutline()
+    }
 
     private fun syncOverlayChildBounds(pillWidth: Int = targetWidth(), pillHeight: Int = targetHeight()) {
         val root = islandRoot ?: return
         val centeredParams = FrameLayout.LayoutParams(pillWidth, pillHeight, Gravity.CENTER)
         root.layoutParams = centeredParams
+        if (faceGhostsActive) return // ghosts are driven by the face shrink animator
         ghostLayers.forEach { ghost ->
             ghost.layoutParams = FrameLayout.LayoutParams(pillWidth, pillHeight, Gravity.CENTER)
-            ghost.background = ghostCapsule(pillHeight)
+            ghost.background = ghostCapsule(pillHeight / 2f)
             ghost.visibility = if (wobbleAnimator != null && !panelOpen && !faceUnlocking && !isFaceUnlockShrinking) View.VISIBLE else View.INVISIBLE
         }
     }
 
-    private fun ghostCapsule(heightPx: Int): GradientDrawable = GradientDrawable().apply {
+    private fun ghostCapsule(radiusPx: Float): GradientDrawable = GradientDrawable().apply {
         shape = GradientDrawable.RECTANGLE
         setColor(0xFF080A10.toInt())
         setStroke(dp(1), 0x143B414C)
-        cornerRadius = heightPx / 2f
+        cornerRadius = radiusPx
     }
 
     private fun updateOverlayWindow(lp: WindowManager.LayoutParams? = params) {
@@ -358,7 +405,8 @@ class IslandService : Service() {
             isFocusable = false
         }
         val root = FrameLayout(this).apply {
-            background = roundedBackground(currentCornerRadiusDp(), Color.BLACK)
+            background = rootBackground
+            outlineProvider = cornerOutline
             clipToOutline = true
             clipChildren = true
             clipToPadding = true
@@ -385,6 +433,7 @@ class IslandService : Service() {
             })
             idleDot = dot
             addOnLayoutChangeListener { changedView, _, _, _, _, _, _, _, _ ->
+                changedView.invalidateOutline()
                 val dotView = idleDot ?: return@addOnLayoutChangeListener
                 val dotParams = dotView.layoutParams as? FrameLayout.LayoutParams ?: return@addOnLayoutChangeListener
                 val dotWidth = if (dotView.measuredWidth > 0) dotView.measuredWidth else dp(3)
@@ -408,6 +457,7 @@ class IslandService : Service() {
         backgroundScrim = scrim
         content = innerContent
         islandRoot = root
+        applyRootCorner(targetWidth(), targetHeight())
 
         val host = FrameLayout(this).apply {
             setBackgroundColor(Color.TRANSPARENT)
@@ -422,7 +472,7 @@ class IslandService : Service() {
         val ghostBaseAlpha = floatArrayOf(0.44f, 0.37f, 0.31f, 0.25f, 0.20f, 0.15f, 0.10f)
         for (i in ghostBlurDp.indices) {
             val ghost = View(this).apply {
-                background = ghostCapsule(targetHeight())
+                background = ghostCapsule(targetHeight() / 2f)
                 alpha = ghostBaseAlpha[i]
                 visibility = View.INVISIBLE
                 isClickable = false
@@ -520,6 +570,8 @@ class IslandService : Service() {
         if (shouldUseTrusted == usingAccessibilityOverlay) return
         try { windowManager.removeView(host) } catch (_: Exception) { }
         stopPanelMedia()
+        faceView?.release()
+        faceView = null
         islandRoot = null
         overlayHost = null
         ghostLayers.clear()
@@ -535,9 +587,10 @@ class IslandService : Service() {
 
     private fun handlePillTouch(view: View, event: MotionEvent): Boolean {
         if (faceUnlocking) {
-            dismissFaceUnlock()
+            beginFaceUnlockShrink()
             return true
         }
+        if (isFaceUnlockShrinking) return true
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 downX = event.rawX
@@ -570,6 +623,7 @@ class IslandService : Service() {
     }
 
     private val longPressRunnable = Runnable {
+        if (faceUnlocking || isFaceUnlockShrinking) return@Runnable
         longPressTriggered = true
         islandRoot?.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
         if (screenRecording) {
@@ -672,8 +726,8 @@ class IslandService : Service() {
             }
         }
         wobbleAnimator = animator
-        animator.addListener(object : android.animation.AnimatorListenerAdapter() {
-            override fun onAnimationEnd(animation: android.animation.Animator) {
+        animator.addListener(object : AnimatorListenerAdapter() {
+            override fun onAnimationEnd(animation: Animator) {
                 if (wobbleAnimator !== animator) return
                 root.translationX = 0f
                 root.translationY = 0f
@@ -732,7 +786,7 @@ class IslandService : Service() {
         val density = resources.displayMetrics.density.coerceAtLeast(1f)
         val screenWidthPx = displayWidthPx().coerceAtLeast(dp(180))
         val screenWidthDp = (screenWidthPx / density).toInt().coerceAtLeast(180)
-        if (faceUnlocking) return dp(150)
+        if (faceUnlocking) return dp(FACE_SIZE_DP)
         if (isRecordingControlExpanded()) return (screenWidthPx - dp(12)).coerceAtLeast(dp(180))
         val desiredDp = when {
             panelOpen && screenRecording -> 238
@@ -745,7 +799,7 @@ class IslandService : Service() {
     }
 
     private fun targetHeight(): Int = when {
-        faceUnlocking -> dp(150)
+        faceUnlocking -> dp(FACE_SIZE_DP)
         isRecordingControlExpanded() -> maxOf(statusBarHeightPx() + dp(24), dp(50))
         panelOpen && screenRecording -> dp(66)
         panelOpen -> dp(252)
@@ -805,8 +859,9 @@ class IslandService : Service() {
         return rect.top <= dp(18) && rect.centerY() <= dp(90)
     }
 
+    // The Face ID square uses the same X as the pill (camera cutout centre) so it never slides sideways.
     private fun positionX(windowWidth: Int = targetWidth(), expanded: Boolean = panelOpen): Int {
-        if (isRecordingControlExpanded() || faceUnlocking || isFaceUnlockShrinking) return 0
+        if (isRecordingControlExpanded()) return 0
         if (isPortraitWithTopCutout()) {
             val cutout = currentCameraCutoutBounds()
             if (cutout != null) return cutout.centerX() - displayWidthPx() / 2
@@ -822,6 +877,7 @@ class IslandService : Service() {
     private fun updatePosition() {
         val root = islandRoot ?: return
         val lp = params ?: return
+        if (isFaceUnlockShrinking) return
         lp.width = targetWindowWidth()
         lp.height = targetHeight()
         lp.gravity = windowGravity()
@@ -829,7 +885,9 @@ class IslandService : Service() {
         lp.y = windowY()
         hostInsetPx = targetHostInsetPx()
         syncOverlayChildBounds(targetWidth(), targetHeight())
-        root.background = roundedBackground(currentCornerRadiusDp(), Color.BLACK)
+        updateExpandedRadius()
+        currentMorphProgress = targetMorph()
+        applyRootCorner(targetWidth(), targetHeight())
         glassView?.configure(glassStrength, tint, expandedNow = panelOpen)
         updateOverlayWindow(lp)
     }
@@ -837,6 +895,8 @@ class IslandService : Service() {
     private fun render(animateSize: Boolean = false) {
         val root = islandRoot ?: return
         val rootContent = content ?: return
+        // Never interrupt a running face shrink: the view stays alive until it fully finishes.
+        if (isFaceUnlockShrinking && resizeAnimator?.isRunning == true) return
         val prefs = AppPrefs.get(this)
         resizeAnimator?.cancel()
         resetWobble()
@@ -844,33 +904,46 @@ class IslandService : Service() {
         recordingPulse = null
         recordingTextTypewriter?.let { handler.removeCallbacks(it) }
         recordingTextTypewriter = null
-        rootContent.removeAllViews()
+        glassView?.alpha = 1f
         rootContent.visibility = View.VISIBLE
 
-        if (faceUnlocking || isFaceUnlockShrinking) {
+        if (faceUnlocking) {
             rootContent.setPadding(0, 0, 0, 0)
-            val faceView = FaceUnlockAnimationView(this) {
-                dismissFaceUnlock()
+            // keep the running view if it is still attached (config changes etc.)
+            if (faceView?.parent !== rootContent) {
+                rootContent.removeAllViews()
+                val fv = FaceUnlockAnimationView(this, faceFailed) { beginFaceUnlockShrink() }
+                faceView = fv
+                rootContent.addView(fv, LinearLayout.LayoutParams(-1, -1))
             }
-            rootContent.addView(faceView, LinearLayout.LayoutParams(-1, -1))
-        } else if (isRecordingControlExpanded()) {
-            rootContent.setPadding(dp(20), 0, dp(18), 0)
         } else {
-            rootContent.setPadding(dp(if (panelOpen) 18 else 10), dp(if (panelOpen) 15 else 2), dp(if (panelOpen) 18 else 10), dp(if (panelOpen) 14 else 2))
+            rootContent.removeAllViews()
+            faceView?.release()
+            faceView = null
+            if (isRecordingControlExpanded()) {
+                rootContent.setPadding(dp(20), 0, dp(18), 0)
+            } else {
+                rootContent.setPadding(dp(if (panelOpen) 18 else 10), dp(if (panelOpen) 15 else 2), dp(if (panelOpen) 18 else 10), dp(if (panelOpen) 14 else 2))
+            }
         }
 
-        root.background = roundedBackground(currentCornerRadiusDp(), Color.BLACK)
+        updateExpandedRadius()
+        if (!animateSize) currentMorphProgress = targetMorph()
+        applyRootCorner(
+            if (animateSize && params != null) (root.width.takeIf { it > 0 } ?: targetWidth()) else targetWidth(),
+            if (animateSize && params != null) (root.height.takeIf { it > 0 } ?: targetHeight()) else targetHeight()
+        )
         root.clipToOutline = true
         root.clipChildren = true
         root.clipToPadding = true
-        glassView?.configure(glassStrength, tint, expandedNow = panelOpen || faceUnlocking || isFaceUnlockShrinking)
-        glassView?.visibility = if (panelOpen || faceUnlocking || isFaceUnlockShrinking) View.GONE else View.VISIBLE
+        glassView?.configure(glassStrength, tint, expandedNow = panelOpen || faceUnlocking)
+        glassView?.visibility = if (panelOpen || faceUnlocking) View.GONE else View.VISIBLE
         updatePrivacyDot()
 
         val customUri = prefs.getString(PANEL_BACKGROUND_URI, null)
-        val showMediaOnTop = !isRecordingControlExpanded() && !faceUnlocking && !isFaceUnlockShrinking && (panelOpen || closingPanelWithMedia) && !customUri.isNullOrBlank()
+        val showMediaOnTop = !isRecordingControlExpanded() && !faceUnlocking && (panelOpen || closingPanelWithMedia) && !customUri.isNullOrBlank()
 
-        if (!faceUnlocking && !isFaceUnlockShrinking) {
+        if (!faceUnlocking) {
             if (isRecordingControlExpanded()) {
                 renderRecordingControlPanel(rootContent)
             } else if (panelOpen) {
@@ -939,27 +1012,70 @@ class IslandService : Service() {
         return if (id > 0) resources.getDimensionPixelSize(id) else dp(24)
     }
 
-    private fun playFaceUnlockAnimation() {
+    // ------------------------------------------------------------------ Face ID flow
+
+    /** [failed] = false -> green 3D rings + tick (unlock success). true -> red face frame + shake. */
+    private fun playFaceUnlockAnimation(failed: Boolean = false) {
         val prefs = AppPrefs.get(this)
         if (!prefs.getBoolean(AppPrefs.FACE_UNLOCK_EFFECT, true) ||
             prefs.getBoolean(AppPrefs.REDUCE_MOTION, false)) return
-
-        if (faceUnlocking || isFaceUnlockShrinking) return
+        if (islandRoot == null) return
+        if (faceUnlocking || isFaceUnlockShrinking || panelOpen) return
+        faceFailed = failed
         faceUnlocking = true
         isFaceUnlockShrinking = false
         render(animateSize = true)
     }
 
-    // DUY TRÌ THU NHỎ MƯỢT MÀ KHÔNG BỊ GIẬT MẶT VUÔNG
-    private fun dismissFaceUnlock() {
+    /**
+     * Starts the shrink. isFaceUnlockShrinking stays TRUE until the shrink animator has fully
+     * finished; only then finishFaceUnlockShrink() detaches the view and restores the pill.
+     * Safe to call many times (view timeline end, touch, swipe).
+     */
+    private fun beginFaceUnlockShrink() {
         if (!faceUnlocking || isFaceUnlockShrinking) return
         isFaceUnlockShrinking = true
         faceUnlocking = false
+        faceView?.startShrinkFade()
 
-        animateToTargetSize {
-            isFaceUnlockShrinking = false
-            render(animateSize = false)
+        // the pill (glass) cross-fades in underneath while the container shrinks
+        glassView?.apply {
+            configure(glassStrength, tint, expandedNow = false)
+            alpha = 0f
+            visibility = View.VISIBLE
         }
+        handler.removeCallbacks(faceShrinkSafety)
+        handler.postDelayed(faceShrinkSafety, FACE_SHRINK_SAFETY_MS)
+        animateToTargetSize { finishFaceUnlockShrink() }
+    }
+
+    private fun finishFaceUnlockShrink() {
+        handler.removeCallbacks(faceShrinkSafety)
+        if (!isFaceUnlockShrinking) return
+        isFaceUnlockShrinking = false
+        faceGhostsActive = false
+        faceFailed = false
+        faceView?.release()
+        faceView = null
+        currentMorphProgress = 0f
+        glassView?.alpha = 1f
+        applyPreferences() // pick up anything that arrived mid-shrink
+        render(animateSize = false)
+        updatePosition()
+    }
+
+    /** Screen turned off mid-animation: drop everything instantly (no one can see it anyway). */
+    private fun abortFaceUnlock() {
+        if (!faceUnlocking && !isFaceUnlockShrinking) return
+        handler.removeCallbacks(faceShrinkSafety)
+        resizeAnimator?.cancel()
+        faceView?.release()
+        faceView = null
+        faceUnlocking = false
+        isFaceUnlockShrinking = false
+        faceGhostsActive = false
+        currentMorphProgress = 0f
+        render(animateSize = false)
     }
 
     private fun renderRecordingControlPanel(target: LinearLayout) {
@@ -1169,7 +1285,7 @@ class IslandService : Service() {
             lastBackgroundUri = null
             host.visibility = View.GONE
             scrim.visibility = View.GONE
-            rootContent.visibility = if (panelOpen || faceUnlocking || isFaceUnlockShrinking) View.VISIBLE else View.VISIBLE
+            rootContent.visibility = View.VISIBLE
             return
         }
 
@@ -1259,7 +1375,7 @@ class IslandService : Service() {
         val videoAspect = videoWidth.toFloat() / videoHeight.toFloat()
         val viewAspect = viewWidth / viewHeight
         val scaleX = if (videoAspect > viewAspect) videoAspect / viewAspect else 1f
-        val scaleY = if (videoAspect < viewAspect) viewAspect / viewAspect else 1f
+        val scaleY = if (videoAspect < viewAspect) viewAspect / videoAspect else 1f
         val matrix = Matrix()
         matrix.setScale(scaleX, scaleY, viewWidth / 2f, viewHeight / 2f)
         texture.setTransform(matrix)
@@ -1284,11 +1400,25 @@ class IslandService : Service() {
         }
     }
 
+    /**
+     * Animates window + pill size + corner radius to the CURRENT target state.
+     * Every frame: corner radius = lerp(frameHeight / 2, expandedRadius, morph) clamped to the
+     * frame's own min(w, h) / 2, so the container stays a capsule/squircle in all frames.
+     * [onEnd] runs only when the animation completes normally (not when cancelled).
+     */
     private fun animateToTargetSize(onEnd: (() -> Unit)? = null) {
-        val root = islandRoot ?: return
-        val host = overlayHost ?: return
-        val lp = params ?: return
+        val root = islandRoot
+        val host = overlayHost
+        val lp = params
+        if (root == null || host == null || lp == null) {
+            onEnd?.invoke()
+            return
+        }
         resizeAnimator?.cancel()
+        updateExpandedRadius()
+
+        val faceShrink = isFaceUnlockShrinking
+        val faceExpand = faceUnlocking
         val opening = panelOpen || faceUnlocking
         val startWindowWidth = lp.width.toFloat()
         val startHeight = lp.height.toFloat()
@@ -1302,17 +1432,20 @@ class IslandService : Service() {
         val endY = windowY().toFloat()
         val startInset = hostInsetPx.toFloat()
         val endInset = targetHostInsetPx().toFloat()
+        val startMorph = currentMorphProgress
+        val targetMorph = targetMorph()
         lp.gravity = windowGravity()
 
         if (AppPrefs.get(this).getBoolean(AppPrefs.REDUCE_MOTION, false)) {
-            currentMorphProgress = if (opening) 1f else 0f
+            currentMorphProgress = targetMorph
             lp.width = endWidth.roundToInt()
             lp.height = endHeight.roundToInt()
             lp.x = endX.roundToInt()
             lp.y = endY.roundToInt()
             hostInsetPx = endInset.roundToInt()
+            faceGhostsActive = false
             syncOverlayChildBounds(endPillWidth.roundToInt(), endHeight.roundToInt())
-            root.background = roundedBackground(currentCornerRadiusDp(), Color.BLACK)
+            applyRootCorner(endPillWidth.roundToInt(), endHeight.roundToInt())
             root.scaleX = 1f
             root.scaleY = 1f
             updateOverlayWindow(lp)
@@ -1326,47 +1459,67 @@ class IslandService : Service() {
         }
 
         root.alpha = 0.985f
-        val startMorph = currentMorphProgress
-        val targetMorph = if (opening) 1f else 0f
+        faceGhostsActive = faceShrink
 
+        var canceled = false
         resizeAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = if (faceUnlocking || isFaceUnlockShrinking) 380L else if (opening) 420L else 460L
-            interpolator = PathInterpolator(0.22f, 1f, 0.36f, 1f)
+            duration = when {
+                faceExpand -> FACE_EXPAND_MS
+                faceShrink -> FACE_SHRINK_MS
+                opening -> 420L
+                else -> 460L
+            }
+            interpolator = if (faceExpand) FACE_EXPAND_INTERPOLATOR else PathInterpolator(0.22f, 1f, 0.36f, 1f)
             addUpdateListener { animator ->
                 val t = animator.animatedValue as Float
+                val tc = t.coerceIn(0f, 1f) // t may overshoot slightly on the Face ID expand curve
                 currentMorphProgress = lerp(startMorph, targetMorph, t)
 
-                lp.width = (startWindowWidth + (endWidth - startWindowWidth) * t).roundToInt()
-                lp.height = (startHeight + (endHeight - startHeight) * t).roundToInt()
+                lp.width = (startWindowWidth + (endWidth - startWindowWidth) * t).roundToInt().coerceAtLeast(1)
+                lp.height = (startHeight + (endHeight - startHeight) * t).roundToInt().coerceAtLeast(1)
                 lp.x = (startX + (endX - startX) * t).roundToInt()
                 lp.y = (startY + (endY - startY) * t).roundToInt()
-                hostInsetPx = (startInset + (endInset - startInset) * t).roundToInt()
+                hostInsetPx = (startInset + (endInset - startInset) * tc).roundToInt()
 
-                val pillW = (startPillWidth + (endPillWidth - startPillWidth) * t).roundToInt()
-                val pillH = (startHeight + (endHeight - startHeight) * t).roundToInt()
+                val pillW = (startPillWidth + (endPillWidth - startPillWidth) * t).roundToInt().coerceAtLeast(1)
+                val pillH = (startHeight + (endHeight - startHeight) * t).roundToInt().coerceAtLeast(1)
 
                 syncOverlayChildBounds(pillW, pillH)
-
-                root.background = roundedBackground(currentCornerRadiusDp(), Color.BLACK)
-                root.scaleX = if (opening) 0.94f + 0.06f * t else 1.045f - 0.045f * t
-                root.scaleY = if (opening) 0.90f + 0.10f * t else 1.035f - 0.035f * t
+                applyRootCorner(pillW, pillH)
+                root.scaleX = if (opening) 0.94f + 0.06f * tc else 1.045f - 0.045f * tc
+                root.scaleY = if (opening) 0.90f + 0.10f * tc else 1.035f - 0.035f * tc
 
                 if (Build.VERSION.SDK_INT >= 31) {
-                    val blur = (if (opening) (1f - t) * 0.8f else t * 1.8f)
-                    try { root.setRenderEffect(android.graphics.RenderEffect.createBlurEffect(blur, blur, android.graphics.Shader.TileMode.CLAMP)) } catch (_: Exception) { }
+                    val blur = if (opening) (1f - tc) * 0.8f else tc * 1.8f
+                    try {
+                        if (blur > 0.01f) root.setRenderEffect(android.graphics.RenderEffect.createBlurEffect(blur, blur, android.graphics.Shader.TileMode.CLAMP))
+                        else root.setRenderEffect(null)
+                    } catch (_: Exception) { }
+                }
+
+                if (faceShrink) {
+                    glassView?.alpha = tc * tc
+                    updateFaceShrinkGhosts(tc, startPillWidth, endPillWidth, startHeight, endHeight, startMorph, targetMorph)
                 }
                 updateOverlayWindow(lp)
             }
-            addListener(object : android.animation.AnimatorListenerAdapter() {
-                override fun onAnimationEnd(animation: android.animation.Animator) {
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationCancel(animation: Animator) {
+                    canceled = true
+                }
+
+                override fun onAnimationEnd(animation: Animator) {
+                    if (canceled) return
                     currentMorphProgress = targetMorph
                     hostInsetPx = endInset.roundToInt()
+                    faceGhostsActive = false
                     syncOverlayChildBounds(endPillWidth.roundToInt(), endHeight.roundToInt())
+                    applyRootCorner(endPillWidth.roundToInt(), endHeight.roundToInt())
                     root.scaleX = 1f
                     root.scaleY = 1f
                     root.alpha = 1f
-                    root.background = roundedBackground(currentCornerRadiusDp(), Color.BLACK)
                     if (Build.VERSION.SDK_INT >= 31) try { root.setRenderEffect(null) } catch (_: Exception) { }
+                    if (faceShrink) glassView?.alpha = 1f
                     if (closingPanelWithMedia) {
                         closingPanelWithMedia = false
                         syncPanelBackground()
@@ -1376,6 +1529,28 @@ class IslandService : Service() {
                 }
             })
             start()
+        }
+    }
+
+    /** Ghost trail behind the shrinking container: each ghost lags a bit more, then fades out. */
+    private fun updateFaceShrinkGhosts(
+        t: Float, startW: Float, endW: Float, startH: Float, endH: Float,
+        startMorph: Float, endMorph: Float
+    ) {
+        val envelope = sin(Math.PI * t).toFloat()
+        ghostLayers.forEachIndexed { i, ghost ->
+            val tl = (t - FACE_GHOST_LAG * (i + 1)).coerceIn(0f, 1f)
+            val gw = lerp(startW, endW, tl).roundToInt().coerceAtLeast(1)
+            val gh = lerp(startH, endH, tl).roundToInt().coerceAtLeast(1)
+            val gm = lerp(startMorph, endMorph, tl)
+            val gr = lerp(gh / 2f, dp(expandedRadiusDp), gm).coerceIn(0f, minOf(gw, gh) / 2f)
+            ghost.layoutParams = FrameLayout.LayoutParams(gw, gh, Gravity.CENTER)
+            val bg = ghost.background as? GradientDrawable
+            if (bg != null) bg.cornerRadius = gr else ghost.background = ghostCapsule(gr)
+            ghost.translationX = 0f
+            ghost.translationY = 0f
+            ghost.alpha = FACE_GHOST_ALPHA[i.coerceAtMost(FACE_GHOST_ALPHA.lastIndex)] * envelope
+            ghost.visibility = View.VISIBLE
         }
     }
 
@@ -1391,6 +1566,7 @@ class IslandService : Service() {
 
     override fun onDestroy() {
         handler.removeCallbacks(keyAuthorizationWatchdog)
+        handler.removeCallbacks(faceShrinkSafety)
         instance = null
         AppPrefs.get(this).edit().putBoolean(AppPrefs.SERVICE_ENABLED, false).apply()
         resizeAnimator?.cancel()
@@ -1399,6 +1575,8 @@ class IslandService : Service() {
         panelTypewriter?.let { handler.removeCallbacks(it) }
         recordingTextTypewriter?.let { handler.removeCallbacks(it) }
         recordingTimerTask?.let { handler.removeCallbacks(it) }
+        faceView?.release()
+        faceView = null
         stopPanelMedia()
         try { unregisterReceiver(configReceiver) } catch (_: Exception) { }
         try { unregisterReceiver(orientationReceiver) } catch (_: Exception) { }
@@ -1413,17 +1591,35 @@ class IslandService : Service() {
 
     companion object {
         const val ACTION_APPLY_CONFIG = "com.digitalsmod.digitalliquid.APPLY_CONFIG"
+        /** Send (package-restricted) from your accessibility/biometric code when face unlock fails. */
+        const val ACTION_FACE_UNLOCK_FAILED = "com.digitalsmod.digitalliquid.FACE_UNLOCK_FAILED"
         const val EXTRA_PICK_PANEL_BACKGROUND = "com.digitalsmod.digitalliquid.PICK_PANEL_BACKGROUND"
         const val PANEL_BACKGROUND_URI = "custom_panel_background_uri"
         private const val CHANNEL_ID = "digitalliquid_overlay"
         private const val LONG_PRESS_MS = 430L
         private const val TRAIL_EXTENT_DP = 38
+
+        private const val FACE_SIZE_DP = 150
+        private const val FACE_SQUIRCLE_RADIUS_DP = 38f
+        private const val FACE_EXPAND_MS = 350L
+        private const val FACE_SHRINK_MS = 400L
+        private const val FACE_SHRINK_SAFETY_MS = 900L
+        private const val FACE_GHOST_LAG = 0.035f
+        private val FACE_GHOST_ALPHA = floatArrayOf(0.34f, 0.28f, 0.22f, 0.17f, 0.12f, 0.08f, 0.05f)
+        private val FACE_EXPAND_INTERPOLATOR = PathInterpolator(0.30f, 1.18f, 0.40f, 1f)
+
         @Volatile private var instance: IslandService? = null
         @Volatile private var lastHyperIslandVisibilityOverride: Boolean? = null
 
         fun refreshOverlayWindowType() {
             val service = instance ?: return
             service.handler.post { service.rebuildOverlayForAccessibilityMode() }
+        }
+
+        /** Trigger the Face ID animation manually: success = green 3D rings + tick, else red frame + shake. */
+        fun showFaceUnlockResult(success: Boolean) {
+            val service = instance ?: return
+            service.handler.post { service.playFaceUnlockAnimation(failed = !success) }
         }
 
         @Volatile private var lastNotificationScreenRecording = false
