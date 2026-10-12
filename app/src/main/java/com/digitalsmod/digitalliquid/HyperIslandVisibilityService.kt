@@ -226,6 +226,11 @@ class HyperIslandVisibilityService : AccessibilityService() {
             "đang ghi lại màn hình", "nhấn để dừng quay", "chạm để dừng quay",
             "dừng quay màn hình", "正在录屏", "正在屏幕录制", "录屏中", "正在录制屏幕"
         )
+        val settingsUiWords = listOf(
+            "độ phân giải", "chất lượng video", "hướng màn hình", "nguồn âm thanh",
+            "tốc độ khung hình", "tùy chọn quay", "khóa màn hình để kết thúc",
+            "resolution", "video quality", "frame rate", "sound source"
+        )
         val cameraPrivacyWords = listOf(
             "camera in use", "camera is being used", "using the camera", "camera active",
             "máy ảnh đang được sử dụng", "đang sử dụng máy ảnh", "camera đang hoạt động",
@@ -238,12 +243,19 @@ class HyperIslandVisibilityService : AccessibilityService() {
         var startActionVisible = false
         var explicitActivePhraseVisible = false
         var recordingIndicatorIdVisible = false
+        var hasSettingsUi = false
+        var hasTimerText = false
+        var hasMediaContext = false
+
+        val timerRegex = Regex("\\b\\d{1,2}:\\d{2}\\b")
         val recorderContextWords = listOf(
             "screen recorder", "screen recording", "screenrecord", "screen_record",
             "quay màn hình", "ghi màn hình", "录屏", "屏幕录制", "录制屏幕"
         )
         val stopActionWords = listOf("stop", "finish", "end recording", "dừng", "kết thúc", "停止", "结束")
         val startActionWords = listOf("start recording", "record screen", "begin recording", "bắt đầu quay", "开始录制", "开始")
+        val mediaExcludeIds = listOf("media", "playback", "notification_media_base", "media_actions")
+
         while (queue.isNotEmpty() && visited < 700) {
             val (node, depth) = queue.removeFirst()
             visited++
@@ -258,6 +270,17 @@ class HyperIslandVisibilityService : AccessibilityService() {
                 val resourceId = try { node.viewIdResourceName.orEmpty().lowercase() } catch (_: Exception) { "" }
                 val visibleLabel = "$text $description".lowercase()
                 val searchableLabel = "$visibleLabel $resourceId"
+
+                if (settingsUiWords.any(searchableLabel::contains)) {
+                    hasSettingsUi = true
+                }
+                if (timerRegex.containsMatchIn(visibleLabel)) {
+                    hasTimerText = true
+                }
+                if (mediaExcludeIds.any(resourceId::contains)) {
+                    hasMediaContext = true
+                }
+
                 if (recorderContextWords.any(searchableLabel::contains) ||
                     listOf("screen_recording_indicator", "recording_indicator", "screen_recording_chip").any(resourceId::contains)) {
                     recorderContextVisible = true
@@ -265,7 +288,7 @@ class HyperIslandVisibilityService : AccessibilityService() {
                 if (node.isClickable && stopActionWords.any(searchableLabel::contains)) stopActionVisible = true
                 if (node.isClickable && startActionWords.any(searchableLabel::contains)) startActionVisible = true
 
-                val isScreenRecordingNode = recordingWords.any(searchableLabel::contains)
+                val isScreenRecordingNode = recordingWords.any(searchableLabel::contains) || timerRegex.containsMatchIn(visibleLabel)
                 if (isScreenRecordingNode) explicitActivePhraseVisible = true
                 if (listOf("screen_recording_indicator", "recording_indicator", "screen_recording_chip").any(resourceId::contains)) {
                     recordingIndicatorIdVisible = true
@@ -310,16 +333,24 @@ class HyperIslandVisibilityService : AccessibilityService() {
         while (queue.isNotEmpty()) {
             try { queue.removeFirst().first.recycle() } catch (_: Exception) { }
         }
+
+        // Bỏ qua nếu giao diện thuộc màn hình Cài đặt của ứng dụng quay phim
+        if (hasSettingsUi) {
+            return
+        }
+
+        val activeRecordingTrigger = explicitActivePhraseVisible || (hasTimerText && !hasMediaContext)
+
         // Do not let ordinary foreground-app text (for example a YouTube title or caption)
         // set REC. A positive must come from the recorder's own package, or from a SystemUI
         // recording indicator/notification with explicit recorder context and no Start action.
-        if (recorderAppRoot && recorderContextVisible && explicitActivePhraseVisible) {
+        if (recorderAppRoot && (activeRecordingTrigger || (stopActionVisible && !startActionVisible))) {
             result.screenRecordingVisible = true
-        } else if (sourcePkgIsSystemUi(sourcePackage) && recorderContextVisible &&
+        } else if (sourcePkgIsSystemUi(sourcePackage) && !hasMediaContext && recorderContextVisible &&
             stopActionVisible && !startActionVisible) {
             result.screenRecordingVisible = true
-        } else if (sourcePkgIsSystemUi(sourcePackage) && recorderContextVisible &&
-            recordingIndicatorIdVisible && explicitActivePhraseVisible) {
+        } else if (sourcePkgIsSystemUi(sourcePackage) && !hasMediaContext && recorderContextVisible &&
+            recordingIndicatorIdVisible && activeRecordingTrigger) {
             result.screenRecordingVisible = true
         }
     }
