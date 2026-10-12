@@ -106,6 +106,8 @@ class HyperIslandVisibilityService : AccessibilityService() {
         return false
     }
 
+    private fun sourcePkgIsSystemUi(packageName: String): Boolean = packageName in SYSTEM_UI_PACKAGES
+
     private fun isCameraPackage(packageName: String): Boolean =
         packageName in CAMERA_PACKAGES ||
             (packageName.startsWith("com.") && packageName.contains("camera") &&
@@ -229,9 +231,13 @@ class HyperIslandVisibilityService : AccessibilityService() {
             "máy ảnh đang được sử dụng", "đang sử dụng máy ảnh", "camera đang hoạt động",
             "đang dùng camera", "正在使用相机", "正在使用摄像头"
         )
-        var recorderContextVisible = isScreenRecorderPackage(root.packageName?.toString().orEmpty().lowercase())
+        val sourcePackage = root.packageName?.toString().orEmpty().lowercase()
+        val recorderAppRoot = isScreenRecorderPackage(sourcePackage)
+        var recorderContextVisible = recorderAppRoot
         var stopActionVisible = false
         var startActionVisible = false
+        var explicitActivePhraseVisible = false
+        var recordingIndicatorIdVisible = false
         val recorderContextWords = listOf(
             "screen recorder", "screen recording", "screenrecord", "screen_record",
             "quay màn hình", "ghi màn hình", "录屏", "屏幕录制", "录制屏幕"
@@ -260,8 +266,9 @@ class HyperIslandVisibilityService : AccessibilityService() {
                 if (node.isClickable && startActionWords.any(searchableLabel::contains)) startActionVisible = true
 
                 val isScreenRecordingNode = recordingWords.any(searchableLabel::contains)
-                if (!result.screenRecordingVisible && isScreenRecordingNode) {
-                    result.screenRecordingVisible = true
+                if (isScreenRecordingNode) explicitActivePhraseVisible = true
+                if (listOf("screen_recording_indicator", "recording_indicator", "screen_recording_chip").any(resourceId::contains)) {
+                    recordingIndicatorIdVisible = true
                 }
                 if (allowIslandDetection && !result.cameraPrivacyIndicatorVisible && cameraPrivacyWords.any(searchableLabel::contains)) {
                     result.cameraPrivacyIndicatorVisible = true
@@ -303,7 +310,16 @@ class HyperIslandVisibilityService : AccessibilityService() {
         while (queue.isNotEmpty()) {
             try { queue.removeFirst().first.recycle() } catch (_: Exception) { }
         }
-        if (!result.screenRecordingVisible && recorderContextVisible && stopActionVisible && !startActionVisible) {
+        // Do not let ordinary foreground-app text (for example a YouTube title or caption)
+        // set REC. A positive must come from the recorder's own package, or from a SystemUI
+        // recording indicator/notification with explicit recorder context and no Start action.
+        if (recorderAppRoot && recorderContextVisible && explicitActivePhraseVisible) {
+            result.screenRecordingVisible = true
+        } else if (sourcePkgIsSystemUi(sourcePackage) && recorderContextVisible &&
+            stopActionVisible && !startActionVisible) {
+            result.screenRecordingVisible = true
+        } else if (sourcePkgIsSystemUi(sourcePackage) && recorderContextVisible &&
+            recordingIndicatorIdVisible && explicitActivePhraseVisible) {
             result.screenRecordingVisible = true
         }
     }
