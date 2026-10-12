@@ -48,8 +48,7 @@ import kotlin.random.Random
 
 /**
  * Minimal HyperOS companion: an always-present black pill, an iOS-like tap reaction,
- * a long-press customization panel, and a recording-only live effect. Media playback,
- * Clock, stopwatch, charging, battery and ordinary notifications are deliberately ignored.
+ * a long-press customization panel, and a recording-only live effect.
  */
 class IslandService : Service() {
     private lateinit var windowManager: WindowManager
@@ -65,8 +64,7 @@ class IslandService : Service() {
             handler.postDelayed(this, 30_000L)
         }
     }
-    // islandRoot is the interactive pill. overlayHost is the wider, transparent window
-    // that gives the temporal echo layers real space beyond the pill's silhouette.
+
     private var islandRoot: FrameLayout? = null
     private var overlayHost: FrameLayout? = null
     private val ghostLayers = mutableListOf<View>()
@@ -76,9 +74,9 @@ class IslandService : Service() {
     private var backgroundHost: FrameLayout? = null
     private var backgroundScrim: View? = null
     private var params: WindowManager.LayoutParams? = null
-    private var faceUnlockOverlay: View? = null
-    private var faceUnlockOverlayManager: WindowManager? = null
-    private var faceUnlockRemoval: Runnable? = null
+
+    // TRẠNG THÁI MỞ KHÓA TRỰC TIẾP TRÊN DYNAMIC ISLAND
+    private var faceUnlocking = false
 
     private var widthDp = 148
     private var heightDp = 38
@@ -129,8 +127,6 @@ class IslandService : Service() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != Intent.ACTION_CONFIGURATION_CHANGED) return
             applyPreferences()
-            // Re-read the physical display cutout after rotation so the island stays
-            // aligned with the camera rather than following the app's portrait UI.
             render(animateSize = true)
             updatePosition()
         }
@@ -144,11 +140,7 @@ class IslandService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        // Sticky service restarts must not resurrect the island after a cold process start
-        // until MainActivity has successfully verified a key in this process.
         if (!KeyAuthGate.isAuthorizedInCurrentProcess(this)) {
-            // A foreground-service start must promptly call startForeground on modern Android.
-            // Show its low-importance notification briefly, then stop without creating the overlay.
             createNotificationChannel()
             val blockedNotification = buildForegroundNotification()
             if (Build.VERSION.SDK_INT >= 34) {
@@ -202,8 +194,6 @@ class IslandService : Service() {
             showIsland()
             return
         }
-        // AccessibilityService can reconnect just after Activity returns from Settings.
-        // Wait briefly rather than create a normal overlay below the status bar.
         if (overlayStartupAttempts++ < 8) {
             handler.postDelayed({ waitForAccessibilityOverlay() }, 250L)
         } else {
@@ -263,7 +253,7 @@ class IslandService : Service() {
 
     private fun isRecordingControlExpanded(): Boolean = panelOpen && screenRecording && recordingExpanded
 
-    private fun targetHostInsetPx(): Int = if (panelOpen || isRecordingControlExpanded()) 0 else dp(TRAIL_EXTENT_DP)
+    private fun targetHostInsetPx(): Int = if (panelOpen || isRecordingControlExpanded() || faceUnlocking) 0 else dp(TRAIL_EXTENT_DP)
 
     private fun targetWindowWidth(): Int = if (isRecordingControlExpanded()) {
         (displayWidthPx() - dp(12)).coerceAtLeast(dp(180))
@@ -290,6 +280,7 @@ class IslandService : Service() {
     private fun windowY(): Int = if (isRecordingControlExpanded()) 0 else positionY(targetHeight(), panelOpen)
 
     private fun currentCornerRadiusDp(): Float = when {
+        faceUnlocking -> 38f
         isRecordingControlExpanded() -> (targetHeight() / resources.displayMetrics.density.coerceAtLeast(1f)) / 2f
         panelOpen -> 30f
         else -> heightDp / 2f
@@ -302,7 +293,7 @@ class IslandService : Service() {
         ghostLayers.forEach { ghost ->
             ghost.layoutParams = FrameLayout.LayoutParams(pillWidth, pillHeight, Gravity.CENTER)
             ghost.background = ghostCapsule(pillHeight)
-            ghost.visibility = if (wobbleAnimator != null && !panelOpen) View.VISIBLE else View.INVISIBLE
+            ghost.visibility = if (wobbleAnimator != null && !panelOpen && !faceUnlocking) View.VISIBLE else View.INVISIBLE
         }
     }
 
@@ -371,8 +362,6 @@ class IslandService : Service() {
                 elevation = dp(3).toFloat()
                 alpha = 0.95f
             }
-            // iPhone Dynamic Island's privacy dot sits right-of-centre and vertically centred,
-            // not glued to the upper-right corner. Recalculate proportionally when width changes.
             addView(dot, FrameLayout.LayoutParams(dp(3), dp(3), Gravity.LEFT or Gravity.TOP).apply {
                 leftMargin = dp(99)
                 topMargin = dp(17)
@@ -412,9 +401,6 @@ class IslandService : Service() {
             setLayerType(View.LAYER_TYPE_HARDWARE, null)
         }
         ghostLayers.clear()
-        // Seven independently blurred afterimages. The user requested visual richness over
-        // conserving GPU work, so keep the longer, multi-layer trail rather than collapsing it
-        // into a single blur pass.
         val ghostBlurDp = floatArrayOf(1.2f, 2.0f, 2.9f, 4.1f, 5.5f, 7.2f, 9.2f)
         val ghostBaseAlpha = floatArrayOf(0.44f, 0.37f, 0.31f, 0.25f, 0.20f, 0.15f, 0.10f)
         for (i in ghostBlurDp.indices) {
@@ -453,8 +439,6 @@ class IslandService : Service() {
             x = windowX()
             y = windowY()
             if (Build.VERSION.SDK_INT >= 23) {
-                // Request the fastest supported display mode capped at 120 Hz for this window.
-                // ValueAnimator then follows Choreographer/VSync instead of a timer loop.
                 try {
                     @Suppress("DEPRECATION")
                     val supported = windowManager.defaultDisplay.supportedModes.toList()
@@ -484,8 +468,6 @@ class IslandService : Service() {
         try {
             windowManager.addView(host, initialParams)
         } catch (_: Exception) {
-            // Never silently fall back to TYPE_APPLICATION_OVERLAY: it can be below the
-            // status bar, recreating the invisible/non-responsive pill bug.
             Toast.makeText(this, "Android từ chối lớp phủ trên thanh trạng thái. Kiểm tra quyền Trợ năng DigitalLiquid.", Toast.LENGTH_LONG).show()
             stopSelf()
             return
@@ -515,8 +497,6 @@ class IslandService : Service() {
         val host = overlayHost ?: return
         val shouldUseTrusted = HyperIslandVisibilityService.overlayWindowManager() != null
         if (!shouldUseTrusted && usingAccessibilityOverlay) {
-            // Accessibility was disabled while running. Stop rather than regress to an
-            // overlay that cannot receive taps over the status bar.
             stopSelf()
             return
         }
@@ -537,6 +517,10 @@ class IslandService : Service() {
     }
 
     private fun handlePillTouch(view: View, event: MotionEvent): Boolean {
+        if (faceUnlocking) {
+            dismissFaceUnlock()
+            return true
+        }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 downX = event.rawX
@@ -581,7 +565,7 @@ class IslandService : Service() {
 
     private fun wobblePill() {
         val root = islandRoot ?: return
-        if (panelOpen) return
+        if (panelOpen || faceUnlocking) return
         val motionPrefs = AppPrefs.get(this)
         if (motionPrefs.getBoolean(AppPrefs.REDUCE_MOTION, false) ||
             !motionPrefs.getBoolean(AppPrefs.TAP_WOBBLE, true)) {
@@ -589,8 +573,6 @@ class IslandService : Service() {
             return
         }
 
-        // Retarget from the exact current positions. Remove the old callbacks before cancelling
-        // so an old onAnimationEnd cannot snap the fresh animation back to rest on rapid taps.
         val previous = wobbleAnimator
         val wasRunning = previous?.isRunning == true
         val startOffset = if (wasRunning) root.translationX else 0f
@@ -612,7 +594,6 @@ class IslandService : Service() {
             root.translationY = 0f
         }
 
-        // Subtle 4.2–5.8 dp motion: several quick taps can retrigger it without a large kick.
         val distance = dp(4.2f + Random.nextFloat() * 1.6f)
         val swingDirection = if (Random.nextBoolean()) -1f else 1f
         val lags = floatArrayOf(0.012f, 0.024f, 0.036f, 0.048f, 0.060f, 0.072f, 0.084f)
@@ -638,7 +619,7 @@ class IslandService : Service() {
                 1f - u * u * (3f - 2f * u)
             }
             val envelope = kotlin.math.exp(-1.0f * t) * settle
-            val phase = t * Math.PI.toFloat() * 4f // two cycles, then settle
+            val phase = t * Math.PI.toFloat() * 4f
             return swingDirection * distance * envelope * kotlin.math.sin(phase)
         }
         fun offsetAt(progress: Float): Float {
@@ -687,8 +668,6 @@ class IslandService : Service() {
                     ghost.alpha = 0f
                     ghost.visibility = View.INVISIBLE
                 }
-                // Explicitly zero out the motion shader after the final frame, removing any
-                // faint bright smear that could otherwise look stuck on the capsule.
                 glassView?.setMotionBlur(0f, 1f)
                 wobbleAnimator = null
             }
@@ -715,7 +694,7 @@ class IslandService : Service() {
     }
 
     private fun openCustomizationPanel() {
-        if (panelOpen) return
+        if (panelOpen || faceUnlocking) return
         closingPanelWithMedia = false
         panelOpen = true
         playPanelIntro = true
@@ -736,6 +715,7 @@ class IslandService : Service() {
         val density = resources.displayMetrics.density.coerceAtLeast(1f)
         val screenWidthPx = displayWidthPx().coerceAtLeast(dp(180))
         val screenWidthDp = (screenWidthPx / density).toInt().coerceAtLeast(180)
+        if (faceUnlocking) return dp(150)
         if (isRecordingControlExpanded()) return (screenWidthPx - dp(12)).coerceAtLeast(dp(180))
         val desiredDp = when {
             panelOpen && screenRecording -> 238
@@ -748,6 +728,7 @@ class IslandService : Service() {
     }
 
     private fun targetHeight(): Int = when {
+        faceUnlocking -> dp(150)
         isRecordingControlExpanded() -> maxOf(statusBarHeightPx() + dp(24), dp(50))
         panelOpen && screenRecording -> dp(66)
         panelOpen -> dp(252)
@@ -763,7 +744,6 @@ class IslandService : Service() {
 
     private fun gravityForWindow(): Int = Gravity.TOP or Gravity.CENTER_HORIZONTAL
 
-    // Fixed centered anchor in both orientations; the capsule itself remains horizontal.
     private fun horizontalOffset(): Int = 0
 
     private fun displayWidthPx(): Int = if (Build.VERSION.SDK_INT >= 30) {
@@ -809,7 +789,7 @@ class IslandService : Service() {
     }
 
     private fun positionX(windowWidth: Int = targetWidth(), expanded: Boolean = panelOpen): Int {
-        if (isRecordingControlExpanded()) return 0
+        if (isRecordingControlExpanded() || faceUnlocking) return 0
         if (isPortraitWithTopCutout()) {
             val cutout = currentCameraCutoutBounds()
             if (cutout != null) return cutout.centerX() - displayWidthPx() / 2
@@ -849,35 +829,44 @@ class IslandService : Service() {
         recordingTextTypewriter = null
         rootContent.removeAllViews()
         rootContent.visibility = View.VISIBLE
-        if (isRecordingControlExpanded()) {
+
+        if (faceUnlocking) {
+            rootContent.setPadding(0, 0, 0, 0)
+            val faceView = FaceUnlockAnimationView(this) {
+                dismissFaceUnlock()
+            }
+            rootContent.addView(faceView, LinearLayout.LayoutParams(-1, -1))
+        } else if (isRecordingControlExpanded()) {
             rootContent.setPadding(dp(20), 0, dp(18), 0)
         } else {
             rootContent.setPadding(dp(if (panelOpen) 18 else 10), dp(if (panelOpen) 15 else 2), dp(if (panelOpen) 18 else 10), dp(if (panelOpen) 14 else 2))
         }
+
         root.background = roundedBackground(currentCornerRadiusDp(), Color.BLACK)
         root.clipToOutline = true
         root.clipChildren = true
         root.clipToPadding = true
-        glassView?.configure(glassStrength, tint, expandedNow = panelOpen)
-        glassView?.visibility = if (panelOpen) View.GONE else View.VISIBLE
+        glassView?.configure(glassStrength, tint, expandedNow = panelOpen || faceUnlocking)
+        glassView?.visibility = if (panelOpen || faceUnlocking) View.GONE else View.VISIBLE
         updatePrivacyDot()
 
         val customUri = prefs.getString(PANEL_BACKGROUND_URI, null)
-        // The recording control is a separate UI mode and always outranks the user wallpaper.
-        val showMediaOnTop = !isRecordingControlExpanded() && (panelOpen || closingPanelWithMedia) && !customUri.isNullOrBlank()
-        if (isRecordingControlExpanded()) {
-            renderRecordingControlPanel(rootContent)
-        } else if (panelOpen) {
-            if (showMediaOnTop) {
-                // The selected local media becomes the whole panel. No text/buttons are layered over it.
-                rootContent.visibility = View.GONE
-            } else {
-                val runIntro = playPanelIntro
-                playPanelIntro = false
-                renderCustomizationPanel(rootContent, runIntro)
+        val showMediaOnTop = !isRecordingControlExpanded() && !faceUnlocking && (panelOpen || closingPanelWithMedia) && !customUri.isNullOrBlank()
+
+        if (!faceUnlocking) {
+            if (isRecordingControlExpanded()) {
+                renderRecordingControlPanel(rootContent)
+            } else if (panelOpen) {
+                if (showMediaOnTop) {
+                    rootContent.visibility = View.GONE
+                } else {
+                    val runIntro = playPanelIntro
+                    playPanelIntro = false
+                    renderCustomizationPanel(rootContent, runIntro)
+                }
+            } else if (screenRecording) {
+                renderRecordingIndicator(rootContent)
             }
-        } else if (screenRecording) {
-            renderRecordingIndicator(rootContent)
         }
         syncPanelBackground()
 
@@ -903,7 +892,7 @@ class IslandService : Service() {
         val color = if (cameraActive) 0xFF30D158.toInt() else 0xFFFF9F0A.toInt()
         (dot.background as? GradientDrawable)?.setColor(color)
         dot.alpha = if (cameraActive) 1f else 0.96f
-        dot.visibility = if (!panelOpen && !screenRecording) View.VISIBLE else View.GONE
+        dot.visibility = if (!panelOpen && !screenRecording && !faceUnlocking) View.VISIBLE else View.GONE
         dot.contentDescription = if (cameraActive) "Camera đang hoạt động" else "DigitalLiquid trạng thái chờ"
     }
 
@@ -911,9 +900,8 @@ class IslandService : Service() {
         val root = islandRoot ?: return
         val host = overlayHost ?: return
         val lp = params ?: return
-        // Hide pill, echoes and all child content as a unit when the native HyperIsland owns the slot.
         val nativeIslandVisible = hyperIslandVisibilityOverride == true || nativeActivityActive
-        val suppress = !screenRecording && !cameraActive && nativeIslandVisible
+        val suppress = !screenRecording && !cameraActive && nativeIslandVisible && !faceUnlocking
         val wantedVisibility = if (suppress) View.GONE else View.VISIBLE
         val hasNotTouchable = (lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) != 0
         if (host.visibility != wantedVisibility || hasNotTouchable != suppress) {
@@ -927,9 +915,6 @@ class IslandService : Service() {
         }
     }
 
-    // With insets disabled on this window, y=0 is already the physical screen top.
-    // Subtracting status-bar height placed the pill partly outside the display and made
-    // its touch region inconsistent. Use the chosen offset directly.
     private fun overlayTopY(): Int = dp(topOffsetDp)
 
     private fun statusBarHeightPx(): Int {
@@ -937,56 +922,21 @@ class IslandService : Service() {
         return if (id > 0) resources.getDimensionPixelSize(id) else dp(24)
     }
 
+    // MỞ KHÓA DYNAMIC ISLAND TRỰC TIẾP TẠI ĐÂY
     private fun playFaceUnlockAnimation() {
         val prefs = AppPrefs.get(this)
         if (!prefs.getBoolean(AppPrefs.FACE_UNLOCK_EFFECT, true) ||
             prefs.getBoolean(AppPrefs.REDUCE_MOTION, false)) return
-        val trustedManager = HyperIslandVisibilityService.overlayWindowManager() ?: return
-        val oldView = faceUnlockOverlay
-        if (oldView != null) {
-            faceUnlockRemoval?.let { handler.removeCallbacks(it) }
-            try { faceUnlockOverlayManager?.removeView(oldView) } catch (_: Exception) { }
-            faceUnlockOverlay = null
-        }
-        val overlay = FrameLayout(this).apply {
-            setBackgroundColor(Color.TRANSPARENT)
-            isClickable = true
-            isFocusable = false
-        }
-        overlay.addView(FaceUnlockAnimationView(this), FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
-        val layout = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            if (Build.VERSION.SDK_INT >= 28) {
-                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
-            }
-            if (Build.VERSION.SDK_INT >= 30) try { setFitInsetsTypes(0) } catch (_: Exception) { }
-        }
-        try {
-            trustedManager.addView(overlay, layout)
-            faceUnlockOverlay = overlay
-            faceUnlockOverlayManager = trustedManager
-            val remove = Runnable {
-                try { faceUnlockOverlayManager?.removeView(overlay) } catch (_: Exception) { }
-                if (faceUnlockOverlay === overlay) {
-                    faceUnlockOverlay = null
-                    faceUnlockOverlayManager = null
-                    faceUnlockRemoval = null
-                }
-            }
-            faceUnlockRemoval = remove
-            handler.postDelayed(remove, 4400L)
-        } catch (_: Exception) {
-            faceUnlockOverlay = null
-            faceUnlockOverlayManager = null
-        }
+
+        if (faceUnlocking) return
+        faceUnlocking = true
+        render(animateSize = true)
+    }
+
+    private fun dismissFaceUnlock() {
+        if (!faceUnlocking) return
+        faceUnlocking = false
+        render(animateSize = true)
     }
 
     private fun renderRecordingControlPanel(target: LinearLayout) {
@@ -1189,14 +1139,14 @@ class IslandService : Service() {
         val uriString = AppPrefs.get(this).getString(PANEL_BACKGROUND_URI, null)
         val recordingControlOwnsOverlay = isRecordingControlExpanded()
         if (recordingControlOwnsOverlay) closingPanelWithMedia = false
-        val shouldShow = !recordingControlOwnsOverlay && (panelOpen || closingPanelWithMedia) && !uriString.isNullOrBlank()
+        val shouldShow = !recordingControlOwnsOverlay && !faceUnlocking && (panelOpen || closingPanelWithMedia) && !uriString.isNullOrBlank()
         if (!shouldShow) {
             stopPanelMedia()
             host.removeAllViews()
             lastBackgroundUri = null
             host.visibility = View.GONE
             scrim.visibility = View.GONE
-            rootContent.visibility = if (panelOpen) View.VISIBLE else View.VISIBLE
+            rootContent.visibility = if (panelOpen || faceUnlocking) View.VISIBLE else View.VISIBLE
             return
         }
 
@@ -1316,7 +1266,7 @@ class IslandService : Service() {
         val host = overlayHost ?: return
         val lp = params ?: return
         resizeAnimator?.cancel()
-        val opening = panelOpen
+        val opening = panelOpen || faceUnlocking
         val startWindowWidth = lp.width.toFloat()
         val startHeight = lp.height.toFloat()
         val startX = lp.x.toFloat()
@@ -1352,7 +1302,7 @@ class IslandService : Service() {
         root.scaleX = if (opening) 0.94f else 1.045f
         root.scaleY = if (opening) 0.90f else 1.035f
         resizeAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = if (panelOpen) 440L else 380L
+            duration = if (faceUnlocking) 320L else if (panelOpen) 440L else 380L
             interpolator = PathInterpolator(0.16f, 0.92f, 0.18f, 1f)
             addUpdateListener { animator ->
                 val t = animator.animatedValue as Float
@@ -1416,11 +1366,6 @@ class IslandService : Service() {
         try { unregisterReceiver(configReceiver) } catch (_: Exception) { }
         try { unregisterReceiver(orientationReceiver) } catch (_: Exception) { }
         try { unregisterReceiver(unlockReceiver) } catch (_: Exception) { }
-        faceUnlockRemoval?.let { handler.removeCallbacks(it) }
-        faceUnlockOverlay?.let { try { faceUnlockOverlayManager?.removeView(it) } catch (_: Exception) { } }
-        faceUnlockOverlay = null
-        faceUnlockOverlayManager = null
-        faceUnlockRemoval = null
         overlayHost?.let { try { windowManager.removeView(it) } catch (_: Exception) { } }
         overlayHost = null
         islandRoot = null
