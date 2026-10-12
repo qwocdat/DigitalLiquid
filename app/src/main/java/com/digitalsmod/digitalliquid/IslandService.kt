@@ -110,6 +110,7 @@ class IslandService : Service() {
     
     private var screenRecording = false
     private var notificationScreenRecording = false
+    private var accessibilityScreenRecording = false
     private var isVirtualDisplayActive = false
     
     private var nativeActivityActive = false
@@ -135,7 +136,7 @@ class IslandService : Service() {
     private var longPressTriggered = false
     private val touchSlop by lazy { ViewConfiguration.get(this).scaledTouchSlop }
 
-    // Bộ lắng nghe sự kiện màn hình ảo cấp HĐH (VirtualDisplay Listener)
+    // Lắng nghe sự kiện tạo/hủy Màn hình ảo (Virtual Display)
     private val displayListener = object : DisplayManager.DisplayListener {
         override fun onDisplayAdded(displayId: Int) { checkVirtualDisplayState() }
         override fun onDisplayRemoved(displayId: Int) { checkVirtualDisplayState() }
@@ -195,6 +196,7 @@ class IslandService : Service() {
 
         hyperIslandVisibilityOverride = lastHyperIslandVisibilityOverride
         notificationScreenRecording = lastNotificationScreenRecording
+        accessibilityScreenRecording = lastAccessibilityScreenRecording
         nativeActivityActive = lastNativeActivityActive
         cameraActive = lastCameraActivityActive
         
@@ -234,14 +236,29 @@ class IslandService : Service() {
     }
 
     /**
-     * Kiểm tra sự tồn tại của Màn hình ảo (Virtual Display).
-     * Khi quay màn hình thật, Android bắt buộc phải tạo 1 Display dạng TYPE_VIRTUAL.
+     * Dùng Reflection kiểm tra an toàn xem Display có phải là Màn hình ảo (TYPE_VIRTUAL = 5) hay không.
      */
+    private fun isVirtualDisplay(display: Display): Boolean {
+        if (display.displayId == Display.DEFAULT_DISPLAY) return false
+        return try {
+            val getTypeMethod = display.javaClass.getMethod("getType")
+            val typeVal = getTypeMethod.invoke(display) as? Int
+            val virtualTypeConst = try {
+                Display::class.java.getField("TYPE_VIRTUAL").getInt(null)
+            } catch (_: Exception) {
+                5
+            }
+            typeVal == virtualTypeConst
+        } catch (_: Exception) {
+            display.name.contains("overlay", ignoreCase = true) ||
+                display.name.contains("record", ignoreCase = true) ||
+                display.name.contains("virtual", ignoreCase = true)
+        }
+    }
+
     private fun checkVirtualDisplayState() {
         val displays = displayManager.displays
-        val hasVirtual = displays.any { display ->
-            display.type == Display.TYPE_VIRTUAL && display.displayId != Display.DEFAULT_DISPLAY
-        }
+        val hasVirtual = displays.any { display -> isVirtualDisplay(display) }
         if (isVirtualDisplayActive != hasVirtual) {
             isVirtualDisplayActive = hasVirtual
             evaluateRecordingState()
@@ -249,12 +266,13 @@ class IslandService : Service() {
     }
 
     /**
-     * Đánh giá trạng thái Quay màn hình chính xác 100%:
-     * Phải BẬT công tắc trong app + Có màn hình ảo VirtualDisplay DANG CHẠY + Có thông báo hệ thống xác nhận.
+     * Đánh giá trạng thái quay màn hình thực sự:
+     * Cần BẬT công tắc trong app + Có VirtualDisplay thực sự + Được xác nhận từ thông báo/trợ năng.
      */
     private fun evaluateRecordingState() {
         val enabledInPrefs = AppPrefs.get(this).getBoolean(AppPrefs.SCREEN_RECORDING_EFFECT, true)
-        val active = enabledInPrefs && isVirtualDisplayActive && notificationScreenRecording
+        val hasTrigger = notificationScreenRecording || accessibilityScreenRecording
+        val active = enabledInPrefs && isVirtualDisplayActive && hasTrigger
 
         if (screenRecording != active) {
             screenRecording = active
@@ -1644,6 +1662,7 @@ class IslandService : Service() {
         }
 
         @Volatile private var lastNotificationScreenRecording = false
+        @Volatile private var lastAccessibilityScreenRecording = false
         @Volatile private var lastNativeActivityActive = false
         @Volatile private var lastCameraActivityActive = false
 
@@ -1663,6 +1682,15 @@ class IslandService : Service() {
             val service = instance ?: return
             service.handler.post {
                 service.notificationScreenRecording = active
+                service.evaluateRecordingState()
+            }
+        }
+
+        fun setAccessibilityScreenRecordingActive(active: Boolean) {
+            lastAccessibilityScreenRecording = active
+            val service = instance ?: return
+            service.handler.post {
+                service.accessibilityScreenRecording = active
                 service.evaluateRecordingState()
             }
         }
