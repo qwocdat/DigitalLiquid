@@ -170,11 +170,14 @@ class HyperIslandVisibilityService : AccessibilityService() {
             "cuộc gọi", "đang sạc", "chia sẻ", "định vị", "播放", "计时",
             "通话", "充电", "导航", "正在播放"
         )
+        // Only phrases that imply a live capture count. Merely opening the recorder UI
+        // often exposes labels like "Screen recorder" or "Screen recording" in its tree.
         val recordingWords = listOf(
-            "screen recording", "screen recorder", "recording screen", "tap to stop recording",
-            "stop screen recording", "screen recording active", "đang quay màn hình", "quay màn hình",
-            "ghi màn hình", "trình ghi màn hình", "đang ghi lại màn hình", "dừng quay màn hình",
-            "screen capture recording", "录屏", "屏幕录制", "正在录屏", "正在屏幕录制"
+            "screen is being recorded", "recording your screen", "recording screen",
+            "recording in progress", "tap to stop recording", "stop screen recording", "stop recording",
+            "currently recording", "đang quay màn hình", "đang ghi màn hình",
+            "đang ghi lại màn hình", "nhấn để dừng quay", "chạm để dừng quay",
+            "dừng quay màn hình", "正在录屏", "正在屏幕录制", "录屏中", "正在录制屏幕"
         )
         val cameraPrivacyWords = listOf(
             "camera in use", "camera is being used", "using the camera", "camera active",
@@ -196,9 +199,7 @@ class HyperIslandVisibilityService : AccessibilityService() {
                 val visibleLabel = "$text $description".lowercase()
                 val searchableLabel = "$visibleLabel $resourceId"
 
-                val isScreenRecordingNode = recordingWords.any(searchableLabel::contains) ||
-                    listOf("screenrecord", "screen_record", "recording_indicator", "recording_chip", "screen_capture")
-                        .any(resourceId::contains)
+                val isScreenRecordingNode = recordingWords.any(searchableLabel::contains)
                 if (!result.screenRecordingVisible && isScreenRecordingNode) {
                     result.screenRecordingVisible = true
                 }
