@@ -3,8 +3,8 @@ package com.digitalsmod.digitalliquid
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
+import android.content.Context
 import android.graphics.Color
-import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Handler
@@ -26,16 +26,28 @@ import java.util.UUID
 import java.util.concurrent.Executors
 
 /**
- * Standalone gate screen. Call KeyAuthGate.requireKey(this) { startYourExistingApp() }
- * from the entry Activity before starting DigitalLiquid's foreground/overlay services.
+ * Mandatory key gate. Call from the entry Activity before rendering the app or starting services.
+ * A cold process always asks the user to type a key; successful verification is kept in memory only
+ * for the remaining valid session and is never trusted from local storage on the next app launch.
  */
 object KeyAuthGate {
     private const val API_BASE = "https://asia-southeast1-quocdat-396fe.cloudfunctions.net/keyApi"
+    // Canonical GitHub Pages route backed by get-key/index.html.
+    private const val KEY_PAGE_BASE = "https://digitalsmod.site/get-key"
     private const val PREFS = "digitalsmod_key_auth"
     private const val INSTALL_ID = "install_id"
-    private const val SAVED_KEY = "saved_key"
     private val executor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    // Authorization is deliberately process-only: after a cold start the user must type a key again.
+    @Volatile private var authorizedInstallId: String? = null
+    @Volatile private var authorizedUntilMs: Long = 0L
+
+    fun isAuthorizedInCurrentProcess(context: Context): Boolean {
+        val installId = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(INSTALL_ID, null)
+            ?: return false
+        return authorizedInstallId == installId && System.currentTimeMillis() < authorizedUntilMs
+    }
 
     fun requireKey(activity: Activity, onAuthorized: () -> Unit) {
         if (activity.isFinishing || activity.isDestroyed) return
@@ -43,25 +55,13 @@ object KeyAuthGate {
         val installId = prefs.getString(INSTALL_ID, null) ?: UUID.randomUUID().toString().also {
             prefs.edit().putString(INSTALL_ID, it).apply()
         }
-        val cachedKey = prefs.getString(SAVED_KEY, null)
 
-        if (!cachedKey.isNullOrBlank()) {
-            executor.execute {
-                val result = runCatching {
-                    postJson("/verify-key", JSONObject().put("key", cachedKey).put("installId", installId))
-                }.getOrNull()
-                mainHandler.post {
-                    if (activity.isFinishing || activity.isDestroyed) return@post
-                    if (result?.optBoolean("valid", false) == true) onAuthorized()
-                    else {
-                        prefs.edit().remove(SAVED_KEY).apply()
-                        showGate(activity, installId, onAuthorized, result?.optString("reason") ?: "Không thể xác thực key. Kiểm tra kết nối mạng.")
-                    }
-                }
-            }
-        } else {
-            showGate(activity, installId, onAuthorized, "Nhập key đã nhận từ trang Get Key.")
+        // Avoid asking again for Activity recreation/media picker within the already authorized process.
+        if (authorizedInstallId == installId && System.currentTimeMillis() < authorizedUntilMs) {
+            onAuthorized()
+            return
         }
+        showGate(activity, installId, onAuthorized, "Bắt buộc nhập key hợp lệ để vào DigitalLiquid.")
     }
 
     private fun showGate(activity: Activity, installId: String, onAuthorized: () -> Unit, initialMessage: String) {
@@ -115,6 +115,7 @@ object KeyAuthGate {
             .setNegativeButton("Get Key", null)
             .create()
 
+        dialog.setCanceledOnTouchOutside(false)
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val typedKey = input.text?.toString()?.trim().orEmpty()
@@ -132,12 +133,14 @@ object KeyAuthGate {
                     mainHandler.post {
                         if (activity.isFinishing || activity.isDestroyed) return@post
                         val valid = result.optBoolean("valid", false)
-                        if (valid) {
-                            activity.getSharedPreferences(PREFS, Activity.MODE_PRIVATE).edit().putString(SAVED_KEY, typedKey).apply()
+                        val expiresAt = result.optLong("expiresAt", 0L)
+                        if (valid && expiresAt > System.currentTimeMillis()) {
+                            authorizedInstallId = installId
+                            authorizedUntilMs = expiresAt
                             dialog.dismiss()
                             onAuthorized()
                         } else {
-                            status.text = result.optString("reason", "Key không hợp lệ.")
+                            status.text = if (valid) "Máy chủ không trả về thời hạn key hợp lệ." else result.optString("reason", "Key không hợp lệ.")
                             dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
                             dialog.getButton(AlertDialog.BUTTON_NEGATIVE).isEnabled = true
                         }
@@ -154,8 +157,11 @@ object KeyAuthGate {
                     }.getOrElse { JSONObject().put("ok", false).put("error", "Không kết nối được máy chủ. Kiểm tra Internet và thử lại.") }
                     mainHandler.post {
                         if (activity.isFinishing || activity.isDestroyed) return@post
-                        val webUrl = result.optString("webUrl")
-                        if (result.optBoolean("ok", false) && webUrl.startsWith("https://")) {
+                        val sessionId = result.optString("sessionId")
+                        if (result.optBoolean("ok", false) && sessionId.matches(Regex("^[a-fA-F0-9]{48}$"))) {
+                            // Use the exact extensionless route requested for the GitHub Pages site.
+                            // Do not trust a stale webUrl returned by an older deployed backend.
+                            val webUrl = "$KEY_PAGE_BASE?sid=${Uri.encode(sessionId)}"
                             runCatching { activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(webUrl))) }
                                 .onFailure { status.text = "Không mở được trình duyệt trên thiết bị này." }
                         } else {
