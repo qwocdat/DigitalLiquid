@@ -97,6 +97,9 @@ class IslandService : Service() {
     private var resizeAnimator: ValueAnimator? = null
     private var recordingPulse: ValueAnimator? = null
     private var recordingTextTypewriter: Runnable? = null
+    private var recordingStartedAtElapsed: Long = 0L
+    private var recordingTimerTask: Runnable? = null
+    private var recordingExpanded = false
     private var downX = 0f
     private var downY = 0f
     private var longPressTriggered = false
@@ -435,7 +438,12 @@ class IslandService : Service() {
     private val longPressRunnable = Runnable {
         longPressTriggered = true
         islandRoot?.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-        if (panelOpen) closeCustomizationPanel() else openCustomizationPanel()
+        if (screenRecording) {
+            recordingExpanded = !recordingExpanded
+            panelOpen = recordingExpanded
+            playPanelIntro = false
+            render(animateSize = true)
+        } else if (panelOpen) closeCustomizationPanel() else openCustomizationPanel()
     }
 
     private fun wobblePill() {
@@ -451,7 +459,7 @@ class IslandService : Service() {
         wobbleAnimator?.cancel()
         val baseX = lp.x
         val baseY = lp.y
-        val distance = dp(9).toFloat()
+        val distance = dp(11).toFloat()
         var lastOffset = 0f
         glassView?.setMotionBlur(0f)
         root.scaleX = 1f
@@ -460,12 +468,12 @@ class IslandService : Service() {
         // Slow damped oscillation: less springy than the old rubber-like overshoot.
         val animator = ValueAnimator.ofFloat(0f, 1f)
         wobbleAnimator = animator
-        animator.duration = 880L
+        animator.duration = 1080L
         animator.interpolator = android.view.animation.LinearInterpolator()
         animator.addUpdateListener { frame ->
             val t = frame.animatedValue as Float
             val envelope = exp(-4.15f * t)
-            val phase = t * Math.PI.toFloat() * 3.8f
+            val phase = t * Math.PI.toFloat() * 5.0f
             val offset = -distance * envelope * sin(phase)
             lp.x = baseX + offset.roundToInt()
             lp.y = baseY
@@ -473,7 +481,7 @@ class IslandService : Service() {
 
             // Blur strength follows per-frame travel; there is no permanent halo around the pill.
             val frameTravel = abs(offset - lastOffset)
-            val blur = (frameTravel * 0.52f).coerceIn(0f, 0.78f)
+            val blur = (frameTravel * 0.82f).coerceIn(0f, 1f)
             val direction = if (offset < lastOffset) -1f else 1f
             glassView?.setMotionBlur(blur, direction)
             lastOffset = offset
@@ -517,6 +525,7 @@ class IslandService : Service() {
         val screenWidthPx = displayWidthPx().coerceAtLeast(dp(180))
         val screenWidthDp = (screenWidthPx / density).toInt().coerceAtLeast(180)
         val desiredDp = when {
+            panelOpen && screenRecording -> 238
             panelOpen -> screenWidthDp - 24
             isLandscapeWithSideCutout() -> if (screenRecording) maxOf(heightDp, 42) else heightDp
             screenRecording -> maxOf(widthDp, 178)
@@ -527,6 +536,7 @@ class IslandService : Service() {
     }
 
     private fun targetHeight(): Int = when {
+        panelOpen && screenRecording -> dp(66)
         panelOpen -> dp(252)
         isLandscapeWithSideCutout() -> dp(if (screenRecording) maxOf(widthDp, 178) else widthDp)
         screenRecording -> dp(maxOf(heightDp, 42))
@@ -651,7 +661,9 @@ class IslandService : Service() {
 
         val customUri = prefs.getString(PANEL_BACKGROUND_URI, null)
         val showMediaOnTop = (panelOpen || closingPanelWithMedia) && !customUri.isNullOrBlank()
-        if (panelOpen) {
+        if (panelOpen && screenRecording && recordingExpanded) {
+            renderRecordingControlPanel(rootContent)
+        } else if (panelOpen) {
             if (showMediaOnTop) {
                 // The selected local media becomes the whole panel. No text/buttons are layered over it.
                 rootContent.visibility = View.GONE
@@ -718,6 +730,55 @@ class IslandService : Service() {
     private fun statusBarHeightPx(): Int {
         val id = resources.getIdentifier("status_bar_height", "dimen", "android")
         return if (id > 0) resources.getDimensionPixelSize(id) else dp(24)
+    }
+
+    private fun renderRecordingControlPanel(target: LinearLayout) {
+        target.orientation = LinearLayout.HORIZONTAL
+        target.gravity = Gravity.CENTER_VERTICAL
+        target.setPadding(dp(14), dp(8), dp(10), dp(8))
+
+        val timer = TextView(this).apply {
+            textSize = 15f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER_VERTICAL
+            contentDescription = "Thời gian quay màn hình"
+        }
+        target.addView(timer, LinearLayout.LayoutParams(0, -1, 1f))
+
+        val stop = TextView(this).apply {
+            text = "■"
+            textSize = 19f
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(0xFFFF4054.toInt())
+            }
+            isClickable = true
+            isFocusable = true
+            contentDescription = "Dừng quay màn hình"
+            setOnClickListener {
+                val stopped = IslandNotificationListener.requestStopRecording()
+                if (!stopped) {
+                    Toast.makeText(this@IslandService, "Không tìm thấy nút dừng của trình quay. Hãy dừng từ thông báo hệ thống.", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+        target.addView(stop, LinearLayout.LayoutParams(dp(38), dp(38)))
+
+        recordingTimerTask?.let { handler.removeCallbacks(it) }
+        val task = object : Runnable {
+            override fun run() {
+                if (!screenRecording || !recordingExpanded || !timer.isAttachedToWindow) return
+                val start = recordingStartedAtElapsed.takeIf { it > 0L } ?: android.os.SystemClock.elapsedRealtime()
+                val seconds = ((android.os.SystemClock.elapsedRealtime() - start) / 1000L).coerceAtLeast(0L)
+                timer.text = String.format(java.util.Locale.ROOT, "%02d:%02d", seconds / 60L, seconds % 60L)
+                handler.postDelayed(this, 250L)
+            }
+        }
+        recordingTimerTask = task
+        task.run()
     }
 
     private fun renderRecordingIndicator(target: LinearLayout) {
@@ -1098,6 +1159,7 @@ class IslandService : Service() {
         recordingPulse?.cancel()
         panelTypewriter?.let { handler.removeCallbacks(it) }
         recordingTextTypewriter?.let { handler.removeCallbacks(it) }
+        recordingTimerTask?.let { handler.removeCallbacks(it) }
         stopPanelMedia()
         try { unregisterReceiver(configReceiver) } catch (_: Exception) { }
         try { unregisterReceiver(orientationReceiver) } catch (_: Exception) { }
@@ -1155,6 +1217,17 @@ class IslandService : Service() {
                 service.notificationScreenRecording = lastNotificationScreenRecording
                 service.accessibilityScreenRecording = lastAccessibilityScreenRecording
                 service.screenRecording = combined
+                if (combined) {
+                    if (service.recordingStartedAtElapsed == 0L) {
+                        service.recordingStartedAtElapsed = android.os.SystemClock.elapsedRealtime()
+                    }
+                } else {
+                    service.recordingStartedAtElapsed = 0L
+                    service.recordingExpanded = false
+                    service.panelOpen = false
+                    service.recordingTimerTask?.let { service.handler.removeCallbacks(it) }
+                    service.recordingTimerTask = null
+                }
                 service.render(animateSize = true)
             }
         }
