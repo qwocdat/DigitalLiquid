@@ -46,10 +46,6 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.random.Random
 
-/**
- * Minimal HyperOS companion: an always-present black pill, an iOS-like tap reaction,
- * a long-press customization panel, and a recording-only live effect.
- */
 class IslandService : Service() {
     private lateinit var windowManager: WindowManager
     private var usingAccessibilityOverlay = false
@@ -75,8 +71,8 @@ class IslandService : Service() {
     private var backgroundScrim: View? = null
     private var params: WindowManager.LayoutParams? = null
 
-    // TRẠNG THÁI MỞ KHÓA TRỰC TIẾP TRÊN DYNAMIC ISLAND
     private var faceUnlocking = false
+    private var currentMorphProgress = 0f
 
     private var widthDp = 148
     private var heightDp = 38
@@ -132,9 +128,19 @@ class IslandService : Service() {
         }
     }
 
+    // NHẬN DIỆN MỞ KHÓA TỪ HỆ THỐNG XIAOMI/REDMI/POCO
     private val unlockReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == Intent.ACTION_USER_PRESENT) playFaceUnlockAnimation()
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_ON -> {
+                    // Màn hình sáng lên: Lắc nhẹ Dynamic Island báo hiệu đang chờ quét
+                    wobblePill()
+                }
+                Intent.ACTION_USER_PRESENT -> {
+                    // Hệ thống quét khuôn mặt thành công: Kích hoạt hiệu ứng Face ID 3D full
+                    playFaceUnlockAnimation()
+                }
+            }
         }
     }
 
@@ -171,16 +177,20 @@ class IslandService : Service() {
         applyPreferences()
         AppPrefs.get(this).edit().putBoolean(AppPrefs.SERVICE_ENABLED, true).apply()
         try {
+            val filter = IntentFilter().apply {
+                addAction(Intent.ACTION_SCREEN_ON)
+                addAction(Intent.ACTION_USER_PRESENT)
+            }
             if (Build.VERSION.SDK_INT >= 33) {
                 registerReceiver(configReceiver, IntentFilter(ACTION_APPLY_CONFIG), Context.RECEIVER_NOT_EXPORTED)
                 registerReceiver(orientationReceiver, IntentFilter(Intent.ACTION_CONFIGURATION_CHANGED), Context.RECEIVER_NOT_EXPORTED)
-                registerReceiver(unlockReceiver, IntentFilter(Intent.ACTION_USER_PRESENT), Context.RECEIVER_NOT_EXPORTED)
+                registerReceiver(unlockReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
             } else {
                 @Suppress("DEPRECATION")
                 registerReceiver(configReceiver, IntentFilter(ACTION_APPLY_CONFIG))
                 @Suppress("DEPRECATION")
                 registerReceiver(orientationReceiver, IntentFilter(Intent.ACTION_CONFIGURATION_CHANGED))
-                registerReceiver(unlockReceiver, IntentFilter(Intent.ACTION_USER_PRESENT))
+                registerReceiver(unlockReceiver, filter)
             }
         } catch (_: Exception) { }
         waitForAccessibilityOverlay()
@@ -279,12 +289,21 @@ class IslandService : Service() {
 
     private fun windowY(): Int = if (isRecordingControlExpanded()) 0 else positionY(targetHeight(), panelOpen)
 
-    private fun currentCornerRadiusDp(): Float = when {
-        faceUnlocking -> 38f
-        isRecordingControlExpanded() -> (targetHeight() / resources.displayMetrics.density.coerceAtLeast(1f)) / 2f
-        panelOpen -> 30f
-        else -> heightDp / 2f
+    // TÍNH TOÁN BO TRÒN BIẾN THIÊN TỰ ĐỘNG - NÓI KHÔNG VỚI LỖI GÓC VUÔNG
+    private fun currentCornerRadiusDp(): Float {
+        val defaultRadius = heightDp / 2f
+        return when {
+            faceUnlocking -> {
+                // Biến thiên liên tục từ 19dp (viên thuốc) -> 38dp (ô vuông) và ngược lại
+                lerp(defaultRadius, 38f, currentMorphProgress)
+            }
+            isRecordingControlExpanded() -> (targetHeight() / resources.displayMetrics.density.coerceAtLeast(1f)) / 2f
+            panelOpen -> 30f
+            else -> defaultRadius
+        }
     }
+
+    private fun lerp(a: Float, b: Float, t: Float) = a + (b - a) * t
 
     private fun syncOverlayChildBounds(pillWidth: Int = targetWidth(), pillHeight: Int = targetHeight()) {
         val root = islandRoot ?: return
@@ -563,6 +582,7 @@ class IslandService : Service() {
         } else if (panelOpen) closeCustomizationPanel() else openCustomizationPanel()
     }
 
+    // HIỆU ỨNG RUNG LẮC (WOBBLE) KÈM SHADER BLUR & BÓNG MA CHÂN THỰC
     private fun wobblePill() {
         val root = islandRoot ?: return
         if (panelOpen || faceUnlocking) return
@@ -579,7 +599,7 @@ class IslandService : Service() {
         val startOffsetY = if (wasRunning) root.translationY else 0f
         val startGhostX = ghostLayers.map { if (wasRunning) it.translationX else 0f }
         val startGhostY = ghostLayers.map { if (wasRunning) it.translationY else 0f }
-        val baseAlphas = floatArrayOf(0.22f, 0.16f, 0.12f, 0.085f, 0.06f, 0.04f, 0.025f)
+        val baseAlphas = floatArrayOf(0.35f, 0.28f, 0.20f, 0.14f, 0.09f, 0.05f, 0.03f)
         val startGhostAlpha = ghostLayers.mapIndexed { i, ghost ->
             if (wasRunning) ghost.alpha else baseAlphas[i]
         }
@@ -594,7 +614,7 @@ class IslandService : Service() {
             root.translationY = 0f
         }
 
-        val distance = dp(4.2f + Random.nextFloat() * 1.6f)
+        val distance = dp(5.5f + Random.nextFloat() * 2f)
         val swingDirection = if (Random.nextBoolean()) -1f else 1f
         val lags = floatArrayOf(0.012f, 0.024f, 0.036f, 0.048f, 0.060f, 0.072f, 0.084f)
         val ghostAlphaOrder = baseAlphas
@@ -629,19 +649,19 @@ class IslandService : Service() {
 
         var lastOffset = startOffset
         val animator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 430L
+            duration = 460L
             interpolator = android.view.animation.LinearInterpolator()
             addUpdateListener { frame ->
                 val t = frame.animatedValue as Float
                 val offset = offsetAt(t)
                 root.translationX = offset
                 root.translationY = startOffsetY * (1f - smooth(t)) +
-                    (kotlin.math.abs(waveAt(t)) / distance.coerceAtLeast(1f)) * dp(0.22f) * kotlin.math.sin(t * Math.PI.toFloat() * 2f)
+                    (kotlin.math.abs(waveAt(t)) / distance.coerceAtLeast(1f)) * dp(0.3f) * kotlin.math.sin(t * Math.PI.toFloat() * 2f)
                 ghostLayers.forEachIndexed { index, ghost ->
                     val delayed = waveAt((t - lags[index]).coerceAtLeast(0f))
                     ghost.translationX = startGhostX[index] * (1f - smooth(t)) + delayed
                     ghost.translationY = startGhostY[index] * (1f - smooth(t)) +
-                        (index + 1) * dp(0.06f) * (1f - smooth(t))
+                        (index + 1) * dp(0.08f) * (1f - smooth(t))
                     val tailFade = if (t < 0.62f) 1f else (1f - (t - 0.62f) / 0.38f).coerceIn(0f, 1f)
                     ghost.alpha = startGhostAlpha[index] * (1f - smooth(t)) +
                         ghostAlphaOrder[index] * tailFade * smooth(t)
@@ -650,7 +670,7 @@ class IslandService : Service() {
                 val direction = if (offset < lastOffset) -1f else 1f
                 val normalizedVelocity = (travel / dp(3.5f).coerceAtLeast(1f)).coerceIn(0f, 1f)
                 val blurAllowed = AppPrefs.get(this@IslandService).getBoolean(AppPrefs.MOTION_BLUR, true)
-                glassView?.setMotionBlur(if (blurAllowed) normalizedVelocity * 0.38f else 0f, direction)
+                glassView?.setMotionBlur(if (blurAllowed) normalizedVelocity * 0.55f else 0f, direction)
                 lastOffset = offset
             }
         }
@@ -851,7 +871,7 @@ class IslandService : Service() {
         updatePrivacyDot()
 
         val customUri = prefs.getString(PANEL_BACKGROUND_URI, null)
-        val showMediaOnTop = !isRecordingControlExpanded() && !faceUnlocking && (panelOpen || closingPanelWithMedia) && !customUri.isNullOrBlank()
+        val showMediaOnTop = !isRecordingControlExpanded() && !faceUnlocking && (panelOpen || closingPanelWithMedia) && !uriString.isNullOrBlank()
 
         if (!faceUnlocking) {
             if (isRecordingControlExpanded()) {
@@ -922,7 +942,6 @@ class IslandService : Service() {
         return if (id > 0) resources.getDimensionPixelSize(id) else dp(24)
     }
 
-    // MỞ KHÓA DYNAMIC ISLAND TRỰC TIẾP TẠI ĐÂY
     private fun playFaceUnlockAnimation() {
         val prefs = AppPrefs.get(this)
         if (!prefs.getBoolean(AppPrefs.FACE_UNLOCK_EFFECT, true) ||
@@ -1261,6 +1280,7 @@ class IslandService : Service() {
         }
     }
 
+    // TÍNH TOÁN DYNAMICAL SCALE VÀ GHOST TRAIL KHI THU / NỞ VIÊN THUỐC
     private fun animateToTargetSize() {
         val root = islandRoot ?: return
         val host = overlayHost ?: return
@@ -1280,7 +1300,9 @@ class IslandService : Service() {
         val startInset = hostInsetPx.toFloat()
         val endInset = targetHostInsetPx().toFloat()
         lp.gravity = windowGravity()
+
         if (AppPrefs.get(this).getBoolean(AppPrefs.REDUCE_MOTION, false)) {
+            currentMorphProgress = if (opening) 1f else 0f
             lp.width = endWidth.roundToInt()
             lp.height = endHeight.roundToInt()
             lp.x = endX.roundToInt()
@@ -1298,38 +1320,50 @@ class IslandService : Service() {
             applyNativeActivityVisibility()
             return
         }
+
         root.alpha = 0.985f
-        root.scaleX = if (opening) 0.94f else 1.045f
-        root.scaleY = if (opening) 0.90f else 1.035f
+        val startMorph = currentMorphProgress
+        val targetMorph = if (opening) 1f else 0f
+
         resizeAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = if (faceUnlocking) 320L else if (panelOpen) 440L else 380L
-            interpolator = PathInterpolator(0.16f, 0.92f, 0.18f, 1f)
+            // Đóng thu nhỏ lại chậm hơn 1 chút để hiệu ứng Ghost Trail bám đuổi rõ ràng hơn
+            duration = if (faceUnlocking) 360L else if (opening) 420L else 460L
+            interpolator = PathInterpolator(0.22f, 1f, 0.36f, 1f)
             addUpdateListener { animator ->
                 val t = animator.animatedValue as Float
+                currentMorphProgress = lerp(startMorph, targetMorph, t)
+
                 lp.width = (startWindowWidth + (endWidth - startWindowWidth) * t).roundToInt()
                 lp.height = (startHeight + (endHeight - startHeight) * t).roundToInt()
                 lp.x = (startX + (endX - startX) * t).roundToInt()
                 lp.y = (startY + (endY - startY) * t).roundToInt()
                 hostInsetPx = (startInset + (endInset - startInset) * t).roundToInt()
+
                 val pillW = (startPillWidth + (endPillWidth - startPillWidth) * t).roundToInt()
                 val pillH = (startHeight + (endHeight - startHeight) * t).roundToInt()
+
                 syncOverlayChildBounds(pillW, pillH)
+
+                // Cập nhật góc bo tròn mượt mà từng frame
                 root.background = roundedBackground(currentCornerRadiusDp(), Color.BLACK)
                 root.scaleX = if (opening) 0.94f + 0.06f * t else 1.045f - 0.045f * t
                 root.scaleY = if (opening) 0.90f + 0.10f * t else 1.035f - 0.035f * t
+
                 if (Build.VERSION.SDK_INT >= 31) {
-                    val blur = (if (opening) 1f - t else t) * 1.25f
+                    val blur = (if (opening) (1f - t) * 0.8f else t * 1.8f)
                     try { root.setRenderEffect(android.graphics.RenderEffect.createBlurEffect(blur, blur, android.graphics.Shader.TileMode.CLAMP)) } catch (_: Exception) { }
                 }
                 updateOverlayWindow(lp)
             }
             addListener(object : android.animation.AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: android.animation.Animator) {
+                    currentMorphProgress = targetMorph
                     hostInsetPx = endInset.roundToInt()
                     syncOverlayChildBounds(endPillWidth.roundToInt(), endHeight.roundToInt())
                     root.scaleX = 1f
                     root.scaleY = 1f
                     root.alpha = 1f
+                    root.background = roundedBackground(currentCornerRadiusDp(), Color.BLACK)
                     if (Build.VERSION.SDK_INT >= 31) try { root.setRenderEffect(null) } catch (_: Exception) { }
                     if (closingPanelWithMedia) {
                         closingPanelWithMedia = false
@@ -1458,6 +1492,5 @@ class IslandService : Service() {
                 service.applyNativeActivityVisibility()
             }
         }
-
     }
 }
