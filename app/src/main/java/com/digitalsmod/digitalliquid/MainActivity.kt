@@ -575,6 +575,13 @@ class MainActivity : Activity() {
             addView(bodyText("Tắt chuyển động rung lắc và co giãn. Viên thuốc vẫn hiển thị màu đen."), marginTop(5))
         }.apply { setPadding(dp(15), dp(14), dp(15), dp(14)) }, marginTop(10))
 
+        target.addView(sectionTitle("Hiệu ứng DigitalLiquid"), marginTop(18))
+        target.addView(toggleCard("Hiệu ứng REC khi quay màn hình", "Hiện chấm đỏ và pill điều khiển khi hệ thống xác nhận đang quay thật.", AppPrefs.SCREEN_RECORDING_EFFECT), marginTop(8))
+        target.addView(toggleCard("Hiệu ứng mở khóa", "Chạy hoạt ảnh quét xanh sau khi màn hình mở khóa. Android không cho ứng dụng biết chắc mở bằng khuôn mặt hay PIN/vân tay.", AppPrefs.FACE_UNLOCK_EFFECT), marginTop(8))
+        target.addView(toggleCard("Rung nhẹ khi chạm", "Mỗi lần chạm dùng hướng ngẫu nhiên, biên độ nhỏ hơn và chuyển động cân bằng hơn.", AppPrefs.TAP_WOBBLE), marginTop(8))
+        target.addView(toggleCard("Motion blur", "Bật/tắt vệt mờ theo hướng chuyển động của viên thuốc.", AppPrefs.MOTION_BLUR), marginTop(8))
+        target.addView(toggleCard("Nút dừng quay trong pill mở rộng", "Hiện nút dừng trong bảng toàn chiều ngang khi giữ pill lúc đang quay. Nút chỉ dừng được nếu HyperOS cung cấp action dừng.", AppPrefs.RECORDING_STOP_CONTROL), marginTop(8))
+
         target.addView(settingAction("Chạy lại onboarding", "Xem lại giới thiệu", "Hiện lại màn hình Chào mừng") {
             prefs.edit().putBoolean(AppPrefs.ONBOARDING_DONE, false).apply()
             renderOnboarding(0)
