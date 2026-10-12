@@ -7,27 +7,38 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
+import android.graphics.RenderEffect
+import android.graphics.Shader
+import android.os.Build
 import android.view.MotionEvent
 import android.view.View
-import android.view.animation.LinearInterpolator
+import android.view.animation.PathInterpolator
 import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.sin
 
 class FaceUnlockAnimationView(
     context: Context,
     private val onDismissRequested: () -> Unit
 ) : View(context) {
+
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
     }
+    
     private var progress = 0f
     private var animator: ValueAnimator? = null
     private val density = resources.displayMetrics.density
     private fun dp(v: Float) = v * density
+    private fun lerp(a: Float, b: Float, t: Float) = a + (b - a) * t
+
+    // Easing mượt chuẩn iOS Apple Spring / Cubic-Bezier
+    private val iosInterpolator = PathInterpolator(0.25f, 0.1f, 0.25f, 1f)
 
     private var touchStartX = 0f
     private var touchStartY = 0f
+    private var isDismissing = false
 
     init {
         isClickable = true
@@ -37,17 +48,21 @@ class FaceUnlockAnimationView(
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
+        startAnimationSequence()
+    }
+
+    private fun startAnimationSequence() {
         animator?.cancel()
         animator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 4400L // 0.3s nở/hiện + 0.8s quét xoay 3D + 0.3s tick + 3.0s giữ nguyên
-            interpolator = LinearInterpolator()
+            duration = 4500L // 0.35s mở rộng -> 0.85s xoay vòng kép 3D -> 0.35s tick xanh -> 3s giữ -> 0.35s thu nhỏ
+            interpolator = android.view.animation.LinearInterpolator()
             addUpdateListener {
                 progress = it.animatedValue as Float
                 invalidate()
             }
             addListener(object : android.animation.AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: android.animation.Animator) {
-                    onDismissRequested()
+                    if (!isDismissing) onDismissRequested()
                 }
             })
             start()
@@ -70,17 +85,22 @@ class FaceUnlockAnimationView(
             MotionEvent.ACTION_MOVE -> {
                 val dx = event.x - touchStartX
                 val dy = event.y - touchStartY
-                if (hypot(dx, dy) > dp(8f)) {
-                    animator?.cancel()
-                    onDismissRequested()
+                if (hypot(dx, dy) > dp(6f)) {
+                    dismissWithMotion()
                 }
             }
             MotionEvent.ACTION_UP -> {
-                animator?.cancel()
-                onDismissRequested()
+                dismissWithMotion()
             }
         }
         return true
+    }
+
+    fun dismissWithMotion() {
+        if (isDismissing) return
+        isDismissing = true
+        animator?.cancel()
+        onDismissRequested()
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -88,65 +108,64 @@ class FaceUnlockAnimationView(
         if (width <= 0 || height <= 0) return
         val t = progress.coerceIn(0f, 1f)
 
-        val faceAppearAlpha = when {
-            t in 0.00f..0.07f -> t / 0.07f
-            t in 0.07f..0.25f -> 1f
+        // TIMELINE HOẠT ẢNH CHUẨN IOS:
+        // 0.00 -> 0.08: Phóng to & Hiện khung mặt
+        // 0.08 -> 0.28: Khung mặt cuộn thành 2 vòng tròn xoay 3D/4D đan chéo
+        // 0.28 -> 0.36: Dung hợp thành vòng tròn xanh & Bật dấu tick
+        // 0.36 -> 0.92: Giữ nguyên tick xanh trong 3s
+        // 0.92 -> 1.00: Thu nhỏ kèm hiệu ứng Ghost Trail mờ đuôi
+
+        val appearAlpha = when {
+            t in 0.00f..0.08f -> t / 0.08f
+            t in 0.08f..0.28f -> 1f
             else -> 0f
         }
 
-        val spinT = when {
-            t in 0.07f..0.25f -> (t - 0.07f) / 0.18f
-            t > 0.25f -> 1f
+        val dualRingSpinT = when {
+            t in 0.08f..0.28f -> iosInterpolator.getInterpolation((t - 0.08f) / 0.20f)
+            t > 0.28f -> 1f
             else -> 0f
         }
 
         val circleProgress = when {
-            t in 0.25f..0.32f -> (t - 0.25f) / 0.07f
-            t > 0.32f -> 1f
+            t in 0.28f..0.34f -> (t - 0.28f) / 0.06f
+            t > 0.34f -> 1f
             else -> 0f
         }
 
         val checkmarkProgress = when {
-            t in 0.32f..0.38f -> (t - 0.32f) / 0.06f
+            t in 0.34f..0.38f -> (t - 0.34f) / 0.04f
             t > 0.38f -> 1f
             else -> 0f
         }
 
         val successAlpha = when {
-            t >= 0.25f -> 1f
+            t >= 0.28f && t <= 0.92f -> 1f
+            t > 0.92f -> (1f - t) / 0.08f
             else -> 0f
         }
 
         val cx = width * 0.5f
         val cy = height * 0.5f
 
-        // 1. Vẽ Icon Face ID (Xoay 3D + Bóng mờ Motion Blur)
-        if (faceAppearAlpha > 0f) {
-            val baseAlpha = (255 * faceAppearAlpha).toInt()
-            val ghostCount = 5
-            val ghostDelay = 0.03f
+        // 1. VẼ HOẠT ẢNH XOAY VÒNG KÉP 3D/4D DẠNG IOS
+        if (appearAlpha > 0f) {
+            val baseAlpha = (255 * appearAlpha).toInt()
 
-            if (spinT > 0f && spinT < 1f) {
+            // Nếu đang trong giai đoạn xoay 3D, tạo ra các bóng mờ bám đuổi (Ghost Trails)
+            if (dualRingSpinT in 0.01f..0.99f) {
+                val ghostCount = 4
                 for (i in ghostCount downTo 1) {
-                    val gT = (spinT - (i * ghostDelay)).coerceIn(0f, 1f)
-                    if (gT > 0f) {
-                        val gAngle = gT * Math.PI * 2.0
-                        val gScaleX = cos(gAngle).toFloat()
-                        val gAlpha = (baseAlpha * (0.55f - (i * 0.1f))).toInt().coerceAtLeast(0)
-                        drawFaceIcon(canvas, cx, cy, gScaleX, gAlpha)
-                    }
+                    val lagT = (dualRingSpinT - i * 0.04f).coerceIn(0f, 1f)
+                    val gAlpha = (baseAlpha * (0.4f - i * 0.08f)).toInt().coerceAtLeast(0)
+                    drawIOSDualRings(canvas, cx, cy, lagT, gAlpha)
                 }
             }
 
-            val currentAngle = spinT * Math.PI * 2.0
-            val mainScaleX = cos(currentAngle).toFloat()
-            val isBackFacing = cos(currentAngle) < 0
-            val mainFaceAlpha = if (isBackFacing && spinT > 0) (baseAlpha * 0.35f).toInt() else baseAlpha
-
-            drawFaceIcon(canvas, cx, cy, mainScaleX, mainFaceAlpha)
+            drawIOSDualRings(canvas, cx, cy, dualRingSpinT, baseAlpha)
         }
 
-        // 2. Vẽ Vòng tròn & Tick Xanh (Giữ nguyên 3s)
+        // 2. VẼ VÒNG TRÒN & TICK XANH (SUCCESS STATE)
         val sAlpha = (255 * successAlpha).toInt()
         if (sAlpha > 0) {
             paint.style = Paint.Style.STROKE
@@ -179,59 +198,56 @@ class FaceUnlockAnimationView(
         }
     }
 
-    private fun drawFaceIcon(canvas: Canvas, cx: Float, cy: Float, scaleX: Float, alpha: Int) {
+    // Thuật toán vẽ 2 vòng tròn đồng tâm xoay 3D/4D đan chéo chuẩn iOS Face ID
+    private fun drawIOSDualRings(canvas: Canvas, cx: Float, cy: Float, spinProgress: Float, alpha: Int) {
         if (alpha <= 0) return
         canvas.save()
-        canvas.scale(scaleX, 1f, cx, cy)
 
         paint.style = Paint.Style.STROKE
-        paint.strokeWidth = dp(4.5f)
-        paint.color = Color.argb(alpha, 150, 150, 150)
+        paint.strokeWidth = dp(4.2f)
+        paint.color = Color.argb(alpha, 210, 210, 215)
 
-        val half = dp(30f)
-        val cr = dp(14f)
-        val len = dp(20f)
+        val radiusOuter = dp(32f)
+        val radiusInner = dp(22f)
 
-        canvas.drawPath(Path().apply {
-            moveTo(cx - half + len, cy - half)
-            lineTo(cx - half + cr, cy - half)
-            quadTo(cx - half, cy - half, cx - half, cy - half + cr)
-            lineTo(cx - half, cy - half + len)
-        }, paint)
-        canvas.drawPath(Path().apply {
-            moveTo(cx + half - len, cy - half)
-            lineTo(cx + half - cr, cy - half)
-            quadTo(cx + half, cy - half, cx + half, cy - half + cr)
-            lineTo(cx + half, cy - half + len)
-        }, paint)
-        canvas.drawPath(Path().apply {
-            moveTo(cx - half + len, cy + half)
-            lineTo(cx - half + cr, cy + half)
-            quadTo(cx - half, cy + half, cx - half, cy + half - cr)
-            lineTo(cx - half, cy + half - len)
-        }, paint)
-        canvas.drawPath(Path().apply {
-            moveTo(cx + half - len, cy + half)
-            lineTo(cx + half - cr, cy + half)
-            quadTo(cx + half, cy + half, cx + half, cy + half - cr)
-            lineTo(cx + half, cy + half - len)
-        }, paint)
+        // Góc quay của 2 vòng đối ngược hướng nhau
+        val angleOuter = spinProgress * 360f
+        val angleInner = -spinProgress * 360f
 
-        paint.style = Paint.Style.FILL
-        canvas.drawCircle(cx - dp(14f), cy - dp(6f), dp(3f), paint)
-        canvas.drawCircle(cx + dp(14f), cy - dp(6f), dp(3f), paint)
+        // Ma trận nghiêng tạo độ sâu 3D (Scale Y giả lập góc nghiêng không gian 4D)
+        val tiltOuter = cos(spinProgress * Math.PI * 2.0).toFloat() * 0.35f + 0.65f
+        val tiltInner = sin(spinProgress * Math.PI * 2.0).toFloat() * 0.35f + 0.65f
 
-        paint.style = Paint.Style.STROKE
-        canvas.drawPath(Path().apply {
-            moveTo(cx, cy - dp(2f))
-            lineTo(cx, cy + dp(6f))
-            quadTo(cx, cy + dp(10f), cx - dp(5f), cy + dp(10f))
-        }, paint)
+        // Vòng ngoài (Outer Orbit Ring)
+        canvas.save()
+        canvas.scale(1f, tiltOuter, cx, cy)
+        val rectOuter = RectF(cx - radiusOuter, cy - radiusOuter, cx + radiusOuter, cy + radiusOuter)
+        canvas.drawArc(rectOuter, angleOuter, 260f, false, paint)
+        canvas.restore()
 
-        canvas.drawPath(Path().apply {
-            moveTo(cx - dp(14f), cy + dp(15f))
-            quadTo(cx, cy + dp(23f), cx + dp(14f), cy + dp(15f))
-        }, paint)
+        // Vòng trong (Inner Orbit Ring)
+        paint.strokeWidth = dp(3.5f)
+        canvas.save()
+        canvas.scale(tiltInner, 1f, cx, cy)
+        val rectInner = RectF(cx - radiusInner, cy - radiusInner, cx + radiusInner, cy + radiusInner)
+        canvas.drawArc(rectInner, angleInner, 220f, false, paint)
+        canvas.restore()
+
+        // Mắt & Miệng trung tâm sẽ mờ dần khi cuộn vào vòng tròn
+        if (spinProgress < 0.3f) {
+            val centerAlpha = (alpha * (1f - spinProgress / 0.3f)).toInt()
+            paint.style = Paint.Style.FILL
+            paint.color = Color.argb(centerAlpha, 180, 180, 185)
+            canvas.drawCircle(cx - dp(12f), cy - dp(5f), dp(2.8f), paint)
+            canvas.drawCircle(cx + dp(12f), cy - dp(5f), dp(2.8f), paint)
+
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = dp(3f)
+            canvas.drawPath(Path().apply {
+                moveTo(cx - dp(10f), cy + dp(12f))
+                quadTo(cx, cy + dp(18f), cx + dp(10f), cy + dp(12f))
+            }, paint)
+        }
 
         canvas.restore()
     }
