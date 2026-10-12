@@ -13,6 +13,7 @@ import android.text.InputType
 import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -40,6 +41,8 @@ object KeyAuthGate {
     private const val GET_KEY_URL = "https://digitalsmod.site/get-key/"
     private const val PREFS = "digitalsmod_key_auth"
     private const val INSTALL_ID = "install_id"
+    private const val SAVED_KEY = "saved_key"
+    private const val SAVE_KEY_ENABLED = "save_key_enabled"
     private val executor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -70,6 +73,7 @@ object KeyAuthGate {
 
     private fun showGate(activity: Activity, installId: String, onAuthorized: () -> Unit, initialMessage: String) {
         if (activity.isFinishing || activity.isDestroyed) return
+        val prefs = activity.getSharedPreferences(PREFS, Activity.MODE_PRIVATE)
         val density = activity.resources.displayMetrics.density
         fun dp(value: Int) = (value * density).toInt()
 
@@ -92,6 +96,9 @@ object KeyAuthGate {
         }
         val input = EditText(activity).apply {
             hint = "DL-XXXXXX-XXXXXX-XXXXXX-XXXXXX"
+            if (prefs.getBoolean(SAVE_KEY_ENABLED, false)) {
+                setText(prefs.getString(SAVED_KEY, "").orEmpty())
+            }
             setSingleLine(true)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
             setTextColor(Color.WHITE)
@@ -99,6 +106,13 @@ object KeyAuthGate {
             textSize = 14f
             setPadding(dp(14), dp(13), dp(14), dp(13))
             background = rounded(Color.rgb(31, 29, 40), dp(13), Color.rgb(67, 59, 86))
+        }
+        val saveKeyToggle = CheckBox(activity).apply {
+            text = "Lưu key trên thiết bị"
+            textSize = 12f
+            setTextColor(Color.rgb(220, 216, 230))
+            buttonTintList = android.content.res.ColorStateList.valueOf(Color.rgb(183, 151, 255))
+            isChecked = prefs.getBoolean(SAVE_KEY_ENABLED, false)
         }
         val status = TextView(activity).apply {
             text = initialMessage
@@ -109,6 +123,7 @@ object KeyAuthGate {
         container.addView(subtitle)
         container.addView(body)
         container.addView(input, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        container.addView(saveKeyToggle, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(5) })
         container.addView(status)
 
         val dialog = AlertDialog.Builder(activity)
@@ -137,10 +152,16 @@ object KeyAuthGate {
                     mainHandler.post {
                         if (activity.isFinishing || activity.isDestroyed) return@post
                         val valid = result.optBoolean("valid", false)
+                        val permanent = result.optBoolean("permanent", false)
                         val expiresAt = result.optLong("expiresAt", 0L)
-                        if (valid && expiresAt > System.currentTimeMillis()) {
+                        if (valid && (permanent || expiresAt > System.currentTimeMillis())) {
+                            if (saveKeyToggle.isChecked) {
+                                prefs.edit().putBoolean(SAVE_KEY_ENABLED, true).putString(SAVED_KEY, typedKey).apply()
+                            } else {
+                                prefs.edit().putBoolean(SAVE_KEY_ENABLED, false).remove(SAVED_KEY).apply()
+                            }
                             authorizedInstallId = installId
-                            authorizedUntilMs = expiresAt
+                            authorizedUntilMs = if (permanent) Long.MAX_VALUE else expiresAt
                             dialog.dismiss()
                             onAuthorized()
                         } else {
@@ -199,14 +220,19 @@ object KeyAuthGate {
             return JSONObject().put("valid", false).put("reason", "Key đã bị vô hiệu hóa.")
         }
         val expiresAt = keyRecord.optLong("expiresAt", 0L)
-        if (expiresAt <= System.currentTimeMillis()) {
+        val permanent = keyRecord.optBoolean("permanent", false) ||
+            keyRecord.optString("plan").equals("permanent", ignoreCase = true)
+        if (!permanent && (expiresAt <= 0L || expiresAt <= System.currentTimeMillis())) {
             return JSONObject().put("valid", false).put("reason", "Key đã hết hạn.")
         }
         val expectedDeviceHash = sha256(installId.trim())
         if (keyRecord.optString("deviceHash") != expectedDeviceHash) {
             return JSONObject().put("valid", false).put("reason", "Key này được cấp cho một mã cài đặt khác.")
         }
-        return JSONObject().put("valid", true).put("expiresAt", expiresAt)
+        return JSONObject()
+            .put("valid", true)
+            .put("permanent", permanent)
+            .put("expiresAt", if (permanent) Long.MAX_VALUE else expiresAt)
     }
 
     private fun sha256(value: String): String {
