@@ -96,7 +96,6 @@ class IslandService : Service() {
     private var hyperIslandVisibilityOverride: Boolean? = null
     private var idleDot: View? = null
     private var wobbleAnimator: ValueAnimator? = null
-    private var preservingWobbleOnCancel = false
     private var panelMediaPlayer: MediaPlayer? = null
     private var panelVideoSurface: Surface? = null
     private var panelTextureView: TextureView? = null
@@ -139,7 +138,7 @@ class IslandService : Service() {
 
     private val unlockReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == Intent.ACTION_USER_PRESENT) playFaceUnlockAnimation()
+            if (intent?.action == Intent.ACTION_SCREEN_ON) playFaceUnlockAnimation()
         }
     }
 
@@ -183,13 +182,13 @@ class IslandService : Service() {
             if (Build.VERSION.SDK_INT >= 33) {
                 registerReceiver(configReceiver, IntentFilter(ACTION_APPLY_CONFIG), Context.RECEIVER_NOT_EXPORTED)
                 registerReceiver(orientationReceiver, IntentFilter(Intent.ACTION_CONFIGURATION_CHANGED), Context.RECEIVER_NOT_EXPORTED)
-                registerReceiver(unlockReceiver, IntentFilter(Intent.ACTION_USER_PRESENT), Context.RECEIVER_NOT_EXPORTED)
+                registerReceiver(unlockReceiver, IntentFilter(Intent.ACTION_SCREEN_ON), Context.RECEIVER_NOT_EXPORTED)
             } else {
                 @Suppress("DEPRECATION")
                 registerReceiver(configReceiver, IntentFilter(ACTION_APPLY_CONFIG))
                 @Suppress("DEPRECATION")
                 registerReceiver(orientationReceiver, IntentFilter(Intent.ACTION_CONFIGURATION_CHANGED))
-                registerReceiver(unlockReceiver, IntentFilter(Intent.ACTION_USER_PRESENT))
+                registerReceiver(unlockReceiver, IntentFilter(Intent.ACTION_SCREEN_ON))
             }
         } catch (_: Exception) { }
         waitForAccessibilityOverlay()
@@ -310,7 +309,7 @@ class IslandService : Service() {
     private fun ghostCapsule(heightPx: Int): GradientDrawable = GradientDrawable().apply {
         shape = GradientDrawable.RECTANGLE
         setColor(0xFF080A10.toInt())
-        setStroke(dp(1), 0x446F7D96)
+        setStroke(dp(1), 0x143B414C)
         cornerRadius = heightPx / 2f
     }
 
@@ -584,48 +583,49 @@ class IslandService : Service() {
         val root = islandRoot ?: return
         if (panelOpen) return
         val motionPrefs = AppPrefs.get(this)
-        if (motionPrefs.getBoolean(AppPrefs.REDUCE_MOTION, false) || !motionPrefs.getBoolean(AppPrefs.TAP_WOBBLE, true)) {
+        if (motionPrefs.getBoolean(AppPrefs.REDUCE_MOTION, false) ||
+            !motionPrefs.getBoolean(AppPrefs.TAP_WOBBLE, true)) {
             root.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
             return
         }
 
-        val wasRunning = wobbleAnimator?.isRunning == true
+        // Retarget from the exact current positions. Remove the old callbacks before cancelling
+        // so an old onAnimationEnd cannot snap the fresh animation back to rest on rapid taps.
+        val previous = wobbleAnimator
+        val wasRunning = previous?.isRunning == true
         val startOffset = if (wasRunning) root.translationX else 0f
         val startOffsetY = if (wasRunning) root.translationY else 0f
-        val startGhostOffsets = ghostLayers.mapIndexed { i, ghost ->
-            if (wasRunning) ghost.translationX else 0f
+        val startGhostX = ghostLayers.map { if (wasRunning) it.translationX else 0f }
+        val startGhostY = ghostLayers.map { if (wasRunning) it.translationY else 0f }
+        val baseAlphas = floatArrayOf(0.22f, 0.16f, 0.12f, 0.085f, 0.06f, 0.04f, 0.025f)
+        val startGhostAlpha = ghostLayers.mapIndexed { i, ghost ->
+            if (wasRunning) ghost.alpha else baseAlphas[i]
         }
-        val baseAlphas = floatArrayOf(0.44f, 0.37f, 0.31f, 0.25f, 0.20f, 0.15f, 0.10f)
-        val startGhostAlphas = ghostLayers.mapIndexed { index, ghost ->
-            if (wasRunning) ghost.alpha else baseAlphas[index]
+        if (previous != null) {
+            previous.removeAllUpdateListeners()
+            previous.removeAllListeners()
+            previous.cancel()
         }
-
-        // Retarget an active gesture from its current visual state, not from zero. This keeps
-        // repeated taps continuous instead of snapping the pill and its echoes back to centre.
-        preservingWobbleOnCancel = wasRunning
-        wobbleAnimator?.cancel()
-        preservingWobbleOnCancel = false
+        wobbleAnimator = null
         if (!wasRunning) {
             root.translationX = 0f
             root.translationY = 0f
         }
 
-        // Restrained 8–11 dp travel prevents the pill from feeling detached or rubbery.
-        val distance = dp(8f + Random.nextFloat() * 3f)
+        // Subtle 4.2–5.8 dp motion: several quick taps can retrigger it without a large kick.
+        val distance = dp(4.2f + Random.nextFloat() * 1.6f)
         val swingDirection = if (Random.nextBoolean()) -1f else 1f
-        // Sampling different points in the same wave produces a genuine multi-position echo.
-        // Each copy also has its own blur radius and opacity, growing softer toward the tail.
-        val lags = floatArrayOf(0.018f, 0.036f, 0.054f, 0.072f, 0.090f, 0.108f, 0.126f)
-        val ghostBlurOrder = floatArrayOf(0.44f, 0.37f, 0.31f, 0.25f, 0.20f, 0.15f, 0.10f)
+        val lags = floatArrayOf(0.012f, 0.024f, 0.036f, 0.048f, 0.060f, 0.072f, 0.084f)
+        val ghostAlphaOrder = baseAlphas
         ghostLayers.forEachIndexed { index, ghost ->
             if (!wasRunning) {
                 ghost.translationX = 0f
                 ghost.translationY = 0f
-                ghost.alpha = ghostBlurOrder[index]
+                ghost.alpha = ghostAlphaOrder[index]
             }
             ghost.visibility = View.VISIBLE
         }
-        glassView?.setMotionBlur(0f)
+        glassView?.setMotionBlur(0f, swingDirection)
 
         fun smooth(progress: Float): Float {
             val t = progress.coerceIn(0f, 1f)
@@ -633,15 +633,13 @@ class IslandService : Service() {
         }
         fun waveAt(progress: Float): Float {
             val t = progress.coerceIn(0f, 1f)
-            // Three full cycles keep left/right travel even. During the final quarter,
-            // a smooth envelope draws the pill back to rest instead of snapping at the end.
-            val settle = if (t < 0.75f) 1f else {
-                val u = ((t - 0.75f) / 0.25f).coerceIn(0f, 1f)
+            val settle = if (t < 0.66f) 1f else {
+                val u = ((t - 0.66f) / 0.34f).coerceIn(0f, 1f)
                 1f - u * u * (3f - 2f * u)
             }
-            val envelope = exp(-0.62f * t) * settle
-            val phase = t * Math.PI.toFloat() * 6f
-            return swingDirection * distance * envelope * sin(phase)
+            val envelope = kotlin.math.exp(-1.0f * t) * settle
+            val phase = t * Math.PI.toFloat() * 4f // two cycles, then settle
+            return swingDirection * distance * envelope * kotlin.math.sin(phase)
         }
         fun offsetAt(progress: Float): Float {
             val t = progress.coerceIn(0f, 1f)
@@ -650,38 +648,35 @@ class IslandService : Service() {
 
         var lastOffset = startOffset
         val animator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 760L
+            duration = 430L
             interpolator = android.view.animation.LinearInterpolator()
             addUpdateListener { frame ->
                 val t = frame.animatedValue as Float
                 val offset = offsetAt(t)
                 root.translationX = offset
                 root.translationY = startOffsetY * (1f - smooth(t)) +
-                    (abs(waveAt(t)) / distance.coerceAtLeast(1f)) * dp(0.55f) * sin(t * Math.PI.toFloat() * 2f)
-
+                    (kotlin.math.abs(waveAt(t)) / distance.coerceAtLeast(1f)) * dp(0.22f) * kotlin.math.sin(t * Math.PI.toFloat() * 2f)
                 ghostLayers.forEachIndexed { index, ghost ->
                     val delayed = waveAt((t - lags[index]).coerceAtLeast(0f))
-                    ghost.translationX = startGhostOffsets[index] * (1f - smooth(t)) + delayed
-                    ghost.translationY = (index + 1) * dp(0.18f).toFloat() * (1f - smooth(t))
-                    val tailFade = if (t < 0.74f) 1f else (1f - (t - 0.74f) / 0.26f).coerceIn(0f, 1f)
-                    ghost.alpha = startGhostAlphas[index] * (1f - smooth(t)) +
-                        ghostBlurOrder[index] * tailFade * smooth(t)
+                    ghost.translationX = startGhostX[index] * (1f - smooth(t)) + delayed
+                    ghost.translationY = startGhostY[index] * (1f - smooth(t)) +
+                        (index + 1) * dp(0.06f) * (1f - smooth(t))
+                    val tailFade = if (t < 0.62f) 1f else (1f - (t - 0.62f) / 0.38f).coerceIn(0f, 1f)
+                    ghost.alpha = startGhostAlpha[index] * (1f - smooth(t)) +
+                        ghostAlphaOrder[index] * tailFade * smooth(t)
                 }
-                val travel = abs(offset - lastOffset)
+                val travel = kotlin.math.abs(offset - lastOffset)
                 val direction = if (offset < lastOffset) -1f else 1f
-                val normalizedVelocity = (travel / dp(3).coerceAtLeast(1)).coerceIn(0f, 1f)
+                val normalizedVelocity = (travel / dp(3.5f).coerceAtLeast(1f)).coerceIn(0f, 1f)
                 val blurAllowed = AppPrefs.get(this@IslandService).getBoolean(AppPrefs.MOTION_BLUR, true)
-                glassView?.setMotionBlur(if (blurAllowed) (normalizedVelocity * 0.72f).coerceIn(0f, 1f) else 0f, direction)
+                glassView?.setMotionBlur(if (blurAllowed) normalizedVelocity * 0.38f else 0f, direction)
                 lastOffset = offset
             }
         }
         wobbleAnimator = animator
         animator.addListener(object : android.animation.AnimatorListenerAdapter() {
             override fun onAnimationEnd(animation: android.animation.Animator) {
-                if (preservingWobbleOnCancel) {
-                    if (wobbleAnimator === animator) wobbleAnimator = null
-                    return
-                }
+                if (wobbleAnimator !== animator) return
                 root.translationX = 0f
                 root.translationY = 0f
                 root.scaleX = 1f
@@ -692,11 +687,31 @@ class IslandService : Service() {
                     ghost.alpha = 0f
                     ghost.visibility = View.INVISIBLE
                 }
+                // Explicitly zero out the motion shader after the final frame, removing any
+                // faint bright smear that could otherwise look stuck on the capsule.
                 glassView?.setMotionBlur(0f, 1f)
-                if (wobbleAnimator === animator) wobbleAnimator = null
+                wobbleAnimator = null
             }
         })
         animator.start()
+    }
+
+    private fun resetWobble() {
+        val animator = wobbleAnimator
+        wobbleAnimator = null
+        if (animator != null) {
+            animator.removeAllUpdateListeners()
+            animator.removeAllListeners()
+            animator.cancel()
+        }
+        islandRoot?.let { it.translationX = 0f; it.translationY = 0f; it.scaleX = 1f; it.scaleY = 1f }
+        ghostLayers.forEach { ghost ->
+            ghost.translationX = 0f
+            ghost.translationY = 0f
+            ghost.alpha = 0f
+            ghost.visibility = View.INVISIBLE
+        }
+        glassView?.setMotionBlur(0f, 1f)
     }
 
     private fun openCustomizationPanel() {
@@ -725,19 +740,17 @@ class IslandService : Service() {
         val desiredDp = when {
             panelOpen && screenRecording -> 238
             panelOpen -> screenWidthDp - 24
-            isLandscapeWithSideCutout() -> if (screenRecording) maxOf(widthDp, 178) else widthDp
             screenRecording -> maxOf(widthDp, 178)
             else -> widthDp
         }
         val maxWidthPx = (screenWidthPx - dp(12)).coerceAtLeast(dp(36))
-        return dp(desiredDp).coerceIn(dp(if (isLandscapeWithSideCutout() && !panelOpen) 34 else 126), maxWidthPx)
+        return dp(desiredDp).coerceIn(dp(126), maxWidthPx)
     }
 
     private fun targetHeight(): Int = when {
         isRecordingControlExpanded() -> maxOf(statusBarHeightPx() + dp(24), dp(50))
         panelOpen && screenRecording -> dp(66)
         panelOpen -> dp(252)
-        isLandscapeWithSideCutout() -> dp(if (screenRecording) maxOf(heightDp, 42) else heightDp)
         screenRecording -> dp(maxOf(heightDp, 42))
         else -> dp(heightDp)
     }
@@ -748,17 +761,10 @@ class IslandService : Service() {
         else -> Gravity.TOP or Gravity.CENTER_HORIZONTAL
     }
 
-    private fun gravityForWindow(): Int = when {
-        isLandscapeWithSideCutout() -> {
-            // In landscape the physical camera cutout moves to a side. Keep the pill upright
-            // along that edge instead of letting the position follow a portrait top-center assumption.
-            Gravity.TOP or Gravity.LEFT
-        }
-        isPortraitWithTopCutout() -> Gravity.TOP or Gravity.CENTER_HORIZONTAL
-        else -> gravityForAlignment()
-    }
+    private fun gravityForWindow(): Int = Gravity.TOP or Gravity.CENTER_HORIZONTAL
 
-    private fun horizontalOffset(): Int = if (alignment == "center") 0 else dp(12)
+    // Fixed centered anchor in both orientations; the capsule itself remains horizontal.
+    private fun horizontalOffset(): Int = 0
 
     private fun displayWidthPx(): Int = if (Build.VERSION.SDK_INT >= 30) {
         try { windowManager.currentWindowMetrics.bounds.width() } catch (_: Exception) { resources.displayMetrics.widthPixels }
@@ -804,11 +810,6 @@ class IslandService : Service() {
 
     private fun positionX(windowWidth: Int = targetWidth(), expanded: Boolean = panelOpen): Int {
         if (isRecordingControlExpanded()) return 0
-        if (isLandscapeWithSideCutout()) {
-            if (expanded) return ((displayWidthPx() - windowWidth) / 2).coerceAtLeast(0)
-            val cutout = currentCameraCutoutBounds()
-            if (cutout != null) return (cutout.centerX() - windowWidth / 2).coerceAtLeast(0)
-        }
         if (isPortraitWithTopCutout()) {
             val cutout = currentCameraCutoutBounds()
             if (cutout != null) return cutout.centerX() - displayWidthPx() / 2
@@ -818,11 +819,6 @@ class IslandService : Service() {
 
     private fun positionY(windowHeight: Int = targetHeight(), expanded: Boolean = panelOpen): Int {
         if (isRecordingControlExpanded()) return 0
-        if (isLandscapeWithSideCutout()) {
-            if (expanded) return dp(topOffsetDp)
-            val cutout = currentCameraCutoutBounds()
-            if (cutout != null) return (cutout.centerY() - windowHeight / 2).coerceAtLeast(0)
-        }
         return overlayTopY()
     }
 
@@ -846,7 +842,7 @@ class IslandService : Service() {
         val rootContent = content ?: return
         val prefs = AppPrefs.get(this)
         resizeAnimator?.cancel()
-        wobbleAnimator?.cancel()
+        resetWobble()
         recordingPulse?.cancel()
         recordingPulse = null
         recordingTextTypewriter?.let { handler.removeCallbacks(it) }
@@ -987,7 +983,7 @@ class IslandService : Service() {
                 }
             }
             faceUnlockRemoval = remove
-            handler.postDelayed(remove, 1450L)
+            handler.postDelayed(remove, 1900L)
         } catch (_: Exception) {
             faceUnlockOverlay = null
             faceUnlockOverlayManager = null
