@@ -36,6 +36,8 @@ class MainActivity : Activity() {
 
     private var launchedForPanelPicker = false
     private var unsupportedDevice = false
+    private var keyAuthorized = false
+    private var authorizedUiInitialized = false
     private var tab = 0
     private var onboardingPage = 0
     private val uiHandler = Handler(Looper.getMainLooper())
@@ -142,6 +144,22 @@ class MainActivity : Activity() {
             renderUnsupportedDevice(compatibility.second)
             return
         }
+
+        // Keep the app behind a blank surface until the server accepts a typed key.
+        setContentView(LinearLayout(this).apply {
+            setBackgroundColor(Color.rgb(7, 8, 12))
+            layoutParams = ViewGroup.LayoutParams(-1, -1)
+        })
+        KeyAuthGate.requireKey(this) {
+            if (isFinishing || isDestroyed) return@requireKey
+            keyAuthorized = true
+            initializeAuthorizedUi()
+        }
+    }
+
+    private fun initializeAuthorizedUi() {
+        if (!keyAuthorized || authorizedUiInitialized || isFinishing || isDestroyed) return
+        authorizedUiInitialized = true
         if (prefs.getBoolean(AppPrefs.ONBOARDING_DONE, false)) renderMain() else renderOnboarding(0)
         maybePickPanelBackground(intent)
     }
@@ -149,7 +167,8 @@ class MainActivity : Activity() {
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
         if (intent != null) setIntent(intent)
-        maybePickPanelBackground(intent)
+        // A service/panel intent must not open a picker or other app UI before the key gate passes.
+        if (keyAuthorized) maybePickPanelBackground(intent)
     }
 
     private fun openBackgroundPicker() {
@@ -205,6 +224,8 @@ class MainActivity : Activity() {
             renderUnsupportedDevice(compatibility.second)
             return
         }
+        // Do not render the dashboard/onboarding while the key dialog is pending or the user is in Get Key.
+        if (!keyAuthorized) return
         if (prefs.getBoolean(AppPrefs.ONBOARDING_DONE, false)) renderMain()
     }
 
