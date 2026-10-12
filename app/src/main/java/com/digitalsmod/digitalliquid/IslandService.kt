@@ -55,6 +55,15 @@ class IslandService : Service() {
     private var usingAccessibilityOverlay = false
     private var overlayStartupAttempts = 0
     private val handler = Handler(Looper.getMainLooper())
+    private val keyAuthorizationWatchdog = object : Runnable {
+        override fun run() {
+            if (!KeyAuthGate.isAuthorizedInCurrentProcess(this@IslandService)) {
+                stopSelf()
+                return
+            }
+            handler.postDelayed(this, 30_000L)
+        }
+    }
     private var islandRoot: FrameLayout? = null
     private var content: LinearLayout? = null
     private var glassView: LiquidGlassView? = null
@@ -115,6 +124,22 @@ class IslandService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        // Sticky service restarts must not resurrect the island after a cold process start
+        // until MainActivity has successfully verified a key in this process.
+        if (!KeyAuthGate.isAuthorizedInCurrentProcess(this)) {
+            // A foreground-service start must promptly call startForeground on modern Android.
+            // Show its low-importance notification briefly, then stop without creating the overlay.
+            createNotificationChannel()
+            val blockedNotification = buildForegroundNotification()
+            if (Build.VERSION.SDK_INT >= 34) {
+                startForeground(42, blockedNotification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            } else {
+                startForeground(42, blockedNotification)
+            }
+            stopSelf()
+            return
+        }
+        handler.postDelayed(keyAuthorizationWatchdog, 30_000L)
         instance = this
         hyperIslandVisibilityOverride = lastHyperIslandVisibilityOverride
         notificationScreenRecording = lastNotificationScreenRecording
@@ -164,7 +189,13 @@ class IslandService : Service() {
         }
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!KeyAuthGate.isAuthorizedInCurrentProcess(this)) {
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+        return START_STICKY
+    }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
@@ -1059,6 +1090,7 @@ class IslandService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        handler.removeCallbacks(keyAuthorizationWatchdog)
         instance = null
         AppPrefs.get(this).edit().putBoolean(AppPrefs.SERVICE_ENABLED, false).apply()
         resizeAnimator?.cancel()
