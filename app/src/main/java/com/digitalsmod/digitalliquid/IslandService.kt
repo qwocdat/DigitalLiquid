@@ -152,11 +152,8 @@ class IslandService : Service() {
             override fun onRecordingConfigChanged(configs: List<AudioRecordingConfiguration>) {
                 val isScreenAudioRecording = configs.any { config ->
                     val source = config.clientAudioSource
-                    val isAudioSourceRecording = source == MediaRecorder.AudioSource.REMOTE_SUBMIX ||
-                        source == 8 ||
-                        source == MediaRecorder.AudioSource.MIC
+                    val isAudioSourceRecording = source == MediaRecorder.AudioSource.REMOTE_SUBMIX || source == 8
 
-                    // Dùng Reflection để gọi getClientPackageName() an toàn, tránh lỗi biên dịch Kotlin
                     val pkg = if (Build.VERSION.SDK_INT >= 29) {
                         try {
                             val method = config.javaClass.getMethod("getClientPackageName")
@@ -164,7 +161,7 @@ class IslandService : Service() {
                         } catch (_: Exception) { "" }
                     } else ""
 
-                    (pkg.contains("screenrecorder") || pkg == "com.miui.screenrecorder" || source == 8) && isAudioSourceRecording
+                    pkg.isNotBlank() && (pkg.contains("screenrecorder") || pkg.contains("screenrecord") || pkg == "com.miui.screenrecorder") && isAudioSourceRecording
                 }
 
                 if (isAudioRecordingActive != isScreenAudioRecording) {
@@ -315,7 +312,7 @@ class IslandService : Service() {
             }
             typeVal == virtualTypeConst || typeVal == 3 || typeVal == 4
         } catch (_: Exception) {
-            true
+            false
         }
     }
 
