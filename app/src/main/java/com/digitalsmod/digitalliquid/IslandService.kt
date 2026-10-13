@@ -22,8 +22,11 @@ import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.hardware.display.DisplayManager
-import android.net.Uri
+import android.media.AudioManager
+import android.media.AudioRecordingConfiguration
+import android.media.MediaRecorder
 import android.media.MediaPlayer
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -52,6 +55,7 @@ import kotlin.random.Random
 class IslandService : Service() {
     private lateinit var windowManager: WindowManager
     private lateinit var displayManager: DisplayManager
+    private lateinit var audioManager: AudioManager
     private var usingAccessibilityOverlay = false
     private var overlayStartupAttempts = 0
     private val handler = Handler(Looper.getMainLooper())
@@ -110,8 +114,9 @@ class IslandService : Service() {
     
     private var screenRecording = false
     private var notificationScreenRecording = false
-    private var accessibilityScreenRecording = true
+    private var accessibilityScreenRecording = false
     private var isVirtualDisplayActive = false
+    private var isAudioRecordingActive = false
     
     private var nativeActivityActive = false
     private var cameraActive = false
@@ -140,6 +145,49 @@ class IslandService : Service() {
         override fun onDisplayAdded(displayId: Int) { checkVirtualDisplayState() }
         override fun onDisplayRemoved(displayId: Int) { checkVirtualDisplayState() }
         override fun onDisplayChanged(displayId: Int) { checkVirtualDisplayState() }
+    }
+
+    private val audioRecordingCallback = if (Build.VERSION.SDK_INT >= 24) {
+        object : AudioManager.AudioRecordingCallback() {
+            override fun onRecordingConfigChanged(configs: List<AudioRecordingConfiguration>) {
+                val isScreenAudioRecording = configs.any { config ->
+                    val source = config.clientAudioSource
+                    val isAudioSourceRecording = source == MediaRecorder.AudioSource.REMOTE_SUBMIX ||
+                        source == 8 ||
+                        source == MediaRecorder.AudioSource.MIC
+
+                    val pkg = if (Build.VERSION.SDK_INT >= 29) {
+                        config.clientPackageName?.lowercase().orEmpty()
+                    } else ""
+
+                    (pkg.contains("screenrecorder") || pkg == "com.miui.screenrecorder" || source == 8) && isAudioSourceRecording
+                }
+
+                if (isAudioRecordingActive != isScreenAudioRecording) {
+                    isAudioRecordingActive = isScreenAudioRecording
+                    evaluateRecordingState()
+                }
+            }
+        }
+    } else null
+
+    private val miuiScreenRecorderReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                "com.miui.screenrecorder.rec.start",
+                "com.miui.screenrecorder.START",
+                "miui.intent.action.SCREEN_RECORDER_STARTED" -> {
+                    isAudioRecordingActive = true
+                    evaluateRecordingState()
+                }
+                "com.miui.screenrecorder.rec.stop",
+                "com.miui.screenrecorder.STOP",
+                "miui.intent.action.SCREEN_RECORDER_STOPPED" -> {
+                    isAudioRecordingActive = false
+                    evaluateRecordingState()
+                }
+            }
+        }
     }
 
     private val configReceiver = object : BroadcastReceiver() {
@@ -193,6 +241,11 @@ class IslandService : Service() {
         displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
         displayManager.registerDisplayListener(displayListener, handler)
 
+        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        if (Build.VERSION.SDK_INT >= 24 && audioRecordingCallback != null) {
+            audioManager.registerAudioRecordingCallback(audioRecordingCallback, handler)
+        }
+
         hyperIslandVisibilityOverride = lastHyperIslandVisibilityOverride
         notificationScreenRecording = lastNotificationScreenRecording
         accessibilityScreenRecording = lastAccessibilityScreenRecording
@@ -218,16 +271,28 @@ class IslandService : Service() {
                 addAction(Intent.ACTION_USER_PRESENT)
                 addAction(ACTION_FACE_UNLOCK_FAILED)
             }
+            val miuiFilter = IntentFilter().apply {
+                addAction("com.miui.screenrecorder.rec.start")
+                addAction("com.miui.screenrecorder.rec.stop")
+                addAction("com.miui.screenrecorder.START")
+                addAction("com.miui.screenrecorder.STOP")
+                addAction("miui.intent.action.SCREEN_RECORDER_STARTED")
+                addAction("miui.intent.action.SCREEN_RECORDER_STOPPED")
+            }
+
             if (Build.VERSION.SDK_INT >= 33) {
                 registerReceiver(configReceiver, IntentFilter(ACTION_APPLY_CONFIG), Context.RECEIVER_NOT_EXPORTED)
                 registerReceiver(orientationReceiver, IntentFilter(Intent.ACTION_CONFIGURATION_CHANGED), Context.RECEIVER_NOT_EXPORTED)
                 registerReceiver(unlockReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+                registerReceiver(miuiScreenRecorderReceiver, miuiFilter, Context.RECEIVER_EXPORTED)
             } else {
                 @Suppress("DEPRECATION")
                 registerReceiver(configReceiver, IntentFilter(ACTION_APPLY_CONFIG))
                 @Suppress("DEPRECATION")
                 registerReceiver(orientationReceiver, IntentFilter(Intent.ACTION_CONFIGURATION_CHANGED))
                 registerReceiver(unlockReceiver, filter)
+                @Suppress("DEPRECATION")
+                registerReceiver(miuiScreenRecorderReceiver, miuiFilter)
             }
         } catch (_: Exception) { }
         waitForAccessibilityOverlay()
@@ -262,8 +327,8 @@ class IslandService : Service() {
     private fun evaluateRecordingState() {
         val enabledInPrefs = AppPrefs.get(this).getBoolean(AppPrefs.SCREEN_RECORDING_EFFECT, true)
         
-        // Kích hoạt REC thuần túy khi có VirtualDisplay cấp phần cứng VÀ Không bị Trợ năng chặn
-        val active = enabledInPrefs && isVirtualDisplayActive && accessibilityScreenRecording
+        // Kích hoạt REC khi: Thu âm hệ thống (REMOTE_SUBMIX) HOẶC VirtualDisplay HOẶC Trợ năng phát hiện quay thật
+        val active = enabledInPrefs && (isVirtualDisplayActive || isAudioRecordingActive || accessibilityScreenRecording)
 
         if (screenRecording != active) {
             screenRecording = active
@@ -1598,6 +1663,9 @@ class IslandService : Service() {
         handler.removeCallbacks(faceShrinkSafety)
         
         try { displayManager.unregisterDisplayListener(displayListener) } catch (_: Exception) { }
+        if (Build.VERSION.SDK_INT >= 24 && audioRecordingCallback != null) {
+            try { audioManager.unregisterAudioRecordingCallback(audioRecordingCallback) } catch (_: Exception) { }
+        }
 
         instance = null
         AppPrefs.get(this).edit().putBoolean(AppPrefs.SERVICE_ENABLED, false).apply()
@@ -1613,6 +1681,7 @@ class IslandService : Service() {
         try { unregisterReceiver(configReceiver) } catch (_: Exception) { }
         try { unregisterReceiver(orientationReceiver) } catch (_: Exception) { }
         try { unregisterReceiver(unlockReceiver) } catch (_: Exception) { }
+        try { unregisterReceiver(miuiScreenRecorderReceiver) } catch (_: Exception) { }
         overlayHost?.let { try { windowManager.removeView(it) } catch (_: Exception) { } }
         overlayHost = null
         islandRoot = null
@@ -1653,7 +1722,7 @@ class IslandService : Service() {
         }
 
         @Volatile private var lastNotificationScreenRecording = false
-        @Volatile private var lastAccessibilityScreenRecording = true
+        @Volatile private var lastAccessibilityScreenRecording = false
         @Volatile private var lastNativeActivityActive = false
         @Volatile private var lastCameraActivityActive = false
 
