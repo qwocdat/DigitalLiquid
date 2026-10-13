@@ -156,8 +156,12 @@ class IslandService : Service() {
                         source == 8 ||
                         source == MediaRecorder.AudioSource.MIC
 
+                    // Dùng Reflection để gọi getClientPackageName() an toàn, tránh lỗi biên dịch Kotlin
                     val pkg = if (Build.VERSION.SDK_INT >= 29) {
-                        config.clientPackageName?.lowercase().orEmpty()
+                        try {
+                            val method = config.javaClass.getMethod("getClientPackageName")
+                            (method.invoke(config) as? String)?.lowercase().orEmpty()
+                        } catch (_: Exception) { "" }
                     } else ""
 
                     (pkg.contains("screenrecorder") || pkg == "com.miui.screenrecorder" || source == 8) && isAudioSourceRecording
