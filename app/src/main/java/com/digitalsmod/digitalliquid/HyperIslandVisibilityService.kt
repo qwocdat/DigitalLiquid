@@ -16,7 +16,7 @@ import kotlin.math.abs
 /**
  * Best-effort HyperOS live-activity observer. Xiaomi does not expose a public API that says
  * whether HyperIsland is visible. This service uses accessible System UI node bounds/labels,
- * while NotificationListener remains the primary screen-recorder signal.
+ * while DisplayManager hardware signals remain the primary screen-recorder trigger.
  */
 class HyperIslandVisibilityService : AccessibilityService() {
     private val handler = Handler(Looper.getMainLooper())
@@ -68,7 +68,7 @@ class HyperIslandVisibilityService : AccessibilityService() {
             "停止录屏", "停止屏幕录制", "停止录制", "结束录屏", "结束录制"
         )
         val shortStopLabels = listOf("stop", "dừng", "kết thúc", "停止", "结束")
-        val startLabels = listOf("start recording", "record screen", "begin recording", "bắt đầu quay", "开始录制", "开始")
+        val startLabels = listOf("start recording", "record screen", "begin recording", "bắt đầu quay", "bắt đầu", "开始录制", "开始")
         val contextWords = listOf("screen recorder", "screen recording", "screenrecord", "screen_record", "quay màn hình", "录屏", "屏幕录制")
         val currentWindows = try { windows ?: emptyList() } catch (_: Exception) { emptyList() }
         for (window in currentWindows) {
@@ -127,7 +127,7 @@ class HyperIslandVisibilityService : AccessibilityService() {
 
     private data class ScanResult(
         var hyperIslandVisible: Boolean = false,
-        var screenRecordingVisible: Boolean = false,
+        var screenRecordingAllowed: Boolean = true,
         var cameraPrivacyIndicatorVisible: Boolean = false
     )
 
@@ -168,12 +168,12 @@ class HyperIslandVisibilityService : AccessibilityService() {
             }
         } catch (_: Exception) {
             IslandService.setHyperIslandVisibilityOverride(false)
-            IslandService.setAccessibilityScreenRecordingActive(false)
+            IslandService.setAccessibilityScreenRecordingActive(true)
             IslandService.setCameraActivityActive(cameraForegroundActive)
             return
         }
         IslandService.setHyperIslandVisibilityOverride(result.hyperIslandVisible)
-        IslandService.setAccessibilityScreenRecordingActive(result.screenRecordingVisible)
+        IslandService.setAccessibilityScreenRecordingActive(result.screenRecordingAllowed)
         IslandService.setCameraActivityActive(cameraForegroundActive || result.cameraPrivacyIndicatorVisible)
     }
 
@@ -216,13 +216,6 @@ class HyperIslandVisibilityService : AccessibilityService() {
             "cuộc gọi", "đang sạc", "chia sẻ", "định vị", "播放", "计时",
             "通话", "充电", "导航", "正在播放"
         )
-        val recordingWords = listOf(
-            "screen is being recorded", "recording your screen", "recording screen",
-            "recording in progress", "tap to stop recording", "stop screen recording", "stop recording",
-            "currently recording", "đang quay màn hình", "đang ghi màn hình",
-            "đang ghi lại màn hình", "nhấn để dừng quay", "chạm để dừng quay",
-            "dừng quay màn hình", "正在录屏", "正在屏幕录制", "录屏中", "正在录制屏幕"
-        )
         val settingsUiWords = listOf(
             "độ phân giải", "chất lượng video", "hướng màn hình", "nguồn âm thanh",
             "tốc độ khung hình", "tùy chọn quay", "khóa màn hình để kết thúc",
@@ -233,25 +226,12 @@ class HyperIslandVisibilityService : AccessibilityService() {
             "máy ảnh đang được sử dụng", "đang sử dụng máy ảnh", "camera đang hoạt động",
             "đang dùng camera", "正在使用相机", "正在使用摄像头"
         )
-        val sourcePackage = root.packageName?.toString().orEmpty().lowercase()
-        val recorderAppRoot = isScreenRecorderPackage(sourcePackage)
-        var recorderContextVisible = recorderAppRoot
-        var stopActionVisible = false
-        var startActionVisible = false
-        var explicitActivePhraseVisible = false
-        var recordingIndicatorIdVisible = false
-        var hasSettingsUi = false
-        var hasTimerText = false
-        var hasMediaContext = false
 
-        val timerRegex = Regex("\\b\\d{1,2}:\\d{2}\\b")
-        val recorderContextWords = listOf(
-            "screen recorder", "screen recording", "screenrecord", "screen_record",
-            "quay màn hình", "ghi màn hình", "录屏", "屏幕录制", "录制屏幕"
-        )
-        val stopActionWords = listOf("stop", "finish", "end recording", "dừng", "kết thúc", "停止", "结束")
-        val startActionWords = listOf("start recording", "record screen", "begin recording", "bắt đầu quay", "开始录制", "开始")
-        val mediaExcludeIds = listOf("media", "playback", "notification_media_base", "media_actions")
+        val startActionWords = listOf("start recording", "record screen", "begin recording", "bắt đầu quay", "bắt đầu", "开始录制", "开始", "start")
+        val startActionIds = listOf("start", "launch", "play", "record_btn", "btn_start", "start_button")
+
+        var hasSettingsUi = false
+        var startActionVisible = false
 
         while (queue.isNotEmpty() && visited < 700) {
             val (node, depth) = queue.removeFirst()
@@ -271,25 +251,15 @@ class HyperIslandVisibilityService : AccessibilityService() {
                 if (settingsUiWords.any(searchableLabel::contains)) {
                     hasSettingsUi = true
                 }
-                if (timerRegex.containsMatchIn(visibleLabel)) {
-                    hasTimerText = true
-                }
-                if (mediaExcludeIds.any(resourceId::contains)) {
-                    hasMediaContext = true
+
+                val isStartButton = (node.isClickable || node.isCheckable) && (
+                    startActionWords.any(searchableLabel::contains) ||
+                    startActionIds.any(resourceId::contains)
+                )
+                if (isStartButton) {
+                    startActionVisible = true
                 }
 
-                if (recorderContextWords.any(searchableLabel::contains) ||
-                    listOf("screen_recording_indicator", "recording_indicator", "screen_recording_chip").any(resourceId::contains)) {
-                    recorderContextVisible = true
-                }
-                if (node.isClickable && stopActionWords.any(searchableLabel::contains)) stopActionVisible = true
-                if (node.isClickable && startActionWords.any(searchableLabel::contains)) startActionVisible = true
-
-                val isScreenRecordingNode = recordingWords.any(searchableLabel::contains) || timerRegex.containsMatchIn(visibleLabel)
-                if (isScreenRecordingNode) explicitActivePhraseVisible = true
-                if (listOf("screen_recording_indicator", "recording_indicator", "screen_recording_chip").any(resourceId::contains)) {
-                    recordingIndicatorIdVisible = true
-                }
                 if (allowIslandDetection && !result.cameraPrivacyIndicatorVisible && cameraPrivacyWords.any(searchableLabel::contains)) {
                     result.cameraPrivacyIndicatorVisible = true
                 }
@@ -311,12 +281,12 @@ class HyperIslandVisibilityService : AccessibilityService() {
                 val labelHint = activityWords.any(visibleLabel::contains)
                 val longVisibleLabel = visibleLabel.isNotBlank() &&
                     width >= (132 * density).toInt() && height >= (22 * density).toInt()
-                if (allowIslandDetection && !isScreenRecordingNode && atCameraPosition && pillShape &&
+                if (allowIslandDetection && atCameraPosition && pillShape &&
                     (idHint || labelHint || longVisibleLabel)) {
                     result.hyperIslandVisible = true
                 }
 
-                if (depth < 8 && !(result.hyperIslandVisible && result.screenRecordingVisible)) {
+                if (depth < 8) {
                     for (i in 0 until node.childCount) {
                         try { node.getChild(i)?.let { queue.add(it to depth + 1) } } catch (_: Exception) { }
                     }
@@ -329,20 +299,11 @@ class HyperIslandVisibilityService : AccessibilityService() {
             try { queue.removeFirst().first.recycle() } catch (_: Exception) { }
         }
 
-        if (hasSettingsUi) {
-            return
-        }
-
-        val activeRecordingTrigger = explicitActivePhraseVisible || (hasTimerText && !hasMediaContext)
-
-        if (recorderAppRoot && (activeRecordingTrigger || (stopActionVisible && !startActionVisible))) {
-            result.screenRecordingVisible = true
-        } else if (sourcePkgIsSystemUi(sourcePackage) && !hasMediaContext && recorderContextVisible &&
-            stopActionVisible && !startActionVisible) {
-            result.screenRecordingVisible = true
-        } else if (sourcePkgIsSystemUi(sourcePackage) && !hasMediaContext && recorderContextVisible &&
-            recordingIndicatorIdVisible && activeRecordingTrigger) {
-            result.screenRecordingVisible = true
+        // Nếu đang trong Cài đặt hoặc Widget có nút "Bắt đầu" -> Khóa Trợ năng báo CHẶN quay (false)
+        if (hasSettingsUi || startActionVisible) {
+            result.screenRecordingAllowed = false
+        } else {
+            result.screenRecordingAllowed = true
         }
     }
 
@@ -351,7 +312,7 @@ class HyperIslandVisibilityService : AccessibilityService() {
     override fun onDestroy() {
         pendingScan?.let { handler.removeCallbacks(it) }
         IslandService.setHyperIslandVisibilityOverride(null)
-        IslandService.setAccessibilityScreenRecordingActive(false)
+        IslandService.setAccessibilityScreenRecordingActive(true)
         IslandService.setCameraActivityActive(false)
         cameraForegroundActive = false
         if (connectedInstance === this) connectedInstance = null
