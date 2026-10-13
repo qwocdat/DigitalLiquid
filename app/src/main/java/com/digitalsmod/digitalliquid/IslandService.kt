@@ -55,6 +55,15 @@ class IslandService : Service() {
     private var usingAccessibilityOverlay = false
     private var overlayStartupAttempts = 0
     private val handler = Handler(Looper.getMainLooper())
+    private val keyAuthorizationWatchdog = object : Runnable {
+        override fun run() {
+            if (!KeyAuthGate.isAuthorizedInCurrentProcess(this@IslandService)) {
+                stopSelf()
+                return
+            }
+            handler.postDelayed(this, 30_000L)
+        }
+    }
 
     private var islandRoot: FrameLayout? = null
     private var overlayHost: FrameLayout? = null
@@ -101,7 +110,7 @@ class IslandService : Service() {
     
     private var screenRecording = false
     private var notificationScreenRecording = false
-    private var accessibilityScreenRecording = false
+    private var accessibilityScreenRecording = true
     private var isVirtualDisplayActive = false
     
     private var nativeActivityActive = false
@@ -167,6 +176,18 @@ class IslandService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        if (!KeyAuthGate.isAuthorizedInCurrentProcess(this)) {
+            createNotificationChannel()
+            val blockedNotification = buildForegroundNotification()
+            if (Build.VERSION.SDK_INT >= 34) {
+                startForeground(42, blockedNotification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            } else {
+                startForeground(42, blockedNotification)
+            }
+            stopSelf()
+            return
+        }
+        handler.postDelayed(keyAuthorizationWatchdog, 30_000L)
         instance = this
         
         displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
@@ -240,7 +261,9 @@ class IslandService : Service() {
 
     private fun evaluateRecordingState() {
         val enabledInPrefs = AppPrefs.get(this).getBoolean(AppPrefs.SCREEN_RECORDING_EFFECT, true)
-        val active = enabledInPrefs && (accessibilityScreenRecording || notificationScreenRecording || isVirtualDisplayActive)
+        
+        // Kích hoạt REC thuần túy khi có VirtualDisplay cấp phần cứng VÀ Không bị Trợ năng chặn
+        val active = enabledInPrefs && isVirtualDisplayActive && accessibilityScreenRecording
 
         if (screenRecording != active) {
             screenRecording = active
@@ -275,6 +298,10 @@ class IslandService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!KeyAuthGate.isAuthorizedInCurrentProcess(this)) {
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
         return START_STICKY
     }
 
@@ -1567,6 +1594,9 @@ class IslandService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        handler.removeCallbacks(keyAuthorizationWatchdog)
+        handler.removeCallbacks(faceShrinkSafety)
+        
         try { displayManager.unregisterDisplayListener(displayListener) } catch (_: Exception) { }
 
         instance = null
@@ -1623,7 +1653,7 @@ class IslandService : Service() {
         }
 
         @Volatile private var lastNotificationScreenRecording = false
-        @Volatile private var lastAccessibilityScreenRecording = false
+        @Volatile private var lastAccessibilityScreenRecording = true
         @Volatile private var lastNativeActivityActive = false
         @Volatile private var lastCameraActivityActive = false
 
