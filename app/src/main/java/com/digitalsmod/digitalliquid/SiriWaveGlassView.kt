@@ -101,7 +101,6 @@ class SiriWaveGlassView(context: Context) : View(context) {
     """.trimIndent()
 
     init {
-        isOpaque = false
         setLayerType(LAYER_TYPE_HARDWARE, null)
         if (Build.VERSION.SDK_INT >= 33) {
             try { shader = RuntimeShader(agsl) } catch (_: Exception) { shader = null }
