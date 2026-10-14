@@ -207,8 +207,13 @@ class IslandService : Service() {
             if (intent?.action != Intent.ACTION_CONFIGURATION_CHANGED) return
             if (isFaceUnlockShrinking) return
             applyPreferences()
-            render(animateSize = true)
-            updatePosition()
+            // Orientation changes are geometry changes, not a user-requested morph.
+            // One immediate layout pass avoids a resize animator fighting updatePosition().
+            handler.post {
+                if (isFaceUnlockShrinking || islandRoot == null) return@post
+                render(animateSize = false)
+                updatePosition()
+            }
         }
     }
 
@@ -375,8 +380,12 @@ class IslandService : Service() {
         super.onConfigurationChanged(newConfig)
         if (isFaceUnlockShrinking) return
         applyPreferences()
-        render(animateSize = false)
-        updatePosition()
+        // Apply after the new display metrics/cutout geometry has settled.
+        handler.post {
+            if (isFaceUnlockShrinking || islandRoot == null) return@post
+            render(animateSize = false)
+            updatePosition()
+        }
     }
 
     private fun createNotificationChannel() {
@@ -423,9 +432,13 @@ class IslandService : Service() {
         targetWidth() + targetHostInsetPx() * 2
     }
 
-    private fun windowGravity(): Int = if (isRecordingControlExpanded()) {
-        Gravity.TOP or Gravity.CENTER_HORIZONTAL
-    } else gravityForWindow()
+    private fun windowGravity(): Int = when {
+        isRecordingControlExpanded() -> Gravity.TOP or Gravity.CENTER_HORIZONTAL
+        // In landscape, a side punch-hole/cutout becomes the anchor. Keep the pill
+        // horizontal and attach it to that same physical edge instead of centering it.
+        isLandscapeWithSideCutout() && !panelOpen -> Gravity.TOP or Gravity.LEFT
+        else -> gravityForWindow()
+    }
 
     private fun windowX(): Int {
         if (isRecordingControlExpanded()) return 0
@@ -588,6 +601,8 @@ class IslandService : Service() {
         for (i in ghostBlurDp.indices) {
             val ghost = View(this).apply {
                 background = ghostCapsule(targetHeight() / 2f)
+                outlineProvider = ViewOutlineProvider.BACKGROUND
+                clipToOutline = true
                 alpha = ghostBaseAlpha[i]
                 visibility = View.INVISIBLE
                 isClickable = false
@@ -976,6 +991,15 @@ class IslandService : Service() {
 
     private fun positionX(windowWidth: Int = targetWidth(), expanded: Boolean = panelOpen): Int {
         if (isRecordingControlExpanded()) return 0
+        if (isLandscapeWithSideCutout() && !panelOpen) {
+            val cutout = currentCameraCutoutBounds()
+            if (cutout != null) {
+                // Return the pill's left edge, not the host's left edge. windowX()
+                // subtracts the transparent trail inset when it creates the window.
+                return if (cutout.centerX() < displayWidthPx() / 2) 0
+                else (displayWidthPx() - windowWidth).coerceAtLeast(0)
+            }
+        }
         if (isPortraitWithTopCutout()) {
             val cutout = currentCameraCutoutBounds()
             if (cutout != null) return cutout.centerX() - displayWidthPx() / 2
@@ -985,6 +1009,14 @@ class IslandService : Service() {
 
     private fun positionY(windowHeight: Int = targetHeight(), expanded: Boolean = panelOpen): Int {
         if (isRecordingControlExpanded()) return 0
+        if (isLandscapeWithSideCutout() && !panelOpen) {
+            val cutout = currentCameraCutoutBounds()
+            if (cutout != null) {
+                // Align the pill's vertical center with the physical camera cluster.
+                return (cutout.centerY() - windowHeight / 2)
+                    .coerceIn(0, (displayHeightPx() - windowHeight).coerceAtLeast(0))
+            }
+        }
         return overlayTopY()
     }
 
@@ -1582,15 +1614,13 @@ class IslandService : Service() {
 
                 syncOverlayChildBounds(pillW, pillH)
                 applyRootCorner(pillW, pillH)
-                root.scaleX = if (opening) 0.94f + 0.06f * tc else 1.045f - 0.045f * tc
-                root.scaleY = if (opening) 0.90f + 0.10f * tc else 1.035f - 0.035f * tc
-
+                // LayoutParams already animate both axes. A second, non-uniform scale
+                // makes the rounded outline and the actual window bounds disagree and
+                // can expose a square flash on close. Keep the root at identity scale.
+                root.scaleX = 1f
+                root.scaleY = 1f
                 if (Build.VERSION.SDK_INT >= 31) {
-                    val blur = if (opening) (1f - tc) * 0.8f else tc * 1.8f
-                    try {
-                        if (blur > 0.01f) root.setRenderEffect(android.graphics.RenderEffect.createBlurEffect(blur, blur, android.graphics.Shader.TileMode.CLAMP))
-                        else root.setRenderEffect(null)
-                    } catch (_: Exception) { }
+                    try { root.setRenderEffect(null) } catch (_: Exception) { }
                 }
 
                 if (faceShrink) {
