@@ -69,6 +69,30 @@ class IslandService : Service() {
         }
     }
 
+    private val onlinePolicyWatchdog = object : Runnable {
+        override fun run() {
+            if (!KeyAuthGate.isAuthorizedInCurrentProcess(this@IslandService)) {
+                stopSelf()
+                return
+            }
+            OnlineControlManager.fetch(this@IslandService) { control, _ ->
+                val localVersion = installedVersionCode()
+                if (control != null && control.configFound) {
+                    if (control.announcementEnabled && control.announcementMessage.isNotBlank()) {
+                        postRemoteAnnouncement(control)
+                    }
+                    if (control.blocksUse(localVersion)) {
+                        postRemotePolicyNotice(control, localVersion)
+                        AppPrefs.get(this@IslandService).edit().putBoolean(AppPrefs.SERVICE_ENABLED, false).apply()
+                        stopSelf()
+                        return@fetch
+                    }
+                }
+                handler.postDelayed(this, 90_000L)
+            }
+        }
+    }
+
     private var islandRoot: FrameLayout? = null
     private var overlayHost: FrameLayout? = null
     private val ghostLayers = mutableListOf<View>()
@@ -259,6 +283,7 @@ class IslandService : Service() {
         cameraActive = lastCameraActivityActive
         
         checkVirtualDisplayState()
+        handler.postDelayed(onlinePolicyWatchdog, 12_000L)
 
         refreshOverlayWindowManager()
         createNotificationChannel()
@@ -1215,48 +1240,44 @@ class IslandService : Service() {
     private fun renderRecordingControlPanel(target: LinearLayout) {
         target.orientation = LinearLayout.HORIZONTAL
         target.gravity = Gravity.CENTER_VERTICAL
-        target.setPadding(dp(24), 0, dp(22), 0)
+        target.setPadding(dp(22), 0, dp(24), 0)
         target.background = null
 
-        val timer = TextView(this).apply {
-            text = "00:00"
-            textSize = 16f
-            letterSpacing = 0.035f
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER_VERTICAL or Gravity.START
-            contentDescription = "Thời gian quay màn hình"
-        }
-        target.addView(timer, LinearLayout.LayoutParams(0, -1, 1f))
-
-        val stop = FrameLayout(this).apply {
+        val marker = View(this).apply {
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
                 setColor(0xFFFF3B50.toInt())
-                setStroke(dp(1), 0x66FFFFFF)
             }
-            isClickable = true
-            isFocusable = true
             elevation = dp(2).toFloat()
-            contentDescription = "Dừng quay màn hình"
+            contentDescription = "Đang quay màn hình"
         }
-        val stopGlyph = View(this).apply {
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                setColor(Color.WHITE)
-                cornerRadius = dp(2).toFloat()
-            }
+        target.addView(marker, LinearLayout.LayoutParams(dp(8), dp(8)).apply { marginEnd = dp(9) })
+
+        val showRecordingLabel = AppPrefs.get(this).getBoolean(AppPrefs.RECORDING_STOP_CONTROL, true)
+        if (showRecordingLabel) {
+            target.addView(TextView(this).apply {
+                text = "Recording"
+                textSize = 14f
+                letterSpacing = 0.015f
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                setTextColor(Color.WHITE)
+                gravity = Gravity.CENTER_VERTICAL
+                contentDescription = "Recording"
+            }, LinearLayout.LayoutParams(0, -1, 1f))
+        } else {
+            target.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
         }
-        stop.addView(stopGlyph, FrameLayout.LayoutParams(dp(12), dp(12), Gravity.CENTER))
-        stop.setOnClickListener {
-            val stopped = IslandNotificationListener.requestStopRecording()
-            if (!stopped) {
-                Toast.makeText(this@IslandService, "Không tìm thấy hành động dừng của trình quay. Hãy dừng từ thông báo hệ thống.", Toast.LENGTH_SHORT).show()
-            }
+
+        val timer = TextView(this).apply {
+            text = "00:00"
+            textSize = 14f
+            letterSpacing = 0.025f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(0xFFE6E8EE.toInt())
+            gravity = Gravity.CENTER_VERTICAL or Gravity.END
+            contentDescription = "Thời gian quay màn hình"
         }
-        if (AppPrefs.get(this).getBoolean(AppPrefs.RECORDING_STOP_CONTROL, true)) {
-            target.addView(stop, LinearLayout.LayoutParams(dp(34), dp(34)))
-        }
+        target.addView(timer, LinearLayout.LayoutParams(dp(62), -1))
 
         recordingTimerTask?.let { handler.removeCallbacks(it) }
         val task = object : Runnable {
@@ -1265,7 +1286,7 @@ class IslandService : Service() {
                 val start = recordingStartedAtElapsed.takeIf { it > 0L } ?: android.os.SystemClock.elapsedRealtime()
                 val elapsed = ((android.os.SystemClock.elapsedRealtime() - start) / 1000L).coerceAtLeast(0L)
                 timer.text = String.format(java.util.Locale.ROOT, "%02d:%02d", elapsed / 60L, elapsed % 60L)
-                handler.postDelayed(this, 100L)
+                handler.postDelayed(this, 250L)
             }
         }
         recordingTimerTask = task
@@ -1689,8 +1710,109 @@ class IslandService : Service() {
     private fun dp(value: Float): Float = value * resources.displayMetrics.density
     override fun onBind(intent: Intent?): IBinder? = null
 
+    private fun installedVersionCode(): Int = runCatching {
+        val info = packageManager.getPackageInfo(packageName, 0)
+        if (Build.VERSION.SDK_INT >= 28) info.longVersionCode.toInt() else legacyVersionCode(info)
+    }.getOrDefault(0)
+
+    @Suppress("DEPRECATION")
+    private fun legacyVersionCode(info: android.content.pm.PackageInfo): Int = info.versionCode
+
+    private fun remoteNotificationsManager(): NotificationManager? {
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return null
+        if (Build.VERSION.SDK_INT >= 26 && manager.getNotificationChannel(REMOTE_NOTICE_CHANNEL) == null) {
+            manager.createNotificationChannel(NotificationChannel(REMOTE_NOTICE_CHANNEL, "DigitalLiquid Admin", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "Thông báo, bảo trì và cập nhật từ quản trị viên DigitalLiquid"
+            })
+        }
+        return manager
+    }
+
+    private fun postRemoteAnnouncement(control: OnlineControlManager.RemoteControl) {
+        val noticeId = control.announcementId.ifBlank { control.announcementTitle + "|" + control.announcementMessage }
+        val noticePrefs = getSharedPreferences(REMOTE_NOTICE_PREFS, MODE_PRIVATE)
+        if (noticePrefs.getString(REMOTE_NOTICE_LAST_ID, "") == noticeId) return
+        val openIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pending = PendingIntent.getActivity(
+            this, REMOTE_ANNOUNCEMENT_NOTIFICATION_ID, openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = Notification.Builder(this, REMOTE_NOTICE_CHANNEL)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle(control.announcementTitle.ifBlank { "Thông báo DigitalLiquid" })
+            .setContentText(control.announcementMessage)
+            .setStyle(Notification.BigTextStyle().bigText(control.announcementMessage))
+            .setContentIntent(pending)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+            .build()
+        try {
+            remoteNotificationsManager()?.notify(REMOTE_ANNOUNCEMENT_NOTIFICATION_ID, notification)
+            noticePrefs.edit().putString(REMOTE_NOTICE_LAST_ID, noticeId).apply()
+        } catch (_: Exception) { }
+    }
+
+    private fun postRemotePolicyNotice(control: OnlineControlManager.RemoteControl, localVersion: Int) {
+        val title: String
+        val message: String
+        val targetUrl: String
+        when {
+            !control.signerMatches -> {
+                title = "Bản dựng không được xác minh"
+                message = "Chữ ký APK không khớp với chứng thư được quản trị viên cho phép. Hãy cài bản chính thức."
+                targetUrl = control.downloadUrl
+            }
+            !control.appEnabled -> {
+                title = "DigitalLiquid đã bị vô hiệu hóa"
+                message = "Quản trị viên đã tắt quyền sử dụng phiên bản này."
+                targetUrl = ""
+            }
+            control.maintenanceEnabled -> {
+                title = "DigitalLiquid đang bảo trì"
+                message = control.maintenanceMessage
+                targetUrl = ""
+            }
+            control.minVersionCode > localVersion && control.downloadUrl.isNotBlank() -> {
+                title = "Cần cập nhật DigitalLiquid"
+                message = "Phiên bản này đã ngừng hỗ trợ. Mở liên kết để tải bản cập nhật mới."
+                targetUrl = control.downloadUrl
+            }
+            else -> return
+        }
+        val openIntent = try {
+            (if (targetUrl.startsWith("https://") || targetUrl.startsWith("http://")) {
+                Intent(Intent.ACTION_VIEW, Uri.parse(targetUrl))
+            } else {
+                Intent(this, MainActivity::class.java)
+            }).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            }
+        } catch (_: Exception) {
+            Intent(this, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            }
+        }
+        val pending = PendingIntent.getActivity(
+            this, REMOTE_POLICY_NOTIFICATION_ID, openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = Notification.Builder(this, REMOTE_NOTICE_CHANNEL)
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setContentTitle(title)
+            .setContentText(message)
+            .setStyle(Notification.BigTextStyle().bigText(message))
+            .setContentIntent(pending)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+            .build()
+        try { remoteNotificationsManager()?.notify(REMOTE_POLICY_NOTIFICATION_ID, notification) } catch (_: Exception) { }
+    }
+
     override fun onDestroy() {
         handler.removeCallbacks(keyAuthorizationWatchdog)
+        handler.removeCallbacks(onlinePolicyWatchdog)
         handler.removeCallbacks(faceShrinkSafety)
         
         try { displayManager.unregisterDisplayListener(displayListener) } catch (_: Exception) { }
@@ -1727,6 +1849,11 @@ class IslandService : Service() {
         const val EXTRA_PICK_PANEL_BACKGROUND = "com.digitalsmod.digitalliquid.PICK_PANEL_BACKGROUND"
         const val PANEL_BACKGROUND_URI = "custom_panel_background_uri"
         private const val CHANNEL_ID = "digitalliquid_overlay"
+        private const val REMOTE_NOTICE_CHANNEL = "digitalliquid_admin_notices"
+        private const val REMOTE_NOTICE_PREFS = "digitalliquid_remote_notices"
+        private const val REMOTE_NOTICE_LAST_ID = "last_announcement_id"
+        private const val REMOTE_ANNOUNCEMENT_NOTIFICATION_ID = 43
+        private const val REMOTE_POLICY_NOTIFICATION_ID = 44
         private const val LONG_PRESS_MS = 430L
         private const val TRAIL_EXTENT_DP = 38
 
