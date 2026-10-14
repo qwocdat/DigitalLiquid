@@ -38,6 +38,10 @@ class MainActivity : Activity() {
     private var unsupportedDevice = false
     private var keyAuthorized = false
     private var authorizedUiInitialized = false
+    private var remoteCheckInFlight = false
+    private var lastRemoteCheckAt = 0L
+    private var remoteDialogVisible = false
+    private var remoteBlocked = false
     private var tab = 0
     private var onboardingPage = 0
     private val uiHandler = Handler(Looper.getMainLooper())
@@ -161,6 +165,7 @@ class MainActivity : Activity() {
         if (!keyAuthorized || authorizedUiInitialized || isFinishing || isDestroyed) return
         authorizedUiInitialized = true
         if (prefs.getBoolean(AppPrefs.ONBOARDING_DONE, false)) renderMain() else renderOnboarding(0)
+        checkOnlineControl(force = true)
         maybePickPanelBackground(intent)
     }
 
@@ -227,6 +232,7 @@ class MainActivity : Activity() {
         // Do not render the dashboard/onboarding while the key dialog is pending or the user is in Get Key.
         if (!keyAuthorized) return
         if (prefs.getBoolean(AppPrefs.ONBOARDING_DONE, false)) renderMain()
+        checkOnlineControl(force = false)
     }
 
     private fun applySystemBars() {
@@ -456,6 +462,7 @@ class MainActivity : Activity() {
 
         addEyebrow(target, "CÀI ĐẶT NHANH", 24)
         target.addView(permissionStatusCard(), marginTop(8))
+        target.addView(buildOnlineControlCard(), marginTop(12))
         target.addView(featureMiniCard("TRỢ NĂNG", "Lớp phủ trên thanh trạng thái", if (hasHyperIslandAccessibility()) "Đã bật lớp phủ tin cậy và theo dõi HyperIsland." else "Bắt buộc để viên thuốc nằm trên status bar và nhận chạm trong vùng camera."), marginTop(10))
         target.addView(textButton(if (hasHyperIslandAccessibility()) "Quản lý quyền Trợ năng" else "Bật quyền Trợ năng", false) {
             openAccessibilitySettings()
@@ -465,6 +472,149 @@ class MainActivity : Activity() {
             startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
         }, marginTop(8))
         target.addView(infoCard("Tương tác", "Chạm một lần để viên thuốc rung lắc với vệt mờ chuyển động. Giữ khoảng nửa giây để mở bảng đen; tải ảnh hoặc video trong máy để dùng làm nền."), marginTop(18))
+    }
+
+    private fun buildOnlineControlCard(): View {
+        val outer = card().apply { setPadding(dp(15), dp(14), dp(15), dp(14)) }
+        val line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        val textColumn = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        textColumn.addView(TextView(this@MainActivity).apply {
+            text = "ĐIỀU KHIỂN TRỰC TUYẾN"
+            textSize = 10f
+            letterSpacing = 0.08f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(0xFFB9AEFF.toInt())
+        })
+        textColumn.addView(TextView(this@MainActivity).apply {
+            text = "Thông báo · phiên bản · bảo trì"
+            textSize = 13f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(Color.WHITE)
+        }, marginTop(5))
+        line.addView(textColumn, LinearLayout.LayoutParams(0, -2, 1f))
+        line.addView(TextView(this@MainActivity).apply {
+            text = "↻"
+            textSize = 22f
+            setTextColor(0xFFC6C0FF.toInt())
+        })
+        outer.addView(line)
+        outer.addView(textButton("Kiểm tra máy chủ", false) {
+            checkOnlineControl(force = true)
+            Toast.makeText(this@MainActivity, "Đang kiểm tra Firebase…", Toast.LENGTH_SHORT).show()
+        }, marginTop(10))
+        return outer
+    }
+
+    private fun currentInstalledVersionCode(): Int {
+        val info = packageManager.getPackageInfo(packageName, 0)
+        return if (Build.VERSION.SDK_INT >= 28) info.longVersionCode.toInt() else legacyVersionCode(info)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun legacyVersionCode(info: android.content.pm.PackageInfo): Int = info.versionCode
+
+    private fun checkOnlineControl(force: Boolean) {
+        if (!keyAuthorized || isFinishing || isDestroyed || remoteCheckInFlight || remoteBlocked) return
+        val now = System.currentTimeMillis()
+        if (!force && now - lastRemoteCheckAt < 45_000L) return
+        remoteCheckInFlight = true
+        lastRemoteCheckAt = now
+        OnlineControlManager.fetch(this) { control, error ->
+            remoteCheckInFlight = false
+            if (isFinishing || isDestroyed) return@fetch
+            if (control == null) {
+                if (force) Toast.makeText(this, "Không kết nối được Firebase: ${error ?: "hãy kiểm tra Internet và Database Rules."}", Toast.LENGTH_LONG).show()
+                return@fetch
+            }
+            if (!control.configFound) {
+                if (force) Toast.makeText(this, "Firebase chưa có cấu hình appControl. Hãy tạo node này trong Realtime Database.", Toast.LENGTH_LONG).show()
+                return@fetch
+            }
+            val currentVersion = try {
+                currentInstalledVersionCode()
+            } catch (_: Exception) { 0 }
+
+            if (!control.signerMatches) {
+                remoteBlocked = true
+                prefs.edit().putBoolean(AppPrefs.SERVICE_ENABLED, false).apply()
+                stopService(Intent(this, IslandService::class.java))
+                AlertDialog.Builder(this)
+                    .setTitle("Bản dựng không được xác minh")
+                    .setMessage("Chữ ký của ứng dụng không khớp với chứng thư được quản trị viên cho phép. Hãy cài bản chính thức từ nguồn phát hành.")
+                    .setCancelable(false)
+                    .setPositiveButton("Đóng ứng dụng") { _, _ -> finish() }
+                    .show()
+                return@fetch
+            }
+            if (!control.appEnabled || control.maintenanceEnabled) {
+                remoteBlocked = true
+                prefs.edit().putBoolean(AppPrefs.SERVICE_ENABLED, false).apply()
+                stopService(Intent(this, IslandService::class.java))
+                val message = if (!control.appEnabled) "Phiên bản ứng dụng này đã bị quản trị viên vô hiệu hóa." else control.maintenanceMessage
+                AlertDialog.Builder(this)
+                    .setTitle(if (!control.appEnabled) "Ứng dụng đã bị vô hiệu hóa" else "DigitalLiquid đang bảo trì")
+                    .setMessage(message)
+                    .setCancelable(false)
+                    .setPositiveButton("Đóng ứng dụng") { _, _ -> finish() }
+                    .show()
+                return@fetch
+            }
+
+            val mandatoryUpdate = control.minVersionCode > currentVersion && control.downloadUrl.isNotBlank()
+            val hasUpdate = control.latestVersionCode > currentVersion && control.downloadUrl.isNotBlank()
+            val dismissedCode = prefs.getInt(AppPrefs.DISMISSED_UPDATE_CODE, 0)
+            if (mandatoryUpdate || (hasUpdate && dismissedCode != control.latestVersionCode)) {
+                if (remoteDialogVisible) return@fetch
+                remoteDialogVisible = true
+                val versionText = control.latestVersionName.ifBlank { "mã ${control.latestVersionCode}" }
+                val builder = AlertDialog.Builder(this)
+                    .setTitle(if (mandatoryUpdate) "Cần cập nhật DigitalLiquid" else "Có phiên bản mới")
+                    .setMessage("Phiên bản mới: $versionText\n\n${if (mandatoryUpdate) "Phiên bản hiện tại đã hết thời gian hỗ trợ. Hãy cập nhật để tiếp tục dùng ứng dụng." else "Bản cập nhật mới đã sẵn sàng."}")
+                    .setPositiveButton("Tải bản cập nhật") { dialog, _ ->
+                        dialog.dismiss()
+                        openRemoteUrl(control.downloadUrl)
+                        if (mandatoryUpdate) finish()
+                    }
+                    .setCancelable(!mandatoryUpdate)
+                if (!mandatoryUpdate) builder.setNegativeButton("Để sau") { _, _ -> prefs.edit().putInt(AppPrefs.DISMISSED_UPDATE_CODE, control.latestVersionCode).apply() }
+                val dialog = builder.create()
+                dialog.setOnDismissListener { remoteDialogVisible = false }
+                dialog.show()
+                return@fetch
+            }
+
+            if (control.announcementEnabled && control.announcementMessage.isNotBlank()) {
+                val announcementId = control.announcementId.ifBlank { control.announcementTitle + control.announcementMessage }
+                if (prefs.getString(AppPrefs.LAST_ANNOUNCEMENT_ID, "") != announcementId && !remoteDialogVisible) {
+                    remoteDialogVisible = true
+                    val builder = AlertDialog.Builder(this)
+                        .setTitle(control.announcementTitle.ifBlank { "Thông báo DigitalLiquid" })
+                        .setMessage(control.announcementMessage)
+                        .setPositiveButton(if (control.announcementUrl.isBlank()) "Đã hiểu" else "Mở liên kết") { _, _ ->
+                            prefs.edit().putString(AppPrefs.LAST_ANNOUNCEMENT_ID, announcementId).apply()
+                            if (control.announcementUrl.isNotBlank()) openRemoteUrl(control.announcementUrl)
+                        }
+                    val dialog = builder.create()
+                    dialog.setOnDismissListener {
+                        prefs.edit().putString(AppPrefs.LAST_ANNOUNCEMENT_ID, announcementId).apply()
+                        remoteDialogVisible = false
+                    }
+                    dialog.show()
+                }
+            } else if (force) {
+                Toast.makeText(this, "Đã kiểm tra máy chủ. Không có thông báo hoặc cập nhật mới.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun openRemoteUrl(url: String) {
+        try {
+            val uri = Uri.parse(url)
+            if (uri.scheme != "https" && uri.scheme != "http") throw IllegalArgumentException("URL không hợp lệ")
+            startActivity(Intent(Intent.ACTION_VIEW, uri))
+        } catch (_: Exception) {
+            Toast.makeText(this, "Liên kết tải xuống không hợp lệ.", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun buildAppearance(target: LinearLayout) {
@@ -551,6 +701,9 @@ class MainActivity : Activity() {
             setTextColor(Color.WHITE)
         }, marginTop(4))
         target.addView(bodyText("Các quyền đặc biệt của Android không thể tự bật. Bạn sẽ được chuyển sang trang Cài đặt tương ứng."), marginTop(7))
+        target.addView(settingAction("Trợ lý mặc định", if (isDigitalLiquidAssistant()) "Đã chọn DigitalLiquid" else "Chưa chọn DigitalLiquid", "Sau khi chọn DigitalLiquid làm trợ lý mặc định, giữ nút nguồn theo cử chỉ trợ lý của hệ thống khoảng 2 giây để gọi giao diện Siri. Android/HyperOS vẫn có thể thay đổi thời lượng hoặc cử chỉ này.") {
+            requestAssistantRole()
+        }, marginTop(10))
         target.addView(settingAction("Notification Access", if (hasNotificationAccess()) "Đã cấp quyền" else "Chưa cấp quyền", "Đọc trạng thái thông báo đang hoạt động để phát hiện quay màn hình, nhạc và đồng hồ") {
             startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
         }, marginTop(10))
@@ -583,7 +736,39 @@ class MainActivity : Activity() {
         
         target.addView(toggleCard("Rung nhẹ khi chạm", "Mỗi lần chạm dùng hướng ngẫu nhiên, biên độ nhỏ hơn và chuyển động cân bằng hơn.", AppPrefs.TAP_WOBBLE), marginTop(8))
         target.addView(toggleCard("Motion blur", "Bật/tắt vệt mờ theo hướng chuyển động của viên thuốc.", AppPrefs.MOTION_BLUR), marginTop(8))
-        target.addView(toggleCard("Nút dừng quay trong pill mở rộng", "Hiện nút dừng trong bảng toàn chiều ngang khi giữ pill lúc đang quay. Nút chỉ dừng được nếu HyperOS cung cấp action dừng.", AppPrefs.RECORDING_STOP_CONTROL), marginTop(8))
+        target.addView(toggleCard("Nhãn Recording khi mở rộng", "Khi đang quay màn hình, giữ viên thuốc để xem nhãn Recording và bộ đếm thời gian. Điều khiển dừng vẫn do trình quay màn hình của hệ thống quản lý.", AppPrefs.RECORDING_STOP_CONTROL), marginTop(8))
+
+        val autoStartSwitch = Switch(this).apply {
+            text = "Tự khởi chạy sau khi bật máy"
+            textSize = 14f
+            setTextColor(Color.WHITE)
+            buttonTintList = android.content.res.ColorStateList.valueOf(0xFFB7ACFF.toInt())
+            isChecked = prefs.getBoolean(AppPrefs.AUTO_START, false)
+            setOnCheckedChangeListener { _, checked ->
+                if (checked) {
+                    val authPrefs = getSharedPreferences("digitalsmod_key_auth", MODE_PRIVATE)
+                    val savedKeyEnabled = authPrefs.getBoolean("save_key_enabled", false) && !authPrefs.getString("saved_key", null).isNullOrBlank()
+                    if (!savedKeyEnabled) {
+                        prefs.edit().putBoolean(AppPrefs.AUTO_START, false).apply()
+                        isChecked = false
+                        Toast.makeText(this@MainActivity, "Để tự khởi chạy an toàn, hãy xác thực key và chọn ‘Lưu key trên thiết bị’ trước.", Toast.LENGTH_LONG).show()
+                        return@setOnCheckedChangeListener
+                    }
+                }
+                prefs.edit().putBoolean(AppPrefs.AUTO_START, checked).apply()
+                Toast.makeText(this@MainActivity, if (checked) "Đã bật tự khởi chạy. HyperOS vẫn có thể yêu cầu quyền tự khởi động." else "Đã tắt tự khởi chạy.", Toast.LENGTH_SHORT).show()
+            }
+        }
+        target.addView(card().apply {
+            addView(autoStartSwitch)
+            addView(bodyText("Chỉ khôi phục khi bạn đã bật đảo nổi, lưu key và máy chủ xác thực key vẫn còn hiệu lực. HyperOS có thể áp dụng thêm quyền Tự khởi động."), marginTop(6))
+        }.apply { setPadding(dp(15), dp(14), dp(14), dp(14)) }, marginTop(18))
+
+        target.addView(settingAction("Điều khiển trực tuyến", "Firebase · thông báo · bảo trì · cập nhật", "Ứng dụng đọc chính sách phiên bản và thông báo từ Firebase. Trình quản trị web được cung cấp riêng trong repository.") {
+            checkOnlineControl(force = true)
+            Toast.makeText(this, "Đang kiểm tra cấu hình trực tuyến…", Toast.LENGTH_SHORT).show()
+        }, marginTop(12))
+        target.addView(infoCard("Bảo vệ bản quyền", "APK được làm rối mã bằng R8. Nếu cấu hình dấu vân tay chứng thư ký trong Firebase, ứng dụng có thể từ chối bản ký bằng chứng thư khác. Muốn kiểm tra chữ ký nhất quán giữa các bản build, cần dùng một khóa ký phát hành ổn định; bản debug tự ký không phù hợp cho allowlist lâu dài."), marginTop(12))
 
         target.addView(settingAction("Chạy lại onboarding", "Xem lại giới thiệu", "Hiện lại màn hình Chào mừng") {
             prefs.edit().putBoolean(AppPrefs.ONBOARDING_DONE, false).apply()
@@ -842,10 +1027,38 @@ class MainActivity : Activity() {
         strokeColor?.let { setStroke(dp(1), it) }
     }
 
-    private fun appBackground() = GradientDrawable(
-        GradientDrawable.Orientation.TL_BR,
-        intArrayOf(0xFF11121C.toInt(), 0xFF0B0D13.toInt(), 0xFF0E1119.toInt())
-    )
+    private fun appBackground(): android.graphics.drawable.Drawable = LiquidBackdropDrawable()
+
+    /** Soft purple/blue radial light gives the glass cards depth without adding fake blur borders. */
+    private class LiquidBackdropDrawable : android.graphics.drawable.Drawable() {
+        private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+
+        override fun draw(canvas: android.graphics.Canvas) {
+            val area = bounds
+            if (area.isEmpty) return
+            canvas.drawColor(Color.rgb(7, 8, 13))
+            val width = area.width().toFloat()
+            val height = area.height().toFloat()
+            val radius = maxOf(width, height) * 0.78f
+            paint.shader = android.graphics.RadialGradient(
+                area.left + width * 0.10f, area.top + height * 0.05f, radius,
+                intArrayOf(0x70453891, 0x302B245D, 0x0007080D),
+                floatArrayOf(0f, 0.52f, 1f), android.graphics.Shader.TileMode.CLAMP
+            )
+            canvas.drawRect(area, paint)
+            paint.shader = android.graphics.RadialGradient(
+                area.left + width * 0.96f, area.top + height * 0.64f, radius * 0.78f,
+                intArrayOf(0x302B6692, 0x14203953, 0x0007080D),
+                floatArrayOf(0f, 0.55f, 1f), android.graphics.Shader.TileMode.CLAMP
+            )
+            canvas.drawRect(area, paint)
+            paint.shader = null
+        }
+
+        override fun setAlpha(alpha: Int) { paint.alpha = alpha; invalidateSelf() }
+        override fun setColorFilter(colorFilter: android.graphics.ColorFilter?) { paint.colorFilter = colorFilter; invalidateSelf() }
+        override fun getOpacity(): Int = android.graphics.PixelFormat.OPAQUE
+    }
 
     private fun marginTop(top: Int) = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(top) }
     private fun marginBottom(bottom: Int) = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(bottom) }
@@ -872,6 +1085,31 @@ class MainActivity : Activity() {
         welcomeTypewriter?.let { uiHandler.removeCallbacks(it) }
         welcomeTypewriter = null
         super.onDestroy()
+    }
+
+    private fun isDigitalLiquidAssistant(): Boolean {
+        if (Build.VERSION.SDK_INT < 29) return false
+        return try {
+            val manager = getSystemService(android.app.role.RoleManager::class.java)
+            manager != null && manager.isRoleAvailable(android.app.role.RoleManager.ROLE_ASSISTANT) &&
+                manager.isRoleHeld(android.app.role.RoleManager.ROLE_ASSISTANT)
+        } catch (_: Exception) { false }
+    }
+
+    private fun requestAssistantRole() {
+        try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                val manager = getSystemService(android.app.role.RoleManager::class.java)
+                if (manager != null && manager.isRoleAvailable(android.app.role.RoleManager.ROLE_ASSISTANT)) {
+                    startActivity(manager.createRequestRoleIntent(android.app.role.RoleManager.ROLE_ASSISTANT))
+                    return
+                }
+            }
+            startActivity(Intent(Settings.ACTION_VOICE_INPUT_SETTINGS))
+        } catch (_: Exception) {
+            try { startActivity(Intent(Settings.ACTION_SETTINGS)) } catch (_: Exception) { }
+            Toast.makeText(this, "Hãy vào Cài đặt hệ thống và chọn DigitalLiquid trong mục ứng dụng trợ lý mặc định.", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun hasHyperIslandAccessibility(): Boolean {
