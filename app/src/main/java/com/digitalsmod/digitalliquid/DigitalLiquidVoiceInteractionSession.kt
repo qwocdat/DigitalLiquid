@@ -30,7 +30,7 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
                 shape = GradientDrawable.RECTANGLE
                 setColor(Color.TRANSPARENT)
                 cornerRadius = dp(34f)
-                setStroke(dp(1f), 0x55FFFFFF)
+                setStroke(dp(1f).toInt(), 0x55FFFFFF.toInt())
             }
             outlineProvider = ViewOutlineProvider.BACKGROUND
             clipToOutline = true
@@ -92,7 +92,7 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
                 shape = GradientDrawable.RECTANGLE
                 cornerRadius = dp(18f)
                 setColor(0x2EFFFFFF)
-                setStroke(dp(1f), 0x55FFFFFF)
+                setStroke(dp(1f).toInt(), 0x55FFFFFF.toInt())
             }
             isClickable = true
             setOnClickListener { openGemini() }
@@ -124,14 +124,14 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
     }
 
     private fun applyWindowStyleAndPosition() {
-        val win = window ?: return
+        val win = window?.window ?: return
         // Rounded window drawable gives Android's background-blur compositor the same
         // corner mask as the visible pill, so the backdrop cannot show as a rectangle.
         win.setBackgroundDrawable(GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
             setColor(0x16090D17)
             cornerRadius = dp(34f)
-            setStroke(dp(1f), 0x33FFFFFF)
+            setStroke(dp(1f).toInt(), 0x33FFFFFF.toInt())
         })
         val attrs = win.attributes
         val panelW = dp(320)
