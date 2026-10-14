@@ -56,6 +56,28 @@ object KeyAuthGate {
         return authorizedInstallId == installId && System.currentTimeMillis() < authorizedUntilMs
     }
 
+    /** Revalidates a key only when the user explicitly enabled saving it, for opt-in boot restore. */
+    fun reauthenticateSavedKey(context: Context, callback: (Boolean) -> Unit) {
+        val appContext = context.applicationContext
+        val prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val installId = prefs.getString(INSTALL_ID, null).orEmpty()
+        val savedKey = if (prefs.getBoolean(SAVE_KEY_ENABLED, false)) prefs.getString(SAVED_KEY, null).orEmpty() else ""
+        if (installId.isBlank() || savedKey.isBlank()) {
+            mainHandler.post { callback(false) }
+            return
+        }
+        executor.execute {
+            val result = runCatching { verifyKeyInRealtimeDatabase(savedKey, installId) }.getOrElse { JSONObject().put("valid", false) }
+            val valid = result.optBoolean("valid", false) &&
+                (result.optBoolean("permanent", false) || result.optLong("expiresAt", 0L) > System.currentTimeMillis())
+            if (valid) {
+                authorizedInstallId = installId
+                authorizedUntilMs = if (result.optBoolean("permanent", false)) Long.MAX_VALUE else result.optLong("expiresAt", 0L)
+            }
+            mainHandler.post { callback(valid) }
+        }
+    }
+
     fun requireKey(activity: Activity, onAuthorized: () -> Unit) {
         if (activity.isFinishing || activity.isDestroyed) return
         val prefs = activity.getSharedPreferences(PREFS, Activity.MODE_PRIVATE)
@@ -258,7 +280,7 @@ object KeyAuthGate {
             val status = connection.responseCode
             val stream = if (status in 200..299) connection.inputStream else connection.errorStream
             val text = stream?.let { input -> BufferedReader(InputStreamReader(input, Charsets.UTF_8)).use { it.readText() } }.orEmpty()
-            if (text.isBlank()) throw IllegalStateException("Firebase trả về phản hồi rỗng (HTTP $status). Kiểm tra Anonymous Auth và Database Rules.")
+            if (text.isBlank()) throw IllegalStateException("trả về phản hồi rỗng (HTTP $status). Kiểm tra Anonymous Auth và Database Rules.")
             val json = if (text.trim() == "null") JSONObject() else JSONObject(text)
             if (status !in 200..299) {
                 val errorMessage = json.optJSONObject("error")?.optString("message").orEmpty()
