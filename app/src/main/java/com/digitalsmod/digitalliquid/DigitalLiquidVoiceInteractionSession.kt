@@ -1,11 +1,9 @@
 package com.digitalsmod.digitalliquid
 
 import android.content.Context
-import android.content.Intent
 import android.graphics.Color
 import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.service.voice.VoiceInteractionSession
@@ -74,30 +72,24 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
         val footer = LinearLayout(uiContext).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(14), 0, dp(12), dp(10))
+            setPadding(dp(16), 0, dp(16), dp(10))
         }
         val hint = TextView(uiContext).apply {
-            text = "Chạm Gemini để trò chuyện"
+            text = "Siri mode · Sẵn sàng lắng nghe"
             textSize = 11f
-            setTextColor(0xBBFFFFFF.toInt())
+            letterSpacing = 0.01f
+            setTextColor(0xD6FFFFFF.toInt())
         }
         footer.addView(hint, LinearLayout.LayoutParams(0, dp(36), 1f))
-        val gemini = TextView(uiContext).apply {
-            text = "Mở Gemini  ↗"
-            textSize = 12f
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-            setPadding(dp(13), 0, dp(13), 0)
+        val ready = View(uiContext).apply {
             background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = dp(18f)
-                setColor(0x2EFFFFFF)
-                setStroke(dp(1f).toInt(), 0x55FFFFFF.toInt())
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#70E7B0"))
             }
-            isClickable = true
-            setOnClickListener { openGemini() }
+            elevation = dp(2f)
+            contentDescription = "DigitalLiquid sẵn sàng"
         }
-        footer.addView(gemini, LinearLayout.LayoutParams(-2, dp(34)))
+        footer.addView(ready, LinearLayout.LayoutParams(dp(7), dp(7)))
         card.addView(footer, FrameLayout.LayoutParams(-1, dp(47), Gravity.BOTTOM))
 
         panel = card
@@ -106,8 +98,22 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
 
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
-        applyWindowStyleAndPosition()
-        panel?.visibility = View.VISIBLE
+        panel?.visibility = View.GONE
+        if (KeyAuthGate.isAuthorizedInCurrentProcess(uiContext)) {
+            applyWindowStyleAndPosition()
+            panel?.visibility = View.VISIBLE
+            return
+        }
+        // Voice interaction runs in its own Android-managed process. For a cold invocation,
+        // revalidate only a key the user explicitly chose to save; otherwise fail closed.
+        KeyAuthGate.reauthenticateSavedKey(uiContext) { authorized ->
+            if (authorized) {
+                applyWindowStyleAndPosition()
+                panel?.visibility = View.VISIBLE
+            } else {
+                hide()
+            }
+        }
     }
 
     override fun onHide() {
@@ -176,35 +182,6 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
         if (Build.VERSION.SDK_INT >= 31) {
             try { win.setBackgroundBlurRadius(dp(24)) } catch (_: Exception) { }
         }
-    }
-
-    private fun openGemini() {
-        val packageNames = arrayOf("com.google.android.apps.bard", "com.google.android.apps.gemini")
-        var launch: Intent? = null
-        for (packageName in packageNames) {
-            launch = uiContext.packageManager.getLaunchIntentForPackage(packageName)
-            if (launch != null) break
-        }
-        try {
-            val target = launch
-            if (target != null) {
-                target.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                uiContext.startActivity(target)
-            } else {
-                uiContext.startActivity(
-                    Intent(Intent.ACTION_VIEW, Uri.parse("https://gemini.google.com/app"))
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                )
-            }
-        } catch (_: Exception) {
-            try {
-                uiContext.startActivity(
-                    Intent(Intent.ACTION_VIEW, Uri.parse("https://gemini.google.com/app"))
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                )
-            } catch (_: Exception) { }
-        }
-        hide()
     }
 
     private fun dp(value: Int) = (value * uiContext.resources.displayMetrics.density).toInt()
