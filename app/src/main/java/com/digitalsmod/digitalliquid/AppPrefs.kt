@@ -20,7 +20,10 @@ object AppPrefs {
     const val FACE_UNLOCK_EFFECT = "face_unlock_effect"
     const val TAP_WOBBLE = "tap_wobble"
     const val MOTION_BLUR = "motion_blur"
-    const val RECORDING_STOP_CONTROL = "recording_stop_control"
+    const val RECORDING_STOP_CONTROL = "recording_stop_control" // Kept for settings migration; now controls the Recording label.
+    const val AUTO_START = "auto_start_after_boot"
+    const val LAST_ANNOUNCEMENT_ID = "last_remote_announcement_id"
+    const val DISMISSED_UPDATE_CODE = "dismissed_update_code"
 
     fun get(context: Context): SharedPreferences =
         context.getSharedPreferences(FILE_NAME, Context.MODE_PRIVATE)
