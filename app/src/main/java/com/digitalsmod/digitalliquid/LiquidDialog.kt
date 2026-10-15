@@ -36,7 +36,7 @@ object LiquidDialog {
     ): Dialog {
         val dialog = Dialog(activity)
         val density = activity.resources.displayMetrics.density
-        val lightMode = AppPrefs.get(activity).getBoolean(AppPrefs.LIGHT_MODE, true)
+        val lightMode = AppPrefs.get(activity).getBoolean(AppPrefs.LIGHT_MODE, false)
         fun dp(value: Int) = (value * density).toInt()
         val accent = if (lightMode) 0xFF147F78.toInt() else 0xFF9FECDC.toInt()
         val titleColor = if (lightMode) 0xFF17232F.toInt() else Color.WHITE

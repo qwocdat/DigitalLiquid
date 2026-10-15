@@ -24,7 +24,7 @@ class GlassNavBar(
     init {
         orientation = HORIZONTAL
         gravity = android.view.Gravity.CENTER_VERTICAL
-        val lightMode = AppPrefs.get(context).getBoolean(AppPrefs.LIGHT_MODE, true)
+        val lightMode = AppPrefs.get(context).getBoolean(AppPrefs.LIGHT_MODE, false)
         val logo = ImageView(context).apply {
             setImageResource(R.drawable.digitalliquid_brand)
             scaleType = ImageView.ScaleType.CENTER_CROP
@@ -47,7 +47,7 @@ class GlassNavBar(
             text = subtitle
             textSize = 9f
             letterSpacing = 0.12f
-            setTextColor(if (lightMode) 0xFF64697A.toInt() else 0xFF9699AA.toInt())
+            setTextColor(if (lightMode) 0xFF64615A.toInt() else 0xFFC6A878.toInt())
             includeFontPadding = false
         }
         labels.addView(titleView)
@@ -58,14 +58,14 @@ class GlassNavBar(
             text = if (active) "ĐANG BẬT" else "ĐANG TẮT"
             textSize = 10f
             letterSpacing = 0.04f
-            setTextColor(if (lightMode) { if (active) 0xFF20784A.toInt() else 0xFF51576A.toInt() } else { if (active) 0xFF8EF2BE.toInt() else 0xFFB9BCCD.toInt() })
+            setTextColor(if (lightMode) { if (active) 0xFF7A5527.toInt() else 0xFF51576A.toInt() } else { if (active) 0xFFF0CB8D.toInt() else 0xFFB9BCCD.toInt() })
             setPadding(dp(10), dp(7), dp(10), dp(7))
             background = GradientDrawable(
                 GradientDrawable.Orientation.TL_BR,
-                if (lightMode) intArrayOf(0xF5FFFFFF.toInt(), 0xDDE6F2F4.toInt()) else intArrayOf(0x32FFFFFF, 0x16FFFFFF)
+                if (lightMode) intArrayOf(0xF5FFFFFF.toInt(), 0xDDEBE4D8.toInt()) else intArrayOf(0x35E7C28B, 0x16FFFFFF)
             ).apply {
                 cornerRadius = dp(30).toFloat()
-                setStroke(dp(1), if (lightMode) 0x558795B1 else 0x28FFFFFF)
+                setStroke(dp(1), if (lightMode) 0x668E8371 else 0x45E7C28B)
             }
         }
         addView(stateView)

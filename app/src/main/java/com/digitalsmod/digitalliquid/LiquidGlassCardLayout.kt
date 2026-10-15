@@ -37,7 +37,7 @@ class LiquidGlassCardLayout(context: Context) : LinearLayout(context) {
     override fun dispatchDraw(canvas: Canvas) {
         if (width > 0 && height > 0) {
             val p = AppPrefs.get(context)
-            val lightMode = p.getBoolean(AppPrefs.LIGHT_MODE, true)
+            val lightMode = p.getBoolean(AppPrefs.LIGHT_MODE, false)
             bounds.set(0f, 0f, width.toFloat(), height.toFloat())
             shape.reset()
             shape.addRoundRect(bounds, radius, radius, Path.Direction.CW)
@@ -54,8 +54,8 @@ class LiquidGlassCardLayout(context: Context) : LinearLayout(context) {
                 lightSurface.shader = null
             } else {
                 glass.configure(
-                    p.getInt(AppPrefs.GLASS_STRENGTH, 72),
-                    p.getString(AppPrefs.TINT, "midnight") ?: "midnight",
+                    p.getInt(AppPrefs.GLASS_STRENGTH, 68),
+                    "graphite",
                     expandedNow = true
                 )
                 glass.layout(0, 0, width, height)
@@ -66,8 +66,8 @@ class LiquidGlassCardLayout(context: Context) : LinearLayout(context) {
 
             rim.shader = LinearGradient(
                 0f, 0f, width.toFloat(), height.toFloat(),
-                if (lightMode) intArrayOf(0x75FFFFFF, 0x207B8FB8, 0x558CA1C6, 0x55FFFFFF)
-                else intArrayOf(0x3FFFFFFF, 0x12FFFFFF, 0x36D9D6FF, 0x16FFFFFF),
+                if (lightMode) intArrayOf(0x85FFFFFF.toInt(), 0x36B99C65, 0x558CA1A8, 0x65FFFFFF)
+                else intArrayOf(0x66F8D6A2, 0x16FFFFFF, 0x35B99A67, 0x22FFFFFF),
                 floatArrayOf(0f, 0.35f, 0.72f, 1f), Shader.TileMode.CLAMP
             )
             canvas.drawRoundRect(bounds, radius, radius, rim)

@@ -40,16 +40,16 @@ class AssistantFallbackActivity : Activity() {
         }
 
         val root = FrameLayout(this).apply {
-            setBackgroundColor(0x680A0914)
+            setBackgroundColor(0x76050609)
             isClickable = true
             setOnClickListener { finish() }
         }
         val card = FrameLayout(this).apply {
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                setColor(0xF21B1730.toInt())
+                setColor(0xF018191D.toInt())
                 cornerRadius = dp(30).toFloat()
-                setStroke(dp(1), 0x77C3B9FF)
+                setStroke(dp(1), 0x66E7C28B)
             }
             outlineProvider = android.view.ViewOutlineProvider.BACKGROUND
             clipToOutline = true
@@ -60,14 +60,24 @@ class AssistantFallbackActivity : Activity() {
             setOnClickListener { /* Consume touches inside the assistant card. */ }
         }
         val landscape = resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
-        val wave = SiriWaveGlassView(this).apply { alpha = 0.92f; isClickable = false }
-        card.addView(wave, FrameLayout.LayoutParams(-1, dp(if (landscape) 78 else 116), Gravity.TOP))
+        // The orb sits around the top cut-out like a refractive lens. The small spectrum wave
+        // stays in the assistant sheet as a secondary live indicator.
+        val orbWidth = minOf(dp(344), (resources.displayMetrics.widthPixels - dp(16)).coerceAtLeast(dp(1)))
+        val orb = SiriGlassOrbView(this).apply {
+            // Tapping the lens itself should not dismiss the assistant overlay.
+            setOnClickListener { performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY) }
+        }
+        root.addView(orb, FrameLayout.LayoutParams(
+            orbWidth, dp(if (landscape) 180 else 226), Gravity.TOP or Gravity.CENTER_HORIZONTAL
+        ).apply { topMargin = dp(if (landscape) 4 else 10) })
+        val wave = SiriWaveGlassView(this).apply { alpha = 0.50f; isClickable = false }
+        card.addView(wave, FrameLayout.LayoutParams(-1, dp(if (landscape) 62 else 82), Gravity.BOTTOM))
 
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(14), dp(9), dp(14), dp(12))
             background = GradientDrawable().apply {
-                setColor(0x56110F22)
+                setColor(0x6C111215)
                 cornerRadius = dp(30).toFloat()
             }
         }
@@ -75,7 +85,7 @@ class AssistantFallbackActivity : Activity() {
 
         val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         val dot = View(this).apply {
-            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.parseColor("#55D7C2")) }
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.parseColor("#D6A463")) }
         }
         header.addView(dot, LinearLayout.LayoutParams(dp(7), dp(7)))
         val titleColumn = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(8), 0, 0, 0) }
@@ -86,7 +96,7 @@ class AssistantFallbackActivity : Activity() {
             typeface = android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.BOLD)
         })
         titleColumn.addView(TextView(this).apply {
-            text = "GIAO DIỆN TRỢ LÝ · ĐANG HOẠT ĐỘNG"
+            text = "SIRI GLASS  ·  HIỆU ỨNG ĐANG CHẠY"
             textSize = 10f
             setTextColor(0xFFC4C9D8.toInt())
         })
@@ -109,7 +119,7 @@ class AssistantFallbackActivity : Activity() {
             setLineSpacing(dp(2).toFloat(), 1.04f)
             maxLines = if (landscape) 2 else 4
             setPadding(dp(10), dp(8), dp(10), dp(8))
-            background = roundedField(0x44161B2B, 16)
+            background = roundedField(0x5D24201A, 16)
         }
         val answerScroll = ScrollView(this).apply {
             isFillViewport = false
@@ -128,7 +138,7 @@ class AssistantFallbackActivity : Activity() {
             setSingleLine(false)
             imeOptions = EditorInfo.IME_ACTION_SEND
             setPadding(dp(11), dp(7), dp(11), dp(7))
-            background = roundedField(0xB927223F.toInt(), 14)
+            background = roundedField(0xB51A1B1F.toInt(), 14)
             setOnEditorActionListener { _, actionId, _ ->
                 if (actionId == EditorInfo.IME_ACTION_SEND) { sendPrompt(); true } else false
             }
@@ -140,9 +150,10 @@ class AssistantFallbackActivity : Activity() {
 
         val maxWidth = (resources.displayMetrics.widthPixels - dp(20)).coerceAtLeast(dp(1))
         val width = minOf(dp(if (landscape) 520 else 430), maxWidth)
-        val topMargin = dp(if (landscape) 8 else 34)
-        root.addView(card, FrameLayout.LayoutParams(width, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
-            setMargins(dp(10), topMargin, dp(10), dp(10))
+        // Anchor controls toward the bottom so the glass orb remains completely visible above.
+        val bottomMargin = dp(if (landscape) 8 else 24)
+        root.addView(card, FrameLayout.LayoutParams(width, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+            setMargins(dp(10), dp(8), dp(10), bottomMargin)
         })
         setContentView(root)
         if (Build.VERSION.SDK_INT >= 29) {
@@ -178,9 +189,9 @@ class AssistantFallbackActivity : Activity() {
         setTextColor(Color.WHITE)
         background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
-            setColor(if (label == "↑") 0xFF7868EE.toInt() else 0x552F3547)
+            setColor(if (label == "↑") 0xFFD6A463.toInt() else 0x552C2A26)
             cornerRadius = dp(14).toFloat()
-            setStroke(dp(1), 0x22FFFFFF)
+            setStroke(dp(1), if (label == "↑") 0x66F6DDB4 else 0x33FFFFFF)
         }
         isClickable = true
         isFocusable = true

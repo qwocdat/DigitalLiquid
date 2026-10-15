@@ -95,7 +95,7 @@ object KeyAuthGate {
         if (activity.isFinishing || activity.isDestroyed) return
         val prefs = activity.getSharedPreferences(PREFS, Activity.MODE_PRIVATE)
         val density = activity.resources.displayMetrics.density
-        val lightMode = AppPrefs.get(activity).getBoolean(AppPrefs.LIGHT_MODE, true)
+        val lightMode = AppPrefs.get(activity).getBoolean(AppPrefs.LIGHT_MODE, false)
         fun dp(value: Int) = (value * density).toInt()
 
         val form = LinearLayout(activity).apply {

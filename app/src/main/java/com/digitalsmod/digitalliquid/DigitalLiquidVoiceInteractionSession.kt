@@ -58,14 +58,16 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
             elevation = dp(18).toFloat()
             isClickable = true
         }
-        val wave = SiriWaveGlassView(uiContext).apply { alpha = 0.95f; isClickable = false }
-        card.addView(wave, FrameLayout.LayoutParams(-1, dp(152), Gravity.BOTTOM))
+        val orb = SiriGlassOrbView(uiContext).apply { alpha = 0.82f; isClickable = false }
+        card.addView(orb, FrameLayout.LayoutParams(-1, dp(194), Gravity.TOP))
+        val wave = SiriWaveGlassView(uiContext).apply { alpha = 0.36f; isClickable = false }
+        card.addView(wave, FrameLayout.LayoutParams(-1, dp(94), Gravity.BOTTOM))
 
         val content = LinearLayout(uiContext).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(14), dp(9), dp(14), dp(12))
             background = GradientDrawable().apply {
-                setColor(0xD9080A10.toInt())
+                setColor(0x86080A10.toInt())
                 cornerRadius = dp(32).toFloat()
             }
         }
@@ -357,9 +359,9 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
         val win = window?.window ?: return
         win.setBackgroundDrawable(GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
-            setColor(0x08090D15)
+            setColor(0x100A0907)
             cornerRadius = dp(32).toFloat()
-            setStroke(dp(1), 0x33FFFFFF)
+            setStroke(dp(1), 0x33E7C28B)
         })
         val attrs = win.attributes
         val wm = uiContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager

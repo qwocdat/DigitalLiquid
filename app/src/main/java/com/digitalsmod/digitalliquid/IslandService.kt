@@ -903,29 +903,10 @@ class IslandService : Service() {
     }
 
     private fun openDefaultAssistant() {
-        val roleHeld = if (Build.VERSION.SDK_INT >= 29) {
-            try {
-                val manager = getSystemService(android.app.role.RoleManager::class.java)
-                manager != null && manager.isRoleAvailable(android.app.role.RoleManager.ROLE_ASSISTANT) &&
-                    manager.isRoleHeld(android.app.role.RoleManager.ROLE_ASSISTANT)
-            } catch (_: Exception) { false }
-        } else {
-            try {
-                val selected = android.provider.Settings.Secure.getString(contentResolver, "voice_interaction_service").orEmpty()
-                selected.contains("DigitalLiquidVoiceInteractionService", ignoreCase = true)
-            } catch (_: Exception) { false }
-        }
-        val launch = if (roleHeld) {
-            Intent(Intent.ACTION_ASSIST).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        } else {
-            Intent(this, AssistantFallbackActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        try {
-            startActivity(launch)
-        } catch (_: Exception) {
-            try { startActivity(Intent(this, AssistantFallbackActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
-            catch (_: Exception) { showTransientServiceNotice("Không thể mở giao diện trợ lý trên thiết bị này.") }
-        }
+        // Use the shared assistant launcher: active system sessions get a bounded show request,
+        // while devices without the assistant role always receive the visual Siri fallback.
+        // This avoids ACTION_ASSIST silently handing the gesture to another provider on HyperOS.
+        DigitalLiquidAssistantLauncher.open(this)
     }
 
     private val longPressRunnable = Runnable {
