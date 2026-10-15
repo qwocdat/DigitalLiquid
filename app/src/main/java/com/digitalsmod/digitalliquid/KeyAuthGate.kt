@@ -280,7 +280,7 @@ object KeyAuthGate {
             val status = connection.responseCode
             val stream = if (status in 200..299) connection.inputStream else connection.errorStream
             val text = stream?.let { input -> BufferedReader(InputStreamReader(input, Charsets.UTF_8)).use { it.readText() } }.orEmpty()
-            if (text.isBlank()) throw IllegalStateException("trả về phản hồi rỗng (HTTP $status). Kiểm tra Anonymous Auth và Database Rules.")
+            if (text.isBlank()) throw IllegalStateException("Firebase trả về phản hồi rỗng (HTTP $status). Kiểm tra Anonymous Auth và Database Rules.")
             val json = if (text.trim() == "null") JSONObject() else JSONObject(text)
             if (status !in 200..299) {
                 val errorMessage = json.optJSONObject("error")?.optString("message").orEmpty()
