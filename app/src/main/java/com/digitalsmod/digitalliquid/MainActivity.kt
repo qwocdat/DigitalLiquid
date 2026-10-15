@@ -397,7 +397,11 @@ class MainActivity : Activity() {
             else -> buildSettings(pageContent)
         }
         bottomNavView = buildBottomNav()
-        shell.addView(bottomNavView, marginTop(4))
+        // GlassTabBar contains MATCH_PARENT children; WRAP_CONTENT here can make
+        // FrameLayout measure itself as tall as the available screen. Keep it compact.
+        shell.addView(bottomNavView, LinearLayout.LayoutParams(-1, dp(68)).apply {
+            topMargin = dp(4)
+        })
         lastScrollY = 0
         scroll.setOnScrollChangeListener { _, _, y, _, oldY ->
             val collapsed = y > dp(28)
