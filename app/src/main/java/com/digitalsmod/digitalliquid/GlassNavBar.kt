@@ -62,7 +62,7 @@ class GlassNavBar(
             setPadding(dp(10), dp(7), dp(10), dp(7))
             background = GradientDrawable(
                 GradientDrawable.Orientation.TL_BR,
-                if (lightMode) intArrayOf(0xD9FFFFFF.toInt(), 0xBDECF0F7.toInt()) else intArrayOf(0x32FFFFFF, 0x16FFFFFF)
+                if (lightMode) intArrayOf(0xF5FFFFFF.toInt(), 0xDDE6F2F4.toInt()) else intArrayOf(0x32FFFFFF, 0x16FFFFFF)
             ).apply {
                 cornerRadius = dp(30).toFloat()
                 setStroke(dp(1), if (lightMode) 0x558795B1 else 0x28FFFFFF)

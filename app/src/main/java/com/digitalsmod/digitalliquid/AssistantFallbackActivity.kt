@@ -75,7 +75,7 @@ class AssistantFallbackActivity : Activity() {
 
         val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         val dot = View(this).apply {
-            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.parseColor("#8B7CFF")) }
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.parseColor("#55D7C2")) }
         }
         header.addView(dot, LinearLayout.LayoutParams(dp(7), dp(7)))
         val titleColumn = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(8), 0, 0, 0) }
@@ -164,7 +164,7 @@ class AssistantFallbackActivity : Activity() {
         setTextColor(Color.WHITE)
         background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
-            setColor(if (label == "↑") 0xFF7668DB.toInt() else 0x552F3547)
+            setColor(if (label == "↑") 0xFF36AFAE.toInt() else 0x552F3547)
             cornerRadius = dp(14).toFloat()
             setStroke(dp(1), 0x22FFFFFF)
         }

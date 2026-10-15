@@ -18,13 +18,13 @@ class IOSButton(context: Context) : TextView(context) {
         textSize = 12f
         typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
         val lightMode = AppPrefs.get(context).getBoolean(AppPrefs.LIGHT_MODE, true)
-        setTextColor(if (primary || !lightMode) Color.WHITE else 0xFF25283A.toInt())
+        setTextColor(if (primary) 0xFF102727.toInt() else if (!lightMode) Color.WHITE else 0xFF25283A.toInt())
         gravity = android.view.Gravity.CENTER
         setPadding(dp(12), dp(10), dp(12), dp(10))
         minHeight = dp(44)
         background = if (primary) GradientDrawable(
             GradientDrawable.Orientation.TL_BR,
-            intArrayOf(0xFF8172E5.toInt(), 0xFF5A4BB7.toInt())
+            intArrayOf(0xFF78E6CD.toInt(), 0xFF45B9B2.toInt())
         ).apply {
             cornerRadius = dp(15).toFloat()
             setStroke(dp(1), 0x42FFFFFF)

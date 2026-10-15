@@ -42,10 +42,10 @@ class GlassTabBar(
 
         indicator.background = GradientDrawable(
             GradientDrawable.Orientation.TL_BR,
-            intArrayOf(0xFF8172E5.toInt(), 0xCC5B4DAA.toInt())
+            intArrayOf(0xFF72E5CA.toInt(), 0xFF36AFAE.toInt())
         ).apply {
             cornerRadius = dp(23).toFloat()
-            setStroke(dp(1), 0x43FFFFFF)
+            setStroke(dp(1), 0x80FFFFFF)
         }
         indicator.alpha = 0.95f
         addView(indicator, LayoutParams(0, -1, Gravity.START or Gravity.TOP))

@@ -28,7 +28,4 @@ object AiModels {
     }
 
     fun labelFor(id: String): String = all.firstOrNull { it.id == id }?.label ?: id
-
-    /** Public-facing label that never leaks a custom provider/model identifier into the main UI. */
-    fun displayLabelFor(id: String): String = all.firstOrNull { it.id == id }?.label ?: "Mô hình tùy chỉnh"
 }

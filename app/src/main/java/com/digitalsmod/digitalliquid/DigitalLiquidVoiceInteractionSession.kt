@@ -20,15 +20,14 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewOutlineProvider
 import android.view.WindowManager
-import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.HorizontalScrollView
+import android.view.ViewGroup
 import android.widget.ScrollView
-import android.widget.Spinner
 import android.widget.TextView
 import kotlin.math.max
-import android.widget.Toast
 
 /** Interactive Siri-inspired assistant session with text and optional speech input. */
 class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : VoiceInteractionSession(uiContext) {
@@ -84,7 +83,7 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
             typeface = android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.BOLD)
         })
         titleColumn.addView(TextView(uiContext).apply {
-            text = "Siri mode · OpenRouter"
+            text = "Trợ lý AI · Văn bản và giọng nói"
             textSize = 10f
             setTextColor(0xFFB2B8C8.toInt())
         })
@@ -99,31 +98,57 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
         header.addView(close, LinearLayout.LayoutParams(dp(32), dp(38)))
         content.addView(header, LinearLayout.LayoutParams(-1, dp(42)))
 
-        val currentModel = AiModels.selectedId(uiContext)
-        val modelLabels = AiModels.all.map { it.label }.toMutableList()
-        val customModelIndex = if (AiModels.all.none { it.id == currentModel }) {
-            modelLabels.add("Tùy chỉnh · $currentModel")
-            modelLabels.lastIndex
-        } else -1
-        val modelSpinner = Spinner(uiContext).apply {
-            adapter = ArrayAdapter(uiContext, android.R.layout.simple_spinner_item, modelLabels).also {
-                it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-            }
-            setSelection(AiModels.all.indexOfFirst { it.id == currentModel }.let { if (it >= 0) it else customModelIndex }, false)
-            setBackground(GradientDrawable().apply { setColor(0xFF191C28.toInt()); cornerRadius = dp(12).toFloat() })
-            setPadding(dp(7), dp(2), dp(7), dp(2))
-            onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
-                override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
-                override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
-                    AiModels.all.getOrNull(position)?.let { AppPrefs.get(uiContext).edit().putString(AppPrefs.AI_MODEL, it.id).apply() }
+        var selectedModel = AiModels.selectedId(uiContext)
+        val modelOptions = AiModels.all.map { it.label to it.id }.toMutableList()
+        if (AiModels.all.none { it.id == selectedModel }) modelOptions.add("Tùy chỉnh" to selectedModel)
+        val modelRow = LinearLayout(uiContext).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        fun renderModelChips() {
+            modelRow.removeAllViews()
+            modelOptions.forEachIndexed { index, option ->
+                val active = option.second == selectedModel
+                val chip = TextView(uiContext).apply {
+                    text = option.first
+                    textSize = 10.5f
+                    maxLines = 1
+                    gravity = Gravity.CENTER
+                    setPadding(dp(12), 0, dp(12), 0)
+                    setTextColor(if (active) 0xFF0B2828.toInt() else 0xFFE1E7F0.toInt())
+                    background = GradientDrawable(
+                        GradientDrawable.Orientation.LEFT_RIGHT,
+                        if (active) intArrayOf(0xFF82EAD3.toInt(), 0xFF46BDB4.toInt())
+                        else intArrayOf(0xFF222B38.toInt(), 0xFF161D29.toInt())
+                    ).apply {
+                        cornerRadius = dp(14).toFloat()
+                        setStroke(dp(1), if (active) 0x80FFFFFF.toInt() else 0x253DFFFF)
+                    }
+                    isClickable = true
+                    isFocusable = true
+                    setOnClickListener {
+                        selectedModel = option.second
+                        AppPrefs.get(uiContext).edit().putString(AppPrefs.AI_MODEL, selectedModel).apply()
+                        renderModelChips()
+                        status?.text = "Đã chọn ${AiModels.labelFor(selectedModel)}"
+                    }
                 }
+                modelRow.addView(chip, LinearLayout.LayoutParams(-2, dp(34)).apply {
+                    if (index > 0) marginStart = dp(7)
+                })
             }
         }
-        content.addView(modelSpinner, LinearLayout.LayoutParams(-1, dp(39)).apply { topMargin = dp(6) })
+        renderModelChips()
+        val modelScroll = HorizontalScrollView(uiContext).apply {
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            addView(modelRow, ViewGroup.LayoutParams(-2, -1))
+        }
+        content.addView(modelScroll, LinearLayout.LayoutParams(-1, dp(39)).apply { topMargin = dp(6) })
 
         status = TextView(uiContext).apply {
             text = if (AppPrefs.get(uiContext).getString(AppPrefs.AI_ENDPOINT, "").orEmpty().isBlank())
-                "Chưa cấu hình AI proxy trong DigitalLiquid → Trợ lý AI."
+                "Chưa cấu hình kết nối AI trong mục Trợ lý AI."
             else "Sẵn sàng. Nhập câu hỏi hoặc dùng nút Nói."
             textSize = 10.5f
             setTextColor(0xFFD8D9E3.toInt())
@@ -178,7 +203,7 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
             textSize = 22f
             gravity = Gravity.CENTER
             setTextColor(Color.WHITE)
-            background = GradientDrawable().apply { setColor(0xFF7465D5.toInt()); cornerRadius = dp(14).toFloat() }
+            background = GradientDrawable().apply { setColor(0xFF49BDB4.toInt()); cornerRadius = dp(14).toFloat() }
             setOnClickListener { sendPrompt() }
         }
         sendButton = send
@@ -202,7 +227,7 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
         input.setText("")
         input.isEnabled = false
         sendButton?.isEnabled = false
-        status?.text = "Đang kết nối OpenRouter…"
+        status?.text = "Đang xử lý câu hỏi…"
         val model = AiModels.selectedId(uiContext)
         OpenRouterClient.chatMessages(uiContext, model, history.toList()) { answer, error ->
             input.isEnabled = true
@@ -225,7 +250,6 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
     private fun beginSpeechRecognition() {
         if (uiContext.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             status?.text = "Cần cấp quyền micro trong DigitalLiquid → Cài đặt trước khi dùng Nói."
-            Toast.makeText(uiContext, "Cấp quyền micro từ màn hình Cài đặt của DigitalLiquid.", Toast.LENGTH_LONG).show()
             return
         }
         if (!SpeechRecognizer.isRecognitionAvailable(uiContext)) {
@@ -271,18 +295,16 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
 
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
-        panel?.visibility = View.GONE
-        if (KeyAuthGate.isAuthorizedInCurrentProcess(uiContext)) {
-            applyWindowStyleAndPosition()
-            panel?.visibility = View.VISIBLE
-            return
-        }
-        // Voice interaction runs in its own system-managed process; require the saved-key path.
-        KeyAuthGate.reauthenticateSavedKey(uiContext) { authorized ->
-            if (authorized) {
-                applyWindowStyleAndPosition()
-                panel?.visibility = View.VISIBLE
-            } else hide()
+        // The visual assistant must always open. Authentication gates AI requests, not the Siri animation.
+        applyWindowStyleAndPosition()
+        panel?.visibility = View.VISIBLE
+        if (!KeyAuthGate.isAuthorizedInCurrentProcess(uiContext)) {
+            status?.text = "Hiệu ứng Siri đã mở · xác thực key trong DigitalLiquid để trò chuyện với AI."
+            // The session lives in a separate process, so a saved-key recheck may take time.
+            // Do not hide the effect when this device has no saved key.
+            KeyAuthGate.reauthenticateSavedKey(uiContext) { authorized ->
+                if (authorized && panel?.visibility == View.VISIBLE) status?.text = "Sẵn sàng · ${AiModels.labelFor(AiModels.selectedId(uiContext))}"
+            }
         }
     }
 
@@ -329,6 +351,13 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
                 width = metrics.bounds.width()
                 height = metrics.bounds.height()
                 cutout = metrics.windowInsets.displayCutout?.boundingRects?.filterNot { it.isEmpty }
+                    ?.maxByOrNull { it.width().toLong() * it.height().toLong() }
+            } catch (_: Exception) { }
+        }
+        if (cutout == null && Build.VERSION.SDK_INT >= 28) {
+            try {
+                cutout = win.decorView.rootWindowInsets?.displayCutout?.boundingRects
+                    ?.filterNot { it.isEmpty }
                     ?.maxByOrNull { it.width().toLong() * it.height().toLong() }
             } catch (_: Exception) { }
         }

@@ -453,7 +453,7 @@ class IslandService : Service() {
         if (overlayStartupAttempts++ < 8) {
             handler.postDelayed({ waitForAccessibilityOverlay() }, 250L)
         } else {
-            Toast.makeText(this, "DigitalLiquid chưa kết nối được lớp phủ Trợ năng. Hãy bật lại quyền Theo dõi HyperIsland rồi thử lại.", Toast.LENGTH_LONG).show()
+            showTransientServiceNotice("DigitalLiquid chưa kết nối được lớp phủ Trợ năng. Hãy bật lại quyền Theo dõi HyperIsland rồi thử lại.")
             stopSelf()
         }
     }
@@ -769,7 +769,7 @@ class IslandService : Service() {
         try {
             windowManager.addView(host, initialParams)
         } catch (_: Exception) {
-            Toast.makeText(this, "Android từ chối lớp phủ trên thanh trạng thái. Kiểm tra quyền Trợ năng DigitalLiquid.", Toast.LENGTH_LONG).show()
+            showTransientServiceNotice("Android từ chối lớp phủ trên thanh trạng thái. Kiểm tra quyền Trợ năng DigitalLiquid.")
             stopSelf()
             return
         }
@@ -924,7 +924,7 @@ class IslandService : Service() {
             startActivity(launch)
         } catch (_: Exception) {
             try { startActivity(Intent(this, AssistantFallbackActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
-            catch (_: Exception) { Toast.makeText(this, "Không thể mở giao diện trợ lý trên thiết bị này.", Toast.LENGTH_SHORT).show() }
+            catch (_: Exception) { showTransientServiceNotice("Không thể mở giao diện trợ lý trên thiết bị này.") }
         }
     }
 
@@ -1133,21 +1133,26 @@ class IslandService : Service() {
     } else resources.displayMetrics.heightPixels
 
     private fun currentCameraCutoutBounds(): Rect? {
+        fun largest(rects: List<Rect>?): Rect? = rects
+            ?.asSequence()
+            ?.filterNot { it.isEmpty }
+            ?.maxByOrNull { it.width().toLong() * it.height().toLong() }
+            ?.let { Rect(it) }
+
         if (Build.VERSION.SDK_INT >= 30) {
-            try {
-                return windowManager.currentWindowMetrics.windowInsets.displayCutout?.boundingRects
-                    ?.filterNot { it.isEmpty }
-                    ?.maxByOrNull { it.width().toLong() * it.height().toLong() }
-                    ?.let { Rect(it) }
-            } catch (_: Exception) { }
+            val metricsCutout = try {
+                largest(windowManager.currentWindowMetrics.windowInsets.displayCutout?.boundingRects)
+            } catch (_: Exception) { null }
+            if (metricsCutout != null) return metricsCutout
         }
+        // Some HyperOS builds return no cutout through WindowMetrics for accessibility overlays.
+        // Fall back to the attached view's insets instead of returning null immediately.
         if (Build.VERSION.SDK_INT >= 28) {
-            try {
-                return islandRoot?.rootWindowInsets?.displayCutout?.boundingRects
-                    ?.filterNot { it.isEmpty }
-                    ?.maxByOrNull { it.width().toLong() * it.height().toLong() }
-                    ?.let { Rect(it) }
-            } catch (_: Exception) { }
+            val viewCutout = try {
+                largest(overlayHost?.rootWindowInsets?.displayCutout?.boundingRects)
+                    ?: largest(islandRoot?.rootWindowInsets?.displayCutout?.boundingRects)
+            } catch (_: Exception) { null }
+            if (viewCutout != null) return viewCutout
         }
         return null
     }
@@ -1918,9 +1923,16 @@ class IslandService : Service() {
     @Suppress("DEPRECATION")
     private fun legacyVersionCode(info: android.content.pm.PackageInfo): Int = info.versionCode
 
-    private fun showCustomAppNotice(title: String, message: String, url: String): Boolean {
+    private fun showTransientServiceNotice(message: String) {
+        if (!showCustomAppNotice("Trạng thái DigitalLiquid", message, "", force = true)) {
+            // A native toast is used only when an app-owned overlay cannot legally be attached.
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun showCustomAppNotice(title: String, message: String, url: String, force: Boolean = false): Boolean {
         val host = overlayHost ?: return false
-        if (!usingAccessibilityOverlay || !AppPrefs.get(this).getBoolean(AppPrefs.CUSTOM_APP_NOTICES, true)) return false
+        if (!usingAccessibilityOverlay || (!force && !AppPrefs.get(this).getBoolean(AppPrefs.CUSTOM_APP_NOTICES, true))) return false
         dismissCustomAppNotice(animate = false)
 
         val card = LinearLayout(this).apply {

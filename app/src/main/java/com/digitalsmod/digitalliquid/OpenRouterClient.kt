@@ -28,11 +28,11 @@ object OpenRouterClient {
     ) {
         val endpoint = AppPrefs.get(context).getString(AppPrefs.AI_ENDPOINT, "").orEmpty().trim()
         if (endpoint.isBlank()) {
-            callback(null, "Chưa cấu hình kết nối trợ lý. Mở DigitalLiquid → Trợ lý AI → Cấu hình kết nối.")
+            callback(null, "Chưa cấu hình AI proxy. Hãy mở DigitalLiquid → Trợ lý AI → Cấu hình máy chủ.")
             return
         }
         if (!endpoint.startsWith("https://", ignoreCase = true)) {
-            callback(null, "Địa chỉ dịch vụ trợ lý phải dùng HTTPS.")
+            callback(null, "AI proxy phải dùng HTTPS.")
             return
         }
         if (messages.none { it.first == "user" && it.second.isNotBlank() }) {
@@ -46,7 +46,7 @@ object OpenRouterClient {
                 val idToken = OnlineControlManager.getAuthTokenForRequest(context.applicationContext)
                 answer = request(endpoint, model, messages.takeLast(8).map { it.first to it.second.take(6000) }, idToken)
             } catch (t: Throwable) {
-                error = t.message ?: "Không thể kết nối dịch vụ trợ lý."
+                error = t.message ?: "Không thể kết nối AI proxy."
             }
             val a = answer
             val e = error
@@ -80,13 +80,13 @@ object OpenRouterClient {
             val json = try { JSONObject(body) } catch (_: Exception) { JSONObject().put("raw", body.take(400)) }
             if (status !in 200..299 || json.optBoolean("ok", true).not()) {
                 val message = json.optString("error").ifBlank { json.optString("message") }.ifBlank { "HTTP $status" }
-                throw IllegalStateException("Dịch vụ AI: $message")
+                throw IllegalStateException("AI proxy: $message")
             }
             val direct = json.optString("text")
             if (direct.isNotBlank()) return direct
             val choices = json.optJSONArray("choices")
             val content = choices?.optJSONObject(0)?.optJSONObject("message")?.optString("content").orEmpty()
-            if (content.isBlank()) throw IllegalStateException("AI không trả về nội dung. Kiểm tra kết nối và mô hình đã chọn.")
+            if (content.isBlank()) throw IllegalStateException("AI chưa trả về nội dung. Hãy kiểm tra mô hình hoặc hạn mức dịch vụ.")
             return content
         } finally {
             connection.disconnect()

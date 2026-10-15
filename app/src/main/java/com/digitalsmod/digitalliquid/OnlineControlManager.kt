@@ -204,7 +204,7 @@ object OnlineControlManager {
             )
         } catch (e: Exception) {
             val extra = refreshFailure?.let { " (làm mới token trước đó cũng lỗi: $it)" }.orEmpty()
-            throw IllegalStateException("${e.message ?: "Không thể xác thực kết nối"}$extra", e)
+            throw IllegalStateException("${e.message ?: "Không thể kết nối dịch vụ trực tuyến"}$extra", e)
         }
 
         val newIdToken = signInJson.optString("idToken")
@@ -215,7 +215,7 @@ object OnlineControlManager {
         if (newIdToken.isBlank()) {
             val detail = describeAuthError(signInJson)
             throw IllegalStateException(
-                "Không thể xác thực kết nối dịch vụ. Hãy thử lại sau hoặc kiểm tra cấu hình dịch vụ."
+                "Dịch vụ trực tuyến không cấp được phiên xác thực. $detail. Hãy thử lại sau hoặc liên hệ quản trị viên."
             )
         }
 
@@ -249,7 +249,7 @@ object OnlineControlManager {
             .ifBlank { message }
         return buildString {
             if (code > 0) append("HTTP ").append(code).append(": ")
-            append(detail.ifBlank { "Phản hồi máy chủ không chứa dữ liệu xác thực" })
+            append(detail.ifBlank { "Phản hồi dịch vụ không chứa phiên xác thực" })
         }
     }
 
@@ -326,7 +326,7 @@ object OnlineControlManager {
                     .ifBlank { json.optString("error") }
                     .ifBlank { json.optString("rawResponse") }
                 throw IllegalStateException(
-                    "Máy chủ trả về mã HTTP $status${if (reason.isBlank()) "" else ": $reason"}"
+                    "Dịch vụ trực tuyến trả HTTP $status${if (reason.isBlank()) "" else ": $reason"}"
                 )
             }
 
