@@ -1,4 +1,4 @@
-name: Fix & Build APK
+name: Build APK
 
 on:
   push:
@@ -15,43 +15,34 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Auto-fix XML & Gradle errors
+      - name: Fix XML Resource Files
         run: |
           python3 - << 'EOF'
-          import glob, re
+          import os, re
 
-          # 1. Sửa toàn bộ file XML trong dự án
-          xml_files = glob.glob('app/src/main/res/**/*.xml', recursive=True)
-          for path in xml_files:
-              with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-                  content = f.read()
-              
-              # Xóa các thẻ <?xml> bị lặp hoặc sai dòng
-              content = re.sub(r'<\?xml[^>]*\?>\s*', '', content, flags=re.IGNORECASE).lstrip()
-              
-              # Sửa lỗi: name="android:attr/..." thành name="android:..."
-              content = re.sub(r'name="android:attr/([^"]+)"', r'name="android:\1"', content)
-              
-              # Đặt lại duy nhất 1 thẻ <?xml> chuẩn ở dòng 1
-              fixed_content = '<?xml version="1.0" encoding="utf-8"?>\n' + content
-              with open(path, 'w', encoding='utf-8') as f:
-                  f.write(fixed_content)
-
-          # 2. Sửa file app/build.gradle.kts (Vô hiệu hóa Minify cho Debug)
-          gradle_path = 'app/build.gradle.kts'
-          try:
-              with open(gradle_path, 'r', encoding='utf-8') as f:
-                  g_content = f.read()
-              def fix_debug_block(match):
-                  block = match.group(0)
-                  block = re.sub(r'isMinifyEnabled\s*=\s*true', 'isMinifyEnabled = false', block)
-                  block = re.sub(r'isShrinkResources\s*=\s*true', 'isShrinkResources = false', block)
-                  return block
-              g_content = re.sub(r'debug\s*\{[^}]*\}', fix_debug_block, g_content, flags=re.DOTALL)
-              with open(gradle_path, 'w', encoding='utf-8') as f:
-                  f.write(g_content)
-          except FileNotFoundError:
-              pass
+          # Quét tất cả các file XML trong thư mục res
+          for root, dirs, files in os.walk('app/src/main/res'):
+              for file in files:
+                  if file.endswith('.xml'):
+                      path = os.path.join(root, file)
+                      with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                          content = f.read()
+                      
+                      # Xóa các thẻ <?xml> thừa hoặc sai vị trí
+                      content = re.sub(r'<\?xml[^>]*\?>\s*', '', content, flags=re.IGNORECASE).lstrip()
+                      
+                      # Xóa triệt để chữ "attr/" nằm trong thuộc tính name
+                      content = content.replace('android:attr/windowDimAmount', 'android:windowDimAmount')
+                      content = content.replace('android:attr/colorBackground', 'android:colorBackground')
+                      content = content.replace('android:attr/', 'android:')
+                      content = content.replace('name="attr/', 'name="')
+                      content = content.replace("name='attr/", "name='")
+                      
+                      # Ghi lại file với đúng 1 thẻ khai báo XML duy nhất ở dòng 1
+                      fixed_content = '<?xml version="1.0" encoding="utf-8"?>\n' + content
+                      with open(path, 'w', encoding='utf-8') as f:
+                          f.write(fixed_content)
+                      print(f"Đã sửa lỗi XML tại: {path}")
           EOF
 
       - name: Set up JDK 17
