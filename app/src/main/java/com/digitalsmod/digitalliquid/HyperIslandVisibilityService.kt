@@ -121,7 +121,8 @@ class HyperIslandVisibilityService : AccessibilityService() {
     private data class ScanResult(
         var hyperIslandVisible: Boolean = false,
         var screenRecordingVisible: Boolean = false,
-        var cameraPrivacyIndicatorVisible: Boolean = false
+        var cameraPrivacyIndicatorVisible: Boolean = false,
+        var ringerUiVisible: Boolean = false
     )
 
     private fun scanAndUpdate() {
@@ -163,11 +164,13 @@ class HyperIslandVisibilityService : AccessibilityService() {
             IslandService.setHyperIslandVisibilityOverride(false)
             IslandService.setAccessibilityScreenRecordingActive(false)
             IslandService.setCameraActivityActive(cameraForegroundActive)
+            IslandService.setRingerUiActive(false)
             return
         }
         IslandService.setHyperIslandVisibilityOverride(result.hyperIslandVisible)
         IslandService.setAccessibilityScreenRecordingActive(result.screenRecordingVisible)
         IslandService.setCameraActivityActive(cameraForegroundActive || result.cameraPrivacyIndicatorVisible)
+        IslandService.setRingerUiActive(result.ringerUiVisible)
     }
 
     private fun currentCutoutBounds(): Rect? {
@@ -207,7 +210,8 @@ class HyperIslandVisibilityService : AccessibilityService() {
             "music", "track", "song", "timer", "stopwatch", "countdown",
             "call", "phone", "charging", "location", "navigation", "sharing", "hotspot", "bluetooth",
             "đang phát", "hẹn giờ", "bấm giờ", "đếm ngược",
-            "cuộc gọi", "đang sạc", "chia sẻ", "định vị", "播放", "计时",
+            "cuộc gọi", "đang sạc", "chia sẻ", "định vị",
+            "播放", "计时", "请勿打扰",
             "通话", "充电", "导航", "正在播放"
         )
         val recordingWords = listOf(
@@ -226,6 +230,17 @@ class HyperIslandVisibilityService : AccessibilityService() {
             "camera in use", "camera is being used", "using the camera", "camera active",
             "máy ảnh đang được sử dụng", "đang sử dụng máy ảnh", "camera đang hoạt động",
             "đang dùng camera", "正在使用相机", "正在使用摄像头"
+        )
+        val ringerUiWords = listOf(
+            "silent mode", "vibrate mode", "ringer mode", "ring volume", "volume panel", "volume control",
+            "do not disturb", "notifications silenced", "mute notifications", "ringtone", "ringer muted",
+            "chế độ im lặng", "chế độ rung", "âm lượng chuông", "không làm phiền",
+            "tắt tiếng thông báo", "tạm dừng thông báo", "notification controls", "notification settings",
+            "notification shade", "notifications silenced", "no notifications", "silent notifications",
+            "do not disturb", "volume slider", "ringer mode", "ring volume", "volume panel", "volume control",
+            "notification_panel", "notification_panel_window", "status_bar_expanded", "quick_settings",
+            "control_center", "volume_dialog", "volume_panel", "miui_volume", "ringer_panel",
+            "静音模式", "振动模式", "铃声音量", "请勿打扰", "通知已静音", "通知设置", "通知面板", "音量面板"
         )
 
         val startActionWords = listOf("start recording", "record screen", "begin recording", "bắt đầu quay", "bắt đầu", "开始录制", "开始", "start")
@@ -306,9 +321,21 @@ class HyperIslandVisibilityService : AccessibilityService() {
                         height in (15 * density).toInt()..maxHeight && width in minWidth..maxWidth &&
                         abs(bounds.centerX() - centerX) <= centerTolerance && width < (screenWidth * 0.78f).toInt()
                 }
+                // Volume/ringer/notification controls are not consistently pill-shaped on
+                // HyperOS: portrait volume panels are vertical, and some quick-setting labels
+                // are outside the camera bounds. Detect these text-bearing system UI windows
+                // independently, but never scan application windows for these phrases.
+                val hasRingerOrNoticeSignal = allowIslandDetection && ringerUiWords.any(searchableLabel::contains)
+                val plausibleSystemControl = width <= (screenWidth * 0.98f).toInt() &&
+                    height <= (resources.displayMetrics.heightPixels * 0.92f).toInt()
+                if (hasRingerOrNoticeSignal && plausibleSystemControl) {
+                    result.ringerUiVisible = true
+                }
+
                 val idHint = islandIds.any(resourceId::contains)
                 val labelHint = activityWords.any(visibleLabel::contains)
-                val longVisibleLabel = visibleLabel.isNotBlank() &&
+                val isRingerLabel = ringerUiWords.any(searchableLabel::contains)
+                val longVisibleLabel = !isRingerLabel && visibleLabel.isNotBlank() &&
                     width >= (132 * density).toInt() && height >= (22 * density).toInt()
                 if (allowIslandDetection && atCameraPosition && pillShape &&
                     (idHint || labelHint || longVisibleLabel)) {
@@ -344,6 +371,7 @@ class HyperIslandVisibilityService : AccessibilityService() {
         IslandService.setHyperIslandVisibilityOverride(null)
         IslandService.setAccessibilityScreenRecordingActive(false)
         IslandService.setCameraActivityActive(false)
+        IslandService.setRingerUiActive(false)
         cameraForegroundActive = false
         if (connectedInstance === this) connectedInstance = null
         IslandService.refreshOverlayWindowType()
@@ -353,6 +381,16 @@ class HyperIslandVisibilityService : AccessibilityService() {
 
     companion object {
         @Volatile private var connectedInstance: HyperIslandVisibilityService? = null
+
+        fun requestRecents(): Boolean {
+            val service = connectedInstance ?: return false
+            return try { service.performGlobalAction(GLOBAL_ACTION_RECENTS) } catch (_: Exception) { false }
+        }
+
+        fun requestHome(): Boolean {
+            val service = connectedInstance ?: return false
+            return try { service.performGlobalAction(GLOBAL_ACTION_HOME) } catch (_: Exception) { false }
+        }
 
         fun overlayWindowManager(): WindowManager? {
             val service = connectedInstance ?: return null
