@@ -1,33 +1,17 @@
 
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-
-    <!-- Main DigitalLiquid application theme -->
-    <style name="DigitalLiquidTheme"
-        parent="@android:style/Theme.Material.Light.NoActionBar">
-
-        <!-- Typography -->
+    <style name="DigitalLiquidTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
-
-        <!-- Champagne accent -->
         <item name="android:colorAccent">#D6A463</item>
         <item name="android:colorControlActivated">#D6A463</item>
         <item name="android:colorControlHighlight">#24D6A463</item>
-
-        <!-- Spatial Glass appearance -->
         <item name="android:windowBackground">#050609</item>
         <item name="android:statusBarColor">#050609</item>
         <item name="android:navigationBarColor">#050609</item>
-
-        <!-- System bars -->
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:windowLightNavigationBar">false</item>
-
-        <!-- Window configuration -->
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowActionModeOverlay">true</item>
-        <item name="android:windowBackgroundFallback">#050609</item>
-
     </style>
-
 </resources>
