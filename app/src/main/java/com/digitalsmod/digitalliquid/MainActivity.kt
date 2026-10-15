@@ -3,6 +3,7 @@ package com.digitalsmod.digitalliquid
 import android.app.Activity
 import android.Manifest
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
@@ -244,6 +245,20 @@ class MainActivity : Activity() {
         if (launchedForPanelPicker) {
             launchedForPanelPicker = false
             finish()
+        }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // The dashboard can now rotate with the device. Rebuild only the current page so
+        // role-selection and model dialogs use the real landscape bounds while tab/scroll
+        // state remains stored in the existing page cache.
+        applySystemBars()
+        if (!keyAuthorized || unsupportedDevice || isFinishing || isDestroyed) return
+        if (prefs.getBoolean(AppPrefs.ONBOARDING_DONE, false)) {
+            renderMain()
+        } else {
+            renderOnboarding(onboardingPage)
         }
     }
 
@@ -1109,9 +1124,9 @@ class MainActivity : Activity() {
         target.addView(toggleCard("Tự ẩn khi HyperIsland của hệ thống hiện", "Ẩn viên thuốc của DigitalLiquid khi phát hiện hoạt động hệ thống ở đúng vùng camera, rồi hiện lại khi hoạt động biến mất.", AppPrefs.AUTO_HIDE_SYSTEM_ISLAND), marginTop(8))
         target.addView(toggleCard("Tự ẩn khi đang phát nhạc", "Theo dõi trạng thái MediaController và hiện lại khi nhạc dừng hoặc tạm dừng.", AppPrefs.HIDE_WHEN_MEDIA_PLAYING), marginTop(8))
         target.addView(toggleCard("Tự ẩn khi hoạt động hệ thống khác xuất hiện", "Áp dụng cho hẹn giờ, cuộc gọi và các hoạt động nền được NotificationListener nhận diện.", AppPrefs.HIDE_WHEN_NATIVE_ACTIVITY), marginTop(8))
-        target.addView(toggleCard("Tự ẩn khi bật/tắt chuông hoặc chế độ im lặng", "Tạm ẩn khi Trợ năng phát hiện giao diện âm lượng, rung, im lặng hoặc Không làm phiền ở vùng camera.", AppPrefs.HIDE_WHEN_RINGER_UI), marginTop(8))
+        target.addView(toggleCard("Ẩn tạm khi HyperOS hiện thông báo chuông", "Chỉ ẩn viên thuốc khi HyperOS hiển thị popup HyperIsland về chuông hoặc thông báo ở vùng camera. Không tự ẩn chỉ vì mở bảng âm lượng hay Trung tâm điều khiển.", AppPrefs.HIDE_WHEN_RINGER_UI), marginTop(8))
         target.addView(toggleCard("Nhấn đúp viên thuốc để mở trợ lý AI", "Gọi ACTION_ASSIST của Android khi nhấn nhanh hai lần. DigitalLiquid phải được chọn làm trợ lý mặc định.", AppPrefs.DOUBLE_TAP_ASSISTANT), marginTop(8))
-        target.addView(toggleCard("Nhấn từ 6 lần để chuyển ứng dụng", "Lần thứ 6 mở ứng dụng dùng gần đây nhất; những lần tiếp theo mở ứng dụng ngẫu nhiên. Cần bật quyền Truy cập mức sử dụng ứng dụng.", AppPrefs.ISLAND_APP_SWITCH_GESTURE), marginTop(8))
+        target.addView(toggleCard("Nhấn 6 lần để kích hoạt chuyển ứng dụng", "Sau 6 lần chạm nhanh, mỗi lần chạm tiếp theo sẽ chuyển ứng dụng ngay. Dừng chạm khoảng 1,8 giây để thoát chế độ; muốn dùng lại cần chạm đủ 6 lần. Cần cấp quyền Truy cập mức sử dụng ứng dụng.", AppPrefs.ISLAND_APP_SWITCH_GESTURE), marginTop(8))
         target.addView(toggleCard("Thông báo Liquid Glass trong ứng dụng", "Hiển thị thông báo quản trị dưới dạng thẻ tùy chỉnh nổi khi lớp phủ được kết nối; nếu không thể hiện, dùng thông báo hệ thống làm dự phòng.", AppPrefs.CUSTOM_APP_NOTICES), marginTop(8))
         target.addView(toggleCard("Tương tác Live Preview", "Cho phép thử chạm, nhấn đúp, nhấn giữ và cử chỉ nhiều lần ngay trong bản xem trước.", AppPrefs.LIVE_PREVIEW_INTERACTIVE), marginTop(8))
         target.addView(settingAction("Truy cập mức sử dụng ứng dụng", if (RecentAppSwitcher.hasUsageAccess(this)) "Đã cấp quyền" else "Chưa cấp quyền", "Cho phép sắp xếp ứng dụng theo lần dùng gần nhất và chuyển ứng dụng. Quyền này do Android quản lý.") {
@@ -1241,7 +1256,13 @@ class MainActivity : Activity() {
         var previewExpanded = false
         var previewLastTap = 0L
         var previewTapCount = 0
+        var previewSwitchArmed = false
         val previewHandler = Handler(Looper.getMainLooper())
+        val previewSwitchIdle = Runnable {
+            previewSwitchArmed = false
+            previewTapCount = 0
+            previewLastTap = 0L
+        }
         var previewLong = false
         val previewLongPress = Runnable {
             previewLong = true
@@ -1273,10 +1294,23 @@ class MainActivity : Activity() {
                         .setDuration(240L).setInterpolator(android.view.animation.OvershootInterpolator(0.7f)).start()
                     if (!previewLong) {
                         val now = android.os.SystemClock.elapsedRealtime()
+                        val appSwitchEnabled = prefs.getBoolean(AppPrefs.ISLAND_APP_SWITCH_GESTURE, false)
                         previewTapCount = if (now - previewLastTap <= 750L) previewTapCount + 1 else 1
                         previewLastTap = now
+                        if (appSwitchEnabled && previewSwitchArmed) {
+                            RecentAppSwitcher.switch(this)
+                            previewHandler.removeCallbacks(previewSwitchIdle)
+                            previewHandler.postDelayed(previewSwitchIdle, 1800L)
+                            return@setOnTouchListener true
+                        }
+                        if (appSwitchEnabled && previewTapCount >= 6) {
+                            previewSwitchArmed = true
+                            RecentAppSwitcher.switch(this)
+                            previewHandler.removeCallbacks(previewSwitchIdle)
+                            previewHandler.postDelayed(previewSwitchIdle, 1800L)
+                            return@setOnTouchListener true
+                        }
                         when {
-                            previewTapCount >= 6 && prefs.getBoolean(AppPrefs.ISLAND_APP_SWITCH_GESTURE, false) -> RecentAppSwitcher.switch(this, previewTapCount - 6)
                             previewTapCount == 2 && prefs.getBoolean(AppPrefs.DOUBLE_TAP_ASSISTANT, false) -> {
                                 view.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
                                 // Route to the real assistant screen, not a decorative fake response.
@@ -1356,8 +1390,7 @@ class MainActivity : Activity() {
                 AppPrefs.ISLAND_APP_SWITCH_GESTURE,
                 AppPrefs.AUTO_HIDE_SYSTEM_ISLAND,
                 AppPrefs.HIDE_WHEN_NATIVE_ACTIVITY,
-                AppPrefs.HIDE_WHEN_MEDIA_PLAYING,
-                AppPrefs.HIDE_WHEN_RINGER_UI
+                AppPrefs.HIDE_WHEN_MEDIA_PLAYING
             )
             isChecked = prefs.getBoolean(key, defaultEnabled)
             setOnCheckedChangeListener { _, checked ->

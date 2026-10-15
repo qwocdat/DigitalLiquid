@@ -169,6 +169,15 @@ class IslandService : Service() {
     private var longPressTriggered = false
     private var lastTapAt = 0L
     private var tapBurstCount = 0
+    private var appSwitchLastTapAt = 0L
+    private var appSwitchSequenceCount = 0
+    private var appSwitchModeActive = false
+    private val appSwitchIdleRunnable = Runnable {
+        appSwitchModeActive = false
+        appSwitchSequenceCount = 0
+        appSwitchLastTapAt = 0L
+        tapBurstCount = 0
+    }
     private val singleTapRunnable = Runnable {
         val prefs = AppPrefs.get(this)
         when {
@@ -792,18 +801,51 @@ class IslandService : Service() {
                 if (!longPressTriggered && isTap) {
                     view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
                     val now = android.os.SystemClock.elapsedRealtime()
+                    val prefs = AppPrefs.get(this)
+                    val switchGestureEnabled = prefs.getBoolean(AppPrefs.ISLAND_APP_SWITCH_GESTURE, false)
+
+                    if (switchGestureEnabled && appSwitchModeActive) {
+                        // Once six quick taps arm this mode, every further tap switches immediately.
+                        // Keep the mode alive through brief app-launch animations, then disarm on idle.
+                        handler.removeCallbacks(singleTapRunnable)
+                        tapBurstCount = 0
+                        lastTapAt = now
+                        appSwitchLastTapAt = now
+                        RecentAppSwitcher.switch(this)
+                        handler.removeCallbacks(appSwitchIdleRunnable)
+                        handler.postDelayed(appSwitchIdleRunnable, APP_SWITCH_IDLE_TIMEOUT_MS)
+                        return true
+                    }
+
+                    if (switchGestureEnabled) {
+                        appSwitchSequenceCount = if (now - appSwitchLastTapAt <= APP_SWITCH_SEQUENCE_GAP_MS) {
+                            appSwitchSequenceCount + 1
+                        } else {
+                            1
+                        }
+                        appSwitchLastTapAt = now
+                        if (appSwitchSequenceCount >= APP_SWITCH_START_TAPS) {
+                            appSwitchModeActive = true
+                                                handler.removeCallbacks(singleTapRunnable)
+                            tapBurstCount = 0
+                            lastTapAt = 0L
+                            RecentAppSwitcher.switch(this)
+                            handler.removeCallbacks(appSwitchIdleRunnable)
+                            handler.postDelayed(appSwitchIdleRunnable, APP_SWITCH_IDLE_TIMEOUT_MS)
+                            return true
+                        }
+                    } else {
+                        appSwitchModeActive = false
+                        appSwitchSequenceCount = 0
+                        appSwitchLastTapAt = 0L
+                        handler.removeCallbacks(appSwitchIdleRunnable)
+                    }
+
+                    // Normal tap/double-tap handling remains independent of the six-tap sequence.
                     if (now - lastTapAt <= APP_SWITCH_SEQUENCE_GAP_MS) tapBurstCount++ else tapBurstCount = 1
                     lastTapAt = now
-                    val prefs = AppPrefs.get(this)
-                    if (prefs.getBoolean(AppPrefs.ISLAND_APP_SWITCH_GESTURE, false) && tapBurstCount >= APP_SWITCH_START_TAPS) {
-                        handler.removeCallbacks(singleTapRunnable)
-                        val sequenceCount = tapBurstCount
-                        RecentAppSwitcher.switch(this, sequenceCount - APP_SWITCH_START_TAPS)
-                    } else {
-                        // Wait briefly so a second tap can be distinguished from a single tap.
-                        handler.removeCallbacks(singleTapRunnable)
-                        handler.postDelayed(singleTapRunnable, DOUBLE_TAP_WINDOW_MS)
-                    }
+                    handler.removeCallbacks(singleTapRunnable)
+                    handler.postDelayed(singleTapRunnable, DOUBLE_TAP_WINDOW_MS)
                 }
                 return true
             }
@@ -811,6 +853,10 @@ class IslandService : Service() {
                 handler.removeCallbacks(longPressRunnable)
                 handler.removeCallbacks(singleTapRunnable)
                 tapBurstCount = 0
+                if (!appSwitchModeActive) {
+                    appSwitchSequenceCount = 0
+                    appSwitchLastTapAt = 0L
+                }
                 return true
             }
         }
@@ -1213,7 +1259,7 @@ class IslandService : Service() {
         val hideForSystemIsland = prefs.getBoolean(AppPrefs.AUTO_HIDE_SYSTEM_ISLAND, false) && hyperIslandVisibilityOverride == true
         val hideForOtherActivity = prefs.getBoolean(AppPrefs.HIDE_WHEN_NATIVE_ACTIVITY, false) && nativeActivityActive
         val hideForMusic = prefs.getBoolean(AppPrefs.HIDE_WHEN_MEDIA_PLAYING, false) && mediaPlaybackActive
-        val hideForRingerUi = prefs.getBoolean(AppPrefs.HIDE_WHEN_RINGER_UI, false) && ringerUiActive
+        val hideForRingerUi = prefs.getBoolean(AppPrefs.HIDE_WHEN_RINGER_UI, true) && ringerUiActive
         val nativeIslandVisible = hideForSystemIsland || hideForOtherActivity || hideForMusic || hideForRingerUi
         val suppress = !screenRecording && !cameraActive && nativeIslandVisible && !faceUnlocking && !isFaceUnlockShrinking
         val wantedVisibility = if (suppress) View.GONE else View.VISIBLE
@@ -1984,6 +2030,7 @@ class IslandService : Service() {
         private const val LONG_PRESS_MS = 430L
         private const val DOUBLE_TAP_WINDOW_MS = 310L
         private const val APP_SWITCH_SEQUENCE_GAP_MS = 720L
+        private const val APP_SWITCH_IDLE_TIMEOUT_MS = 1800L
         private const val APP_SWITCH_START_TAPS = 6
         private const val TRAIL_EXTENT_DP = 38
 

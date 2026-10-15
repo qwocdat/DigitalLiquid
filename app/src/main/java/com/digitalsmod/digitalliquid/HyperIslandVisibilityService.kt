@@ -231,16 +231,16 @@ class HyperIslandVisibilityService : AccessibilityService() {
             "máy ảnh đang được sử dụng", "đang sử dụng máy ảnh", "camera đang hoạt động",
             "đang dùng camera", "正在使用相机", "正在使用摄像头"
         )
+        // Only labels used by the short HyperOS ringer/notification popup. Do not include
+        // full-screen notification shade / Quick Settings IDs here or the pill could stay hidden
+        // merely because the user opened the shade.
         val ringerUiWords = listOf(
-            "silent mode", "vibrate mode", "ringer mode", "ring volume", "volume panel", "volume control",
-            "do not disturb", "notifications silenced", "mute notifications", "ringtone", "ringer muted",
-            "chế độ im lặng", "chế độ rung", "âm lượng chuông", "không làm phiền",
-            "tắt tiếng thông báo", "tạm dừng thông báo", "notification controls", "notification settings",
-            "notification shade", "notifications silenced", "no notifications", "silent notifications",
-            "do not disturb", "volume slider", "ringer mode", "ring volume", "volume panel", "volume control",
-            "notification_panel", "notification_panel_window", "status_bar_expanded", "quick_settings",
-            "control_center", "volume_dialog", "volume_panel", "miui_volume", "ringer_panel",
-            "静音模式", "振动模式", "铃声音量", "请勿打扰", "通知已静音", "通知设置", "通知面板", "音量面板"
+            "silent mode", "vibrate mode", "ringer mode", "ring volume", "ringtone muted", "ringer muted",
+            "mute notifications", "notifications silenced", "silent notifications", "notification sound off",
+            "notifications off", "sound muted", "chế độ im lặng", "chế độ rung", "âm lượng chuông",
+            "chuông đã tắt", "đã tắt chuông", "tắt tiếng thông báo", "thông báo đã tắt",
+            "đã tắt thông báo", "âm thanh thông báo", "静音模式", "振动模式", "铃声音量",
+            "请勿打扰", "通知已静音", "通知声音已关闭", "铃声已关闭"
         )
 
         val startActionWords = listOf("start recording", "record screen", "begin recording", "bắt đầu quay", "bắt đầu", "开始录制", "开始", "start")
@@ -321,20 +321,29 @@ class HyperIslandVisibilityService : AccessibilityService() {
                         height in (15 * density).toInt()..maxHeight && width in minWidth..maxWidth &&
                         abs(bounds.centerX() - centerX) <= centerTolerance && width < (screenWidth * 0.78f).toInt()
                 }
-                // Volume/ringer/notification controls are not consistently pill-shaped on
-                // HyperOS: portrait volume panels are vertical, and some quick-setting labels
-                // are outside the camera bounds. Detect these text-bearing system UI windows
-                // independently, but never scan application windows for these phrases.
-                val hasRingerOrNoticeSignal = allowIslandDetection && ringerUiWords.any(searchableLabel::contains)
-                val plausibleSystemControl = width <= (screenWidth * 0.98f).toInt() &&
-                    height <= (resources.displayMetrics.heightPixels * 0.92f).toInt()
-                if (hasRingerOrNoticeSignal && plausibleSystemControl) {
-                    result.ringerUiVisible = true
-                }
-
                 val idHint = islandIds.any(resourceId::contains)
                 val labelHint = activityWords.any(visibleLabel::contains)
                 val isRingerLabel = ringerUiWords.any(searchableLabel::contains)
+                // A ringtone/notification event only counts when it is shown in the camera/HyperIsland
+                // region, not when the full Notification Shade, volume panel, or Settings is open.
+                val nearCameraPopup = if (sideCutout && cutout != null) {
+                    val nearPhysicalSide = bounds.left <= (118 * density).toInt() ||
+                        bounds.right >= screenWidth - (118 * density).toInt()
+                    nearPhysicalSide && abs(bounds.centerX() - centerX) <= centerTolerance &&
+                        abs(bounds.centerY() - centerY) <= (168 * density).toInt()
+                } else {
+                    bounds.top >= 0 && bounds.top <= maxTop + (40 * density).toInt() &&
+                        abs(bounds.centerX() - centerX) <= centerTolerance &&
+                        width < (screenWidth * 0.82f).toInt()
+                }
+                if (allowIslandDetection && isRingerLabel && nearCameraPopup &&
+                    width >= (18 * density).toInt() && height >= (8 * density).toInt()) {
+                    result.ringerUiVisible = true
+                    // Also treat the short ringer popup as a native island so the normal
+                    // system-island suppression policy can hide DigitalLiquid for the same interval.
+                    result.hyperIslandVisible = true
+                }
+
                 val longVisibleLabel = !isRingerLabel && visibleLabel.isNotBlank() &&
                     width >= (132 * density).toInt() && height >= (22 * density).toInt()
                 if (allowIslandDetection && atCameraPosition && pillShape &&
