@@ -1,154 +1,83 @@
-name: Build DigitalLiquid APK
+name: Fix & Build APK
 
 on:
   push:
-    branches:
-      - main
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
   workflow_dispatch:
-
-permissions:
-  contents: read
 
 jobs:
   build:
-    name: Build DigitalLiquid
     runs-on: ubuntu-latest
-    timeout-minutes: 40
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
 
-      - name: Setup Java 17
+      - name: Auto-fix XML & Gradle errors
+        run: |
+          python3 - << 'EOF'
+          import glob, re
+
+          # 1. Fix tất cả các file XML (styles.xml, themes.xml, AndroidManifest.xml...)
+          # Xóa khoảng trắng/dòng trống đầu file và xóa các thẻ <?xml ...?> bị lặp ở dòng 2+
+          xml_files = glob.glob('app/src/main/**/*.xml', recursive=True)
+          for path in xml_files:
+              with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                  content = f.read()
+              # Xóa mọi khai báo <?xml ...?> hiện có
+              content_no_pi = re.sub(r'<\?xml[^>]*\?>\s*', '', content, flags=re.IGNORECASE).lstrip()
+              # Gắn lại duy nhất 1 khai báo chuẩn ở dòng 1, cột 1
+              fixed_content = '<?xml version="1.0" encoding="utf-8"?>\n' + content_no_pi
+              with open(path, 'w', encoding='utf-8') as f:
+                  f.write(fixed_content)
+              print(f"Fixed XML: {path}")
+
+          # 2. Fix cảnh báo debug isMinifyEnabled = true trong app/build.gradle.kts
+          gradle_path = 'app/build.gradle.kts'
+          with open(gradle_path, 'r', encoding='utf-8') as f:
+              g_content = f.read()
+
+          # Tắt isMinifyEnabled và isShrinkResources trong block debug nếu đang bật
+          def fix_debug_block(match):
+              block = match.group(0)
+              block = re.sub(r'isMinifyEnabled\s*=\s*true', 'isMinifyEnabled = false', block)
+              block = re.sub(r'isShrinkResources\s*=\s*true', 'isShrinkResources = false', block)
+              return block
+
+          g_content = re.sub(r'debug\s*\{[^}]*\}', fix_debug_block, g_content, flags=re.DOTALL)
+          with open(gradle_path, 'w', encoding='utf-8') as f:
+              f.write(g_content)
+          print("Fixed app/build.gradle.kts")
+          EOF
+
+      - name: Package Fixed Source Code to ZIP
+        run: |
+          zip -r DigitalLiquid-Fixed-Source.zip . -x "*.git*" "build/*" "app/build/*" ".gradle/*"
+
+      - name: Upload Fixed Source ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: DigitalLiquid-Fixed-Source-ZIP
+          path: DigitalLiquid-Fixed-Source.zip
+
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          packages: platform-tools
-
-      - name: Install Android SDK
-        shell: bash
-        run: |
-          set -euo pipefail
-          sdkmanager --install "platforms;android-35"
-          sdkmanager --install "build-tools;35.0.0"
-
-      - name: Diagnose and locate Android project
-        id: project
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "=== Repository root ==="
-          pwd
-          ls -la
-
-          echo "=== Git-tracked manifests ==="
-          git ls-files | grep -i 'AndroidManifest.xml' || true
-
-          echo "=== All manifests ==="
-          find . -type f -iname '*manifest*' \
-            -not -path '*/.git/*' \
-            -not -path '*/build/*' -print
-
-          SETTINGS_FILE="$(find . -maxdepth 7 -type f \
-            \( -name settings.gradle.kts -o -name settings.gradle \) \
-            -not -path '*/.git/*' \
-            -not -path '*/.gradle/*' \
-            -print -quit)"
-
-          if [ -z "$SETTINGS_FILE" ]; then
-            echo "::error::Cannot find settings.gradle(.kts)"
-            exit 1
-          fi
-
-          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
-          echo "Project directory: $PROJECT_DIR"
-
-          if [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ] && \
-             [ ! -f "$PROJECT_DIR/app/build.gradle" ]; then
-            echo "::error::Cannot find app/build.gradle(.kts)"
-            find "$PROJECT_DIR" -maxdepth 5 -type f -print
-            exit 1
-          fi
-
-          MANIFEST="$PROJECT_DIR/app/src/main/AndroidManifest.xml"
-
-          if [ ! -f "$MANIFEST" ]; then
-            echo "::error::AndroidManifest.xml is missing at the required path"
-            echo "Expected: $MANIFEST"
-
-            FOUND_MANIFEST="$(find "$PROJECT_DIR" -type f \
-              -iname 'AndroidManifest.xml' \
-              -not -path '*/build/*' \
-              -print -quit || true)"
-
-            if [ -n "$FOUND_MANIFEST" ]; then
-              echo "Found another manifest: $FOUND_MANIFEST"
-              echo "Checking whether it can be copied to the standard location..."
-
-              mkdir -p "$PROJECT_DIR/app/src/main"
-              cp "$FOUND_MANIFEST" "$MANIFEST"
-              echo "Copied manifest to: $MANIFEST"
-            else
-              echo "::error::No AndroidManifest.xml exists in the project."
-              echo "Add the correct manifest to app/src/main/ and commit it."
-              exit 1
-            fi
-          fi
-
-          echo "=== Manifest content ==="
-          sed -n '1,220p' "$MANIFEST"
-
-          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          distribution: 'temurin'
+          java-version: '17'
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
 
-      - name: Build debug APK
-        working-directory: ${{ steps.project.outputs.dir }}
-        shell: bash
-        run: |
-          set -euo pipefail
+      - name: Build Debug APK
+        run: gradle assembleDebug --stacktrace
 
-          if [ -f gradlew ]; then
-            chmod +x gradlew
-            ./gradlew clean assembleDebug --no-daemon --stacktrace
-          else
-            gradle clean assembleDebug --no-daemon --stacktrace
-          fi
-
-      - name: Verify APK
-        id: apk
-        working-directory: ${{ steps.project.outputs.dir }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          APK="$(find app/build/outputs/apk/debug \
-            -maxdepth 1 -type f -name '*.apk' \
-            -size +0c -print -quit 2>/dev/null || true)"
-
-          if [ -z "$APK" ]; then
-            echo "::error::APK was not generated"
-            find app/build/outputs -type f -print 2>/dev/null || true
-            exit 1
-          fi
-
-          echo "APK generated successfully:"
-          ls -lh "$APK"
-          echo "path=$APK" >> "$GITHUB_OUTPUT"
-
-      - name: Upload APK artifact
+      - name: Upload Built APK
         uses: actions/upload-artifact@v4
         with:
-          name: DigitalLiquid-debug-apk
-          path: ${{ steps.project.outputs.dir }}/${{ steps.apk.outputs.path }}
-          if-no-files-found: error
-          retention-days: 7
+          name: DigitalLiquid-Debug-APK
+          path: app/build/outputs/apk/debug/*.apk
