@@ -27,7 +27,7 @@ class DigitalLiquidAssistantCommandReceiver : BroadcastReceiver() {
     private fun startShowRequest(appContext: Context) {
         // HyperOS can publish the selected component before onReady has completed. Keep this
         // receiver alive briefly, and only call it a success after the session confirms onShow.
-        val result = goAsync()
+        val result: BroadcastReceiver.PendingResult? = goAsync()
         val handler = Handler(Looper.getMainLooper())
         val requestId = UUID.randomUUID().toString()
         val request = PendingShow(appContext, result, handler)
@@ -71,32 +71,12 @@ class DigitalLiquidAssistantCommandReceiver : BroadcastReceiver() {
 
     private class PendingShow(
         val context: Context,
-        val result: BroadcastReceiver.PendingResult,
+        val result: BroadcastReceiver.PendingResult?,
         val handler: Handler,
         val createdAt: Long = SystemClock.uptimeMillis()
     ) {
         var readyRunnable: Runnable? = null
         var timeoutRunnable: Runnable? = null
-    }
-
-    private fun completeShown(requestId: String?) {
-        if (requestId.isNullOrBlank()) return
-        val request = pendingShows.remove(requestId) ?: return
-        request.readyRunnable?.let { request.handler.removeCallbacks(it) }
-        request.timeoutRunnable?.let { request.handler.removeCallbacks(it) }
-        Log.i(TAG, "VoiceInteractionSession confirmed visible via onShow")
-        runCatching { request.result.finish() }
-    }
-
-    private fun completeFallback(requestId: String) {
-        val request = pendingShows.remove(requestId) ?: return
-        request.readyRunnable?.let { request.handler.removeCallbacks(it) }
-        request.timeoutRunnable?.let { request.handler.removeCallbacks(it) }
-        try {
-            DigitalLiquidAssistantLauncher.openFallback(request.context)
-        } finally {
-            runCatching { request.result.finish() }
-        }
     }
 
     companion object {
@@ -109,17 +89,36 @@ class DigitalLiquidAssistantCommandReceiver : BroadcastReceiver() {
         private const val TAG = "DigitalLiquidSiri"
         private val pendingShows = ConcurrentHashMap<String, PendingShow>()
 
+        private fun completeShown(requestId: String?) {
+            if (requestId.isNullOrBlank()) return
+            val request = pendingShows.remove(requestId) ?: return
+            request.readyRunnable?.let { request.handler.removeCallbacks(it) }
+            request.timeoutRunnable?.let { request.handler.removeCallbacks(it) }
+            Log.i(TAG, "VoiceInteractionSession confirmed visible via onShow")
+            runCatching { request.result?.finish() }
+        }
+
+        private fun completeFallback(requestId: String) {
+            val request = pendingShows.remove(requestId) ?: return
+            request.readyRunnable?.let { request.handler.removeCallbacks(it) }
+            request.timeoutRunnable?.let { request.handler.removeCallbacks(it) }
+            try {
+                DigitalLiquidAssistantLauncher.openFallback(request.context)
+            } finally {
+                runCatching { request.result?.finish() }
+            }
+        }
+
         /** Used by the API 34+ framework failure callback to avoid leaving a request hanging. */
         internal fun failPendingSession(requestId: String?): Boolean {
             // The framework callback documents a session ID but ROMs may omit our custom extra.
             // In that case resolve the newest app-originated show request to avoid a second fallback.
-            val resolvedId = if (!requestId.isNullOrBlank()) requestId else {
-                pendingShows.entries.maxByOrNull { it.value.createdAt }?.key
-            } ?: return false
-            val receiver = DigitalLiquidAssistantCommandReceiver()
-            val existed = pendingShows.containsKey(resolvedId)
-            if (existed) receiver.completeFallback(resolvedId)
-            return existed
+            val resolvedId: String = (if (!requestId.isNullOrBlank()) requestId
+                else pendingShows.entries.maxByOrNull { it.value.createdAt }?.key)
+                ?: return false
+            if (!pendingShows.containsKey(resolvedId)) return false
+            completeFallback(resolvedId)
+            return true
         }
     }
 }
