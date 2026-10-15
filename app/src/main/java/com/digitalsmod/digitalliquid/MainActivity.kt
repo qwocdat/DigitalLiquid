@@ -21,15 +21,17 @@ import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.Window
 import android.widget.Button
+import android.widget.EditText
+import android.widget.ArrayAdapter
+import android.widget.AdapterView
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ImageView
 import android.widget.ScrollView
-import android.widget.SeekBar
 import android.widget.Spinner
-import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
+import kotlin.random.Random
 
 class MainActivity : Activity() {
     companion object { private const val REQUEST_PANEL_BACKGROUND = 2409 }
@@ -49,6 +51,11 @@ class MainActivity : Activity() {
     private lateinit var shell: LinearLayout
     private lateinit var scroll: ScrollView
     private lateinit var pageContent: LinearLayout
+    private var titleLabel: TextView? = null
+    private var subtitleLabel: TextView? = null
+    private var bottomNavView: View? = null
+    private var lastScrollY = 0
+    private val assistantHistory = mutableListOf<Pair<String, String>>()
 
     private val prefs by lazy { AppPrefs.get(this) }
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
@@ -236,8 +243,15 @@ class MainActivity : Activity() {
     }
 
     private fun applySystemBars() {
-        window.statusBarColor = Color.rgb(10, 11, 16)
-        window.navigationBarColor = Color.rgb(10, 11, 16)
+        val lightMode = prefs.getBoolean(AppPrefs.LIGHT_MODE, false)
+        window.statusBarColor = if (lightMode) 0xFFF4F6FB.toInt() else Color.rgb(10, 11, 16)
+        window.navigationBarColor = if (lightMode) 0xFFF4F6FB.toInt() else Color.rgb(10, 11, 16)
+        val lightFlags = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+        window.decorView.systemUiVisibility = if (lightMode) {
+            window.decorView.systemUiVisibility or lightFlags
+        } else {
+            window.decorView.systemUiVisibility and lightFlags.inv()
+        }
         if (Build.VERSION.SDK_INT >= 30) window.setDecorFitsSystemWindows(false)
         if (Build.VERSION.SDK_INT >= 29) {
             window.isNavigationBarContrastEnforced = false
@@ -298,6 +312,8 @@ class MainActivity : Activity() {
         }, LinearLayout.LayoutParams(-1, dp(54)))
         root.addView(column, FrameLayout.LayoutParams(-1, -1))
         setContentView(root)
+        applyPaletteToTree(root)
+        applySystemBars()
         installRootInsets(root, 0, 0, 0, 0)
         column.alpha = 0f
         column.translationY = dp(8).toFloat()
@@ -376,49 +392,59 @@ class MainActivity : Activity() {
         when (tab) {
             0 -> buildOverview(pageContent)
             1 -> buildAppearance(pageContent)
-            2 -> buildFeatures(pageContent)
+            2 -> buildAssistant(pageContent)
+            3 -> buildFeatures(pageContent)
             else -> buildSettings(pageContent)
         }
-        shell.addView(buildBottomNav(), marginTop(4))
+        bottomNavView = buildBottomNav()
+        shell.addView(bottomNavView, marginTop(4))
+        lastScrollY = 0
+        scroll.setOnScrollChangeListener { _, _, y, _, oldY ->
+            val collapsed = y > dp(28)
+            titleLabel?.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, if (collapsed) 17f else 27f)
+            if (collapsed) {
+                subtitleLabel?.animate()?.alpha(0f)?.setDuration(120L)?.withEndAction {
+                    subtitleLabel?.visibility = View.GONE
+                }?.start()
+            } else {
+                subtitleLabel?.visibility = View.VISIBLE
+                subtitleLabel?.animate()?.alpha(1f)?.setDuration(180L)?.start()
+            }
+            val nav = bottomNavView
+            if (y > oldY && y > dp(48)) {
+                nav?.animate()?.translationY(dp(90).toFloat())?.alpha(0f)?.setDuration(170L)?.start()
+            } else if (y < oldY || y <= dp(24)) {
+                nav?.visibility = View.VISIBLE
+                nav?.animate()?.translationY(0f)?.alpha(1f)?.setDuration(220L)?.start()
+            }
+            lastScrollY = y
+        }
         shell.alpha = 0f
         shell.translationY = dp(7).toFloat()
         setContentView(shell)
+        applyPaletteToTree(shell)
+        applySystemBars()
         installRootInsets(shell, dp(18), dp(18), dp(18), dp(8))
         shell.animate().alpha(1f).translationY(0f).setDuration(240L).start()
     }
 
     private fun buildTopBar(): View {
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        val badge = ImageView(this).apply {
-            setImageResource(R.drawable.digitalliquid_brand)
-            scaleType = ImageView.ScaleType.CENTER_CROP
-            contentDescription = "DigitalLiquid"
+        val subtitle = when (tab) {
+            0 -> "ĐẢO NỔI"
+            1 -> "GIAO DIỆN"
+            2 -> "TRỢ LÝ AI"
+            3 -> "TÍNH NĂNG"
+            else -> "CÀI ĐẶT"
         }
-        row.addView(badge, LinearLayout.LayoutParams(dp(44), dp(44)))
-        val labels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(11), 0, 0, 0) }
-        labels.addView(TextView(this).apply {
-            text = "DigitalLiquid"
-            textSize = 19f
-            typeface = Typeface.create("sans-serif", Typeface.BOLD)
-            setTextColor(Color.WHITE)
-        })
-        labels.addView(TextView(this).apply {
-            text = when (tab) { 0 -> "ĐẢO NỔI"; 1 -> "GIAO DIỆN"; 2 -> "TÍNH NĂNG"; else -> "CÀI ĐẶT" }
-            textSize = 9f
-            letterSpacing = 0.12f
-            setTextColor(0xFF9699AA.toInt())
-        }, marginTop(3))
-        row.addView(labels, LinearLayout.LayoutParams(0, -2, 1f))
-        val state = TextView(this).apply {
-            text = if (prefs.getBoolean(AppPrefs.SERVICE_ENABLED, false)) "ĐANG BẬT" else "ĐANG TẮT"
-            textSize = 10f
-            letterSpacing = 0.04f
-            setTextColor(if (prefs.getBoolean(AppPrefs.SERVICE_ENABLED, false)) 0xFF8EF2BE.toInt() else 0xFFB9BCCD.toInt())
-            setPadding(dp(10), dp(7), dp(10), dp(7))
-            background = rounded(0x1FFFFFFF, 30)
+        return GlassNavBar(
+            this,
+            "DigitalLiquid",
+            subtitle,
+            prefs.getBoolean(AppPrefs.SERVICE_ENABLED, false)
+        ).also { bar ->
+            titleLabel = bar.titleView
+            subtitleLabel = bar.subtitleView
         }
-        row.addView(state)
-        return row
     }
 
     private fun buildOverview(target: LinearLayout) {
@@ -626,6 +652,18 @@ class MainActivity : Activity() {
             setTextColor(Color.WHITE)
         }, marginTop(4))
         target.addView(bodyText("Bề mặt khi rảnh giữ màu đen đặc, không viền quang học và không làm mờ ứng dụng phía sau."), marginTop(7))
+        target.addView(sectionTitle("Chế độ giao diện"), marginTop(18))
+        target.addView(card().apply {
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            addView(segmentedOptions(
+                listOf("Tối" to "dark", "Sáng" to "light"),
+                if (prefs.getBoolean(AppPrefs.LIGHT_MODE, false)) "light" else "dark"
+            ) { selected ->
+                prefs.edit().putBoolean(AppPrefs.LIGHT_MODE, selected == "light").apply()
+                applySystemBars()
+                renderMain()
+            })
+        }, marginTop(8))
         val previewCard = card().apply { setPadding(dp(14), dp(16), dp(14), dp(16)) }
         previewCard.addView(buildGlassPreview(), LinearLayout.LayoutParams(-1, dp(64)))
         previewCard.addView(TextView(this).apply {
@@ -692,6 +730,166 @@ class MainActivity : Activity() {
         target.addView(infoCard("Nền bảng tùy chỉnh", "Chọn ảnh hoặc video tại mục Vị trí & Chuyển động trong ứng dụng. Khi mở bảng, nội dung đã chọn chiếm toàn bộ bề mặt, không bị chữ hoặc nút che. Video lặp không tiếng."), marginTop(14))
     }
 
+    private fun buildAssistant(target: LinearLayout) {
+        addEyebrow(target, "OPENROUTER · TRỢ LÝ RIÊNG")
+        target.addView(TextView(this).apply {
+            text = "Hỏi DigitalLiquid"
+            textSize = 30f
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
+            setTextColor(Color.WHITE)
+        }, marginTop(4))
+        target.addView(bodyText("Chọn model, hỏi bằng văn bản và nhận câu trả lời trong giao diện kính lỏng. Khóa OpenRouter được giữ ở proxy máy chủ, không lưu trong APK."), marginTop(7))
+
+        val config = card().apply { setPadding(dp(15), dp(15), dp(15), dp(15)) }
+        config.addView(sectionTitle("Model mặc định"))
+        val currentModel = AiModels.selectedId(this)
+        val modelLabels = AiModels.all.map { it.label }.toMutableList()
+        val customModelIndex = if (AiModels.all.none { it.id == currentModel }) {
+            modelLabels.add("Tùy chỉnh · $currentModel")
+            modelLabels.lastIndex
+        } else -1
+        val spinner = Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_item, modelLabels).also {
+                it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+            }
+            setSelection(AiModels.all.indexOfFirst { it.id == currentModel }.let { if (it >= 0) it else customModelIndex }, false)
+            setBackground(rounded(0xFF1A1C27.toInt(), 14))
+            setPadding(dp(10), dp(6), dp(10), dp(6))
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    // A custom model is preserved until the user chooses a built-in model.
+                    AiModels.all.getOrNull(position)?.let { prefs.edit().putString(AppPrefs.AI_MODEL, it.id).apply() }
+                }
+            }
+        }
+        config.addView(spinner, marginTop(8))
+        config.addView(textButton("Nhập model ID tùy chỉnh", false) { editAiModel() }, marginTop(8))
+        config.addView(textButton("Cấu hình endpoint máy chủ", false) { editAiEndpoint() }, marginTop(8))
+        val endpointText = prefs.getString(AppPrefs.AI_ENDPOINT, "").orEmpty().ifBlank { "Chưa cấu hình máy chủ HTTPS" }
+        config.addView(bodyText(endpointText), marginTop(8))
+        target.addView(config, marginTop(14))
+
+        val chatCard = card().apply { setPadding(dp(15), dp(15), dp(15), dp(15)) }
+        chatCard.addView(sectionTitle("Cuộc trò chuyện"))
+        val response = TextView(this).apply {
+            text = if (assistantHistory.isEmpty()) "DigitalLiquid sẵn sàng. Hãy nhập câu hỏi bên dưới." else assistantHistory.takeLast(6).joinToString("\n\n") { (role, text) -> (if (role == "user") "Bạn" else "DigitalLiquid AI") + ":\n" + text }
+            textSize = 13f
+            setTextColor(0xFFE5E6F0.toInt())
+            setLineSpacing(dp(3).toFloat(), 1.08f)
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            background = rounded(0xA5181A25.toInt(), 16)
+            minHeight = dp(130)
+            gravity = Gravity.TOP or Gravity.START
+        }
+        chatCard.addView(response, marginTop(10))
+        val prompt = EditText(this).apply {
+            hint = "Viết câu hỏi của bạn…"
+            setHintTextColor(0xFF777B8A.toInt())
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            minLines = 2
+            maxLines = 5
+            gravity = Gravity.TOP or Gravity.START
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            background = rounded(0xFF151722.toInt(), 16)
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+        }
+        chatCard.addView(prompt, marginTop(10))
+        val send = textButton("Gửi câu hỏi", true) {
+            val text = prompt.text?.toString()?.trim().orEmpty()
+            if (text.isBlank()) {
+                Toast.makeText(this, "Hãy nhập câu hỏi trước.", Toast.LENGTH_SHORT).show()
+            } else {
+                assistantHistory.add("user" to text)
+                response.text = "Đang kết nối OpenRouter…"
+                prompt.isEnabled = false
+                val model = AiModels.selectedId(this)
+                OpenRouterClient.chatMessages(this, model, assistantHistory.toList()) { answer, error ->
+                    prompt.isEnabled = true
+                    if (answer != null) {
+                        assistantHistory.add("assistant" to answer)
+                        response.text = assistantHistory.takeLast(8).joinToString("\n\n") { (role, message) -> (if (role == "user") "Bạn" else "DigitalLiquid AI") + ":\n" + message }
+                        prompt.setText("")
+                    } else {
+                        // Keep the user's prompt so it can be retried once the endpoint is configured.
+                        response.text = (assistantHistory.takeLast(4).joinToString("\n\n") { (role, message) -> (if (role == "user") "Bạn" else "DigitalLiquid AI") + ":\n" + message } + "\n\nLỗi: " + (error ?: "Không rõ lỗi"))
+                    }
+                }
+            }
+        }
+        chatCard.addView(send, marginTop(10))
+        chatCard.addView(textButton("Xóa lịch sử trò chuyện", false) {
+            assistantHistory.clear()
+            response.text = "Đã xóa lịch sử. Hãy đặt câu hỏi mới."
+            prompt.setText("")
+        }, marginTop(7))
+        target.addView(chatCard, marginTop(14))
+        target.addView(infoCard("Cấu hình proxy", "Triển khai thư mục openrouter-worker lên Cloudflare Workers, thêm secret OPENROUTER_API_KEY phía máy chủ, rồi nhập URL Worker tại đây. Đừng dùng lại khóa đã dán trong cuộc trò chuyện; hãy thu hồi khóa đó và tạo khóa mới."), marginTop(14))
+    }
+
+    private fun editAiEndpoint() {
+        val input = EditText(this).apply {
+            hint = "https://ten-worker.workers.dev"
+            setText(prefs.getString(AppPrefs.AI_ENDPOINT, "").orEmpty())
+            setTextColor(Color.WHITE)
+            setHintTextColor(0xFF777B8A.toInt())
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            background = rounded(0xFF181A24.toInt(), 14)
+        }
+        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(4), dp(20), 0); addView(input) }
+        AlertDialog.Builder(this).setTitle("Máy chủ AI proxy")
+            .setMessage("Nhập URL HTTPS Cloudflare Worker. Không nhập OpenRouter API key vào ứng dụng.")
+            .setView(container)
+            .setNegativeButton("Hủy", null)
+            .setNeutralButton("Xóa", null)
+            .setPositiveButton("Lưu", null)
+            .create().also { dialog ->
+                dialog.setOnShowListener {
+                    dialog.getButton(AlertDialog.BUTTON_NEUTRAL)?.setOnClickListener {
+                        prefs.edit().remove(AppPrefs.AI_ENDPOINT).apply()
+                        dialog.dismiss()
+                        renderMain()
+                    }
+                    dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.setOnClickListener {
+                        val value = input.text?.toString()?.trim().orEmpty().trimEnd('/')
+                        if (value.isNotBlank() && !value.startsWith("https://", true)) {
+                            input.error = "Endpoint phải bắt đầu bằng https://"
+                            return@setOnClickListener
+                        }
+                        prefs.edit().putString(AppPrefs.AI_ENDPOINT, value).apply()
+                        dialog.dismiss()
+                        renderMain()
+                    }
+                }
+                dialog.show()
+            }
+    }
+
+    private fun editAiModel() {
+        val input = EditText(this).apply {
+            hint = "provider/model-id"
+            setText(AiModels.selectedId(this@MainActivity))
+            setTextColor(Color.WHITE)
+            setHintTextColor(0xFF777B8A.toInt())
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            background = rounded(0xFF181A24.toInt(), 14)
+        }
+        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(4), dp(20), 0); addView(input) }
+        AlertDialog.Builder(this).setTitle("Model ID tùy chỉnh")
+            .setMessage("Model phải được cho phép trong OPENROUTER_ALLOWED_MODELS ở Worker.")
+            .setView(container)
+            .setNegativeButton("Hủy", null)
+            .setPositiveButton("Lưu") { _, _ ->
+                val value = input.text?.toString()?.trim().orEmpty()
+                if (value.isNotBlank() && value.contains('/')) {
+                    prefs.edit().putString(AppPrefs.AI_MODEL, value).apply()
+                }
+                renderMain()
+            }.show()
+    }
+
     private fun buildSettings(target: LinearLayout) {
         addEyebrow(target, "QUYỀN & RIÊNG TƯ")
         target.addView(TextView(this).apply {
@@ -707,24 +905,36 @@ class MainActivity : Activity() {
         target.addView(settingAction("Notification Access", if (hasNotificationAccess()) "Đã cấp quyền" else "Chưa cấp quyền", "Đọc trạng thái thông báo đang hoạt động để phát hiện quay màn hình, nhạc và đồng hồ") {
             startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
         }, marginTop(10))
+        val microphoneGranted = Build.VERSION.SDK_INT < 23 || checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        target.addView(settingAction("Microphone / nhận dạng giọng nói", if (microphoneGranted) "Đã cấp quyền" else "Chưa cấp quyền", "Cho phép dùng nút Nói trong giao diện Siri. Giọng nói chỉ được chuyển thành văn bản trên thiết bị thông qua dịch vụ nhận dạng Android.") {
+            if (Build.VERSION.SDK_INT >= 23 && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 8110)
+            } else {
+                try { startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))) } catch (_: Exception) { }
+            }
+        }, marginTop(10))
         target.addView(settingAction("Theo dõi HyperIsland", if (hasHyperIslandAccessibility()) "Đã bật" else "Chưa bật", "Cho phép nhận diện HyperIsland và dùng lớp phủ Trợ năng đáng tin cậy để chạm được ở vùng thanh trạng thái. Nhận diện phụ thuộc phiên bản HyperOS.") {
             openAccessibilitySettings()
         }, marginTop(10))
         target.addView(settingAction("Không hạn chế pin", batteryOptimizationSummary(), "Giảm khả năng hệ thống dừng overlay nền") { requestBatteryExemption() }, marginTop(10))
 
-        val reduceMotion = Switch(this).apply {
-            text = "Giảm chuyển động"
-            textSize = 14f
-            setTextColor(Color.WHITE)
+        val reduceMotion = IOSSwitch(this).apply {
             isChecked = prefs.getBoolean(AppPrefs.REDUCE_MOTION, false)
-            buttonTintList = android.content.res.ColorStateList.valueOf(0xFFB9AEFF.toInt())
             setOnCheckedChangeListener { _, checked ->
                 prefs.edit().putBoolean(AppPrefs.REDUCE_MOTION, checked).apply()
                 applyConfig()
             }
         }
         target.addView(card().apply {
-            addView(reduceMotion)
+            val row = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            row.addView(TextView(this@MainActivity).apply {
+                text = "Giảm chuyển động"
+                textSize = 14f
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                setTextColor(Color.WHITE)
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            row.addView(reduceMotion, LinearLayout.LayoutParams(dp(51), dp(31)))
+            addView(row)
             addView(bodyText("Tắt chuyển động rung lắc và co giãn. Viên thuốc vẫn hiển thị màu đen."), marginTop(5))
         }.apply { setPadding(dp(15), dp(14), dp(15), dp(14)) }, marginTop(10))
 
@@ -738,11 +948,29 @@ class MainActivity : Activity() {
         target.addView(toggleCard("Motion blur", "Bật/tắt vệt mờ theo hướng chuyển động của viên thuốc.", AppPrefs.MOTION_BLUR), marginTop(8))
         target.addView(toggleCard("Nhãn Recording khi mở rộng", "Khi đang quay màn hình, giữ viên thuốc để xem nhãn Recording và bộ đếm thời gian. Điều khiển dừng vẫn do trình quay màn hình của hệ thống quản lý.", AppPrefs.RECORDING_STOP_CONTROL), marginTop(8))
 
-        val autoStartSwitch = Switch(this).apply {
-            text = "Tự khởi chạy sau khi bật máy"
-            textSize = 14f
-            setTextColor(Color.WHITE)
-            buttonTintList = android.content.res.ColorStateList.valueOf(0xFFB7ACFF.toInt())
+        target.addView(sectionTitle("Ẩn / hiện thông minh"), marginTop(20))
+        target.addView(toggleCard("Tự ẩn khi HyperIsland của hệ thống hiện", "Ẩn viên thuốc của DigitalLiquid khi phát hiện hoạt động hệ thống ở đúng vùng camera, rồi hiện lại khi hoạt động biến mất.", AppPrefs.AUTO_HIDE_SYSTEM_ISLAND), marginTop(8))
+        target.addView(toggleCard("Tự ẩn khi đang phát nhạc", "Theo dõi trạng thái MediaController và hiện lại khi nhạc dừng hoặc tạm dừng.", AppPrefs.HIDE_WHEN_MEDIA_PLAYING), marginTop(8))
+        target.addView(toggleCard("Tự ẩn khi hoạt động hệ thống khác xuất hiện", "Áp dụng cho hẹn giờ, cuộc gọi và các hoạt động nền được NotificationListener nhận diện.", AppPrefs.HIDE_WHEN_NATIVE_ACTIVITY), marginTop(8))
+        target.addView(toggleCard("Tự ẩn khi bật/tắt chuông hoặc chế độ im lặng", "Tạm ẩn khi Trợ năng phát hiện giao diện âm lượng, rung, im lặng hoặc Không làm phiền ở vùng camera.", AppPrefs.HIDE_WHEN_RINGER_UI), marginTop(8))
+        target.addView(toggleCard("Nhấn đúp viên thuốc để mở trợ lý AI", "Gọi ACTION_ASSIST của Android khi nhấn nhanh hai lần. DigitalLiquid phải được chọn làm trợ lý mặc định.", AppPrefs.DOUBLE_TAP_ASSISTANT), marginTop(8))
+        target.addView(toggleCard("Nhấn từ 6 lần để chuyển ứng dụng", "Lần thứ 6 mở ứng dụng dùng gần đây nhất; những lần tiếp theo mở ứng dụng ngẫu nhiên. Cần bật quyền Truy cập mức sử dụng ứng dụng.", AppPrefs.ISLAND_APP_SWITCH_GESTURE), marginTop(8))
+        target.addView(toggleCard("Thông báo Liquid Glass trong ứng dụng", "Hiển thị thông báo quản trị dưới dạng thẻ tùy chỉnh nổi khi lớp phủ được kết nối; nếu không thể hiện, dùng thông báo hệ thống làm dự phòng.", AppPrefs.CUSTOM_APP_NOTICES), marginTop(8))
+        target.addView(toggleCard("Tương tác Live Preview", "Cho phép thử chạm, nhấn đúp, nhấn giữ và cử chỉ nhiều lần ngay trong bản xem trước.", AppPrefs.LIVE_PREVIEW_INTERACTIVE), marginTop(8))
+        target.addView(settingAction("Truy cập mức sử dụng ứng dụng", if (RecentAppSwitcher.hasUsageAccess(this)) "Đã cấp quyền" else "Chưa cấp quyền", "Cho phép sắp xếp ứng dụng theo lần dùng gần nhất và chuyển ứng dụng. Quyền này do Android quản lý.") {
+            try { startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) } catch (_: Exception) { startActivity(Intent(Settings.ACTION_SETTINGS)) }
+        }, marginTop(8))
+
+        target.addView(sectionTitle("Trợ lý AI / OpenRouter"), marginTop(20))
+        target.addView(settingAction("Máy chủ AI proxy", if (prefs.getString(AppPrefs.AI_ENDPOINT, "").orEmpty().isBlank()) "Chưa cấu hình" else "Đã lưu endpoint HTTPS", "Nhập URL Cloudflare Worker của bạn. API key được giữ ở máy chủ, không nằm trong APK.") {
+            editAiEndpoint()
+        }, marginTop(8))
+        target.addView(settingAction("Model AI mặc định", AiModels.labelFor(AiModels.selectedId(this)), "Mở tab Trợ lý AI để chọn model hoặc đặt model tùy chỉnh.") {
+            tab = 2
+            renderMain()
+        }, marginTop(8))
+
+        val autoStartSwitch = IOSSwitch(this).apply {
             isChecked = prefs.getBoolean(AppPrefs.AUTO_START, false)
             setOnCheckedChangeListener { _, checked ->
                 if (checked) {
@@ -760,7 +988,15 @@ class MainActivity : Activity() {
             }
         }
         target.addView(card().apply {
-            addView(autoStartSwitch)
+            val row = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            row.addView(TextView(this@MainActivity).apply {
+                text = "Tự khởi chạy sau khi bật máy"
+                textSize = 14f
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                setTextColor(Color.WHITE)
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            row.addView(autoStartSwitch, LinearLayout.LayoutParams(dp(51), dp(31)))
+            addView(row)
             addView(bodyText("Chỉ khôi phục khi bạn đã bật đảo nổi, lưu key và máy chủ xác thực key vẫn còn hiệu lực. HyperOS có thể áp dụng thêm quyền Tự khởi động."), marginTop(6))
         }.apply { setPadding(dp(15), dp(14), dp(14), dp(14)) }, marginTop(18))
 
@@ -785,21 +1021,129 @@ class MainActivity : Activity() {
                     renderMain()
                 }.show()
         }, marginTop(10))
-        target.addView(infoCard("DigitalLiquid", "Được thiết kế cho Android, không cần tài khoản. Bạn có thể tắt quyền hoặc dừng viên thuốc bất cứ lúc nào."), marginTop(20))
+        target.addView(infoCard("DigitalLiquid", "Không cần tài khoản Firebase. Việc sử dụng vẫn cần key cấp phép DigitalLiquid. Bạn có thể tắt quyền hoặc dừng viên thuốc bất cứ lúc nào."), marginTop(20))
     }
 
     private fun buildGlassPreview(): View {
         val frame = FrameLayout(this).apply {
-            setBackgroundColor(Color.TRANSPARENT)
+            // A white canvas is intentional: it makes the black island silhouette visible.
+            setBackgroundColor(Color.WHITE)
             clipChildren = false
             clipToPadding = false
+            contentDescription = "Bản xem trước tương tác DigitalLiquid"
+        }
+        val pill = FrameLayout(this).apply {
+            background = GradientDrawable().apply {
+                setColor(Color.BLACK)
+                cornerRadius = dp(24).toFloat()
+                setStroke(dp(1), 0x55383A44)
+            }
+            clipToOutline = true
+            tag = "digitalliquid-preview-island"
+            isClickable = true
+            isFocusable = true
         }
         val glass = LiquidGlassView(this).apply {
-            configure(0, "midnight", expandedNow = false)
+            configure(78, "midnight", expandedNow = false)
             setMotionBlur(0f)
         }
-        frame.addView(glass, FrameLayout.LayoutParams(dp(150), dp(38), Gravity.CENTER))
-        frame.layoutParams = LinearLayout.LayoutParams(-1, dp(64))
+        pill.addView(glass, FrameLayout.LayoutParams(-1, -1))
+        val dot = View(this).apply {
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xFFFFD36E.toInt()) }
+            isClickable = false
+        }
+        pill.addView(dot, FrameLayout.LayoutParams(dp(4), dp(4), Gravity.CENTER_VERTICAL or Gravity.RIGHT).apply { rightMargin = dp(20) })
+        val previewLabel = TextView(this).apply {
+            text = "DigitalLiquid"
+            textSize = 12f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            maxLines = 2
+            visibility = View.GONE
+            isClickable = false
+        }
+        pill.addView(previewLabel, FrameLayout.LayoutParams(-1, -1))
+        frame.addView(pill, FrameLayout.LayoutParams(dp(150), dp(38), Gravity.CENTER))
+
+        val previewModes = listOf(
+            "DigitalLiquid  ·  Đang chờ",
+            "♫  Now Playing  ·  00:31",
+            "●  Recording  ·  00:08",
+            "◷  Hẹn giờ  ·  00:12",
+            "✦  DigitalLiquid AI"
+        )
+        var previewMode = 0
+        var previewExpanded = false
+        var previewLastTap = 0L
+        var previewTapCount = 0
+        val previewHandler = Handler(Looper.getMainLooper())
+        var previewLong = false
+        val previewLongPress = Runnable {
+            previewLong = true
+            previewExpanded = !previewExpanded
+            previewMode = (previewMode + 1) % previewModes.size
+            previewLabel.text = previewModes[previewMode]
+            previewLabel.visibility = if (previewExpanded) View.VISIBLE else View.GONE
+            val targetW = if (previewExpanded) dp(276) else dp(150)
+            val targetH = if (previewExpanded) dp(70) else dp(38)
+            pill.animate().scaleX(targetW.toFloat() / dp(150)).scaleY(targetH.toFloat() / dp(38))
+                .setDuration(280L).setInterpolator(android.view.animation.OvershootInterpolator(0.7f)).start()
+            dot.visibility = if (previewExpanded) View.GONE else View.VISIBLE
+            pill.contentDescription = if (previewExpanded) "Bảng xem trước: ${previewModes[previewMode]}" else "Viên thuốc đen DigitalLiquid"
+            pill.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+        }
+        pill.setOnTouchListener { view, event ->
+            if (!prefs.getBoolean(AppPrefs.LIVE_PREVIEW_INTERACTIVE, true)) return@setOnTouchListener false
+            when (event.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    previewLong = false
+                    previewHandler.removeCallbacks(previewLongPress)
+                    previewHandler.postDelayed(previewLongPress, 430L)
+                    view.animate().scaleX(if (previewExpanded) 1.02f else 0.97f).scaleY(0.97f).setDuration(100L).start()
+                    true
+                }
+                android.view.MotionEvent.ACTION_UP -> {
+                    previewHandler.removeCallbacks(previewLongPress)
+                    view.animate().scaleX(if (previewExpanded) 276f / 150f else 1f).scaleY(if (previewExpanded) 70f / 38f else 1f)
+                        .setDuration(240L).setInterpolator(android.view.animation.OvershootInterpolator(0.7f)).start()
+                    if (!previewLong) {
+                        val now = android.os.SystemClock.elapsedRealtime()
+                        previewTapCount = if (now - previewLastTap <= 750L) previewTapCount + 1 else 1
+                        previewLastTap = now
+                        when {
+                            previewTapCount >= 6 && prefs.getBoolean(AppPrefs.ISLAND_APP_SWITCH_GESTURE, false) -> RecentAppSwitcher.switch(this, previewTapCount - 6)
+                            previewTapCount == 2 && prefs.getBoolean(AppPrefs.DOUBLE_TAP_ASSISTANT, false) -> {
+                                view.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
+                                // Route to the real assistant screen, not a decorative fake response.
+                                tab = 2
+                                renderMain()
+                                return@setOnTouchListener true
+                            }
+                            previewExpanded -> {
+                                previewMode = (previewMode + 1) % previewModes.size
+                                previewLabel.text = previewModes[previewMode]
+                                pill.contentDescription = "Bảng xem trước: ${previewModes[previewMode]}"
+                                view.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
+                            }
+                            else -> {
+                                view.animate().rotationBy(if (Random.nextBoolean()) 2.5f else -2.5f).setDuration(90L).withEndAction {
+                                    view.animate().rotation(0f).setDuration(180L).start()
+                                }.start()
+                            }
+                        }
+                    }
+                    true
+                }
+                android.view.MotionEvent.ACTION_CANCEL -> {
+                    previewHandler.removeCallbacks(previewLongPress)
+                    view.animate().scaleX(if (previewExpanded) 276f / 150f else 1f).scaleY(if (previewExpanded) 70f / 38f else 1f).setDuration(180L).start()
+                    true
+                }
+                else -> true
+            }
+        }
+        frame.layoutParams = LinearLayout.LayoutParams(-1, dp(72))
         return frame
     }
 
@@ -842,9 +1186,9 @@ class MainActivity : Activity() {
         })
         texts.addView(bodyText(description), marginTop(5))
         row.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
-        val toggle = Switch(this).apply {
-            isChecked = prefs.getBoolean(key, true)
-            buttonTintList = android.content.res.ColorStateList.valueOf(0xFFB7ACFF.toInt())
+        val toggle = IOSSwitch(this).apply {
+            val defaultEnabled = key !in setOf(AppPrefs.DOUBLE_TAP_ASSISTANT, AppPrefs.ISLAND_APP_SWITCH_GESTURE)
+            isChecked = prefs.getBoolean(key, defaultEnabled)
             setOnCheckedChangeListener { _, checked ->
                 prefs.edit().putBoolean(key, checked).apply()
                 applyConfig()
@@ -880,24 +1224,16 @@ class MainActivity : Activity() {
         line.addView(value, LinearLayout.LayoutParams(dp(72), -2))
         outer.addView(line)
         outer.addView(TextView(this).apply { text = description; textSize = 10f; setTextColor(0xFF8F94A6.toInt()) }, marginTop(4))
-        val seek = SeekBar(this).apply {
-            this.max = maxValue - min
-            this.progress = initial - min
-            progressTintList = android.content.res.ColorStateList.valueOf(0xFFAAA0FF.toInt())
-            thumbTintList = android.content.res.ColorStateList.valueOf(0xFFE9E6FF.toInt())
-            progressBackgroundTintList = android.content.res.ColorStateList.valueOf(0xFF383947.toInt())
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                    val actual = min + progress
-                    value.text = "$actual$suffix"
-                    if (fromUser) {
-                        prefs.edit().putInt(key, actual).apply()
-                        onChange()
-                    }
+        val seek = IOSSlider(this).apply {
+            setRange(min, maxValue)
+            setValue(initial)
+            onValueChanged = { actual, fromUser ->
+                value.text = "$actual$suffix"
+                if (fromUser) {
+                    prefs.edit().putInt(key, actual).apply()
+                    onChange()
                 }
-                override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
-                override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
-            })
+            }
         }
         outer.addView(seek, marginTop(5))
         return outer
@@ -1002,16 +1338,8 @@ class MainActivity : Activity() {
         orientation = LinearLayout.VERTICAL
     }
 
-    private fun textButton(label: String, primary: Boolean, action: () -> Unit) = TextView(this).apply {
-        text = label
-        textSize = 12f
-        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-        setTextColor(Color.WHITE)
-        gravity = Gravity.CENTER
-        setPadding(dp(12), dp(10), dp(12), dp(10))
-        background = if (primary) roundedGradient(intArrayOf(0xFF8172E5.toInt(), 0xFF5A4BB7.toInt()), 15)
-        else roundedGradient(intArrayOf(0x2CFFFFFF, 0x16FFFFFF), 15, 0x35FFFFFF)
-        isClickable = true
+    private fun textButton(label: String, primary: Boolean, action: () -> Unit) = IOSButton(this).apply {
+        style(label, primary)
         setOnClickListener { action() }
     }
 
@@ -1027,28 +1355,31 @@ class MainActivity : Activity() {
         strokeColor?.let { setStroke(dp(1), it) }
     }
 
-    private fun appBackground(): android.graphics.drawable.Drawable = LiquidBackdropDrawable()
+    private fun appBackground(): android.graphics.drawable.Drawable =
+        LiquidBackdropDrawable(prefs.getBoolean(AppPrefs.LIGHT_MODE, false))
 
-    /** Soft purple/blue radial light gives the glass cards depth without adding fake blur borders. */
-    private class LiquidBackdropDrawable : android.graphics.drawable.Drawable() {
+    /** Soft radial lighting, with separate readable palettes for dark and light mode. */
+    private class LiquidBackdropDrawable(private val lightMode: Boolean) : android.graphics.drawable.Drawable() {
         private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
 
         override fun draw(canvas: android.graphics.Canvas) {
             val area = bounds
             if (area.isEmpty) return
-            canvas.drawColor(Color.rgb(7, 8, 13))
+            canvas.drawColor(if (lightMode) 0xFFF3F5FA.toInt() else Color.rgb(7, 8, 13))
             val width = area.width().toFloat()
             val height = area.height().toFloat()
             val radius = maxOf(width, height) * 0.78f
             paint.shader = android.graphics.RadialGradient(
                 area.left + width * 0.10f, area.top + height * 0.05f, radius,
-                intArrayOf(0x70453891, 0x302B245D, 0x0007080D),
+                if (lightMode) intArrayOf(0x80D4CFFF.toInt(), 0x40DCE8FA, 0x00F3F5FA)
+                else intArrayOf(0x70453891, 0x302B245D, 0x0007080D),
                 floatArrayOf(0f, 0.52f, 1f), android.graphics.Shader.TileMode.CLAMP
             )
             canvas.drawRect(area, paint)
             paint.shader = android.graphics.RadialGradient(
                 area.left + width * 0.96f, area.top + height * 0.64f, radius * 0.78f,
-                intArrayOf(0x302B6692, 0x14203953, 0x0007080D),
+                if (lightMode) intArrayOf(0x50B9E2F4, 0x24E1E9F8, 0x00F3F5FA)
+                else intArrayOf(0x302B6692, 0x14203953, 0x0007080D),
                 floatArrayOf(0f, 0.55f, 1f), android.graphics.Shader.TileMode.CLAMP
             )
             canvas.drawRect(area, paint)
@@ -1060,25 +1391,52 @@ class MainActivity : Activity() {
         override fun getOpacity(): Int = android.graphics.PixelFormat.OPAQUE
     }
 
+    private fun applyPaletteToTree(root: View) {
+        if (!prefs.getBoolean(AppPrefs.LIGHT_MODE, false)) return
+        fun walk(view: View) {
+            if (view.tag == "digitalliquid-preview-island") return
+            if (view is GlassTabBar || view is GlassNavBar || view is IOSButton || view is EditText || view is Spinner) return
+            if (view is TextView) {
+                val old = view.currentTextColor
+                val r = Color.red(old); val g = Color.green(old); val b = Color.blue(old)
+                val luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b).toInt()
+                val mapped = when {
+                    r > g * 1.35 && r > b * 1.35 -> 0xFFB12C39.toInt()
+                    g > r * 1.15 && g > b * 1.06 -> 0xFF236C49.toInt()
+                    b > r * 1.15 && b > g * 1.08 -> 0xFF3555A4.toInt()
+                    r > 170 && b > 150 && g > 100 -> 0xFF5B4AA7.toInt()
+                    luminance > 165 -> 0xFF252838.toInt()
+                    luminance > 112 -> 0xFF5A6072.toInt()
+                    else -> old
+                }
+                view.setTextColor(mapped)
+            }
+            if (view is ViewGroup) {
+                for (index in 0 until view.childCount) walk(view.getChildAt(index))
+            }
+        }
+        walk(root)
+    }
+
     private fun marginTop(top: Int) = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(top) }
     private fun marginBottom(bottom: Int) = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(bottom) }
     private fun startMarginParams(start: Int) = LinearLayout.LayoutParams(-2, -2).apply { this.marginStart = dp(start) }
 
     private fun buildBottomNav(): View {
-        val container = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            background = roundedGradient(intArrayOf(0xE51B1D28.toInt(), 0xE012141D.toInt()), 22, 0x24FFFFFF)
-            setPadding(dp(5), dp(6), dp(5), dp(6))
+        return GlassTabBar(
+            this,
+            listOf(
+                GlassTabBar.Item("⌂", "Đảo nổi"),
+                GlassTabBar.Item("◉", "Giao diện"),
+                GlassTabBar.Item("✦", "Trợ lý AI"),
+                GlassTabBar.Item("◌", "Tính năng"),
+                GlassTabBar.Item("⚙", "Cài đặt")
+            ),
+            tab
+        ) { selected ->
+            tab = selected
+            renderMain()
         }
-        val entries = listOf("Đảo nổi" to 0, "Giao diện" to 1, "Chức năng" to 2, "Cài đặt" to 3)
-        entries.forEach { entry ->
-            container.addView(textButton(entry.first, tab == entry.second) {
-                tab = entry.second
-                renderMain()
-            }, LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(2); marginEnd = dp(2) })
-        }
-        return container
     }
 
     override fun onDestroy() {
