@@ -33,7 +33,7 @@ object LiquidNotice {
 
         val density = activity.resources.displayMetrics.density
         fun dp(value: Int) = (value * density).toInt()
-        val light = AppPrefs.get(activity).getBoolean(AppPrefs.LIGHT_MODE, false)
+        val light = AppPrefs.get(activity).getBoolean(AppPrefs.LIGHT_MODE, true)
         val dialog = Dialog(activity)
         val root = FrameLayout(activity).apply {
             setBackgroundColor(Color.TRANSPARENT)

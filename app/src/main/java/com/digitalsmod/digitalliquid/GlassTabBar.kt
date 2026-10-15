@@ -27,14 +27,14 @@ class GlassTabBar(
     private var selected = selectedIndex.coerceIn(0, (items.size - 1).coerceAtLeast(0))
 
     init {
-        val lightMode = AppPrefs.get(context).getBoolean(AppPrefs.LIGHT_MODE, false)
+        val lightMode = AppPrefs.get(context).getBoolean(AppPrefs.LIGHT_MODE, true)
         background = GradientDrawable(
             GradientDrawable.Orientation.TL_BR,
-            if (lightMode) intArrayOf(0xF4FFFFFF.toInt(), 0xE5E7DED1.toInt())
-            else intArrayOf(0xE622211F.toInt(), 0xE80C0D10.toInt())
+            if (lightMode) intArrayOf(0xF7FFFFFF.toInt(), 0xE9EFF8FC.toInt())
+            else intArrayOf(0xE61D1F2A.toInt(), 0xE80C0E15.toInt())
         ).apply {
             cornerRadius = dp(27).toFloat()
-            setStroke(dp(1), if (lightMode) 0x668F806A else 0x35E7C28B)
+            setStroke(dp(1), if (lightMode) 0x6698ACC9 else 0x35FFFFFF)
         }
         setPadding(dp(5), dp(5), dp(5), dp(5))
         clipChildren = false
@@ -42,10 +42,10 @@ class GlassTabBar(
 
         indicator.background = GradientDrawable(
             GradientDrawable.Orientation.TL_BR,
-            intArrayOf(0xFFF0D7A7.toInt(), 0xFFC78B4B.toInt())
+            intArrayOf(0xD8D9EAFA.toInt(), 0xE8D3E6FF.toInt())
         ).apply {
             cornerRadius = dp(23).toFloat()
-            setStroke(dp(1), 0x99FFF1D4.toInt())
+            setStroke(dp(1), 0xA6FFFFFF.toInt())
         }
         indicator.alpha = 0.95f
         addView(indicator, LayoutParams(0, -1, Gravity.START or Gravity.TOP))
@@ -65,7 +65,7 @@ class GlassTabBar(
                 text = item.icon
                 textSize = 20f
                 gravity = Gravity.CENTER
-                setTextColor(if (index == selected) 0xFF21180D.toInt() else if (lightMode) 0xFF5D6272.toInt() else 0xFFB5B8C5.toInt())
+                setTextColor(if (index == selected) 0xFF167FE8.toInt() else if (lightMode) 0xFF5D6272.toInt() else Color.WHITE)
                 includeFontPadding = false
             }
             val label = TextView(context).apply {
@@ -73,7 +73,7 @@ class GlassTabBar(
                 textSize = 8.5f
                 gravity = Gravity.CENTER
                 maxLines = 1
-                setTextColor(if (index == selected) 0xFF21180D.toInt() else if (lightMode) 0xFF5D6272.toInt() else 0xFFB5B8C5.toInt())
+                setTextColor(if (index == selected) 0xFF167FE8.toInt() else if (lightMode) 0xFF5D6272.toInt() else Color.WHITE)
                 includeFontPadding = false
             }
             cell.addView(glyph, LinearLayout.LayoutParams(-1, dp(23)))
@@ -117,8 +117,8 @@ class GlassTabBar(
             val cell = row.getChildAt(i) as? LinearLayout ?: continue
             @Suppress("UNCHECKED_CAST")
             val pair = cell.tag as? Pair<TextView, TextView> ?: continue
-            val lightMode = AppPrefs.get(context).getBoolean(AppPrefs.LIGHT_MODE, false)
-            val color = if (i == selected) 0xFF21180D.toInt() else if (lightMode) 0xFF5D6272.toInt() else 0xFFB5B8C5.toInt()
+            val lightMode = AppPrefs.get(context).getBoolean(AppPrefs.LIGHT_MODE, true)
+            val color = if (i == selected) 0xFF167FE8.toInt() else if (lightMode) 0xFF5D6272.toInt() else 0xFFB5B8C5.toInt()
             pair.first.setTextColor(color)
             pair.first.textSize = if (i == selected) 21f else 19f
             pair.second.setTextColor(color)

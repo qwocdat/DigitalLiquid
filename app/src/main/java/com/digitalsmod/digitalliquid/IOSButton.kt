@@ -17,29 +17,29 @@ class IOSButton(context: Context) : TextView(context) {
         text = label
         textSize = 12f
         typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
-        val lightMode = AppPrefs.get(context).getBoolean(AppPrefs.LIGHT_MODE, false)
-        setTextColor(if (primary) 0xFF21170B.toInt() else if (!lightMode) Color.WHITE else 0xFF25283A.toInt())
+        val lightMode = AppPrefs.get(context).getBoolean(AppPrefs.LIGHT_MODE, true)
+        setTextColor(if (primary) 0xFF07356E.toInt() else if (!lightMode) Color.WHITE else 0xFF25283A.toInt())
         gravity = android.view.Gravity.CENTER
         setPadding(dp(12), dp(10), dp(12), dp(10))
         minHeight = dp(44)
         background = if (primary) GradientDrawable(
             GradientDrawable.Orientation.TL_BR,
-            intArrayOf(0xFFF5DDAE.toInt(), 0xFFC68C4B.toInt())
+            intArrayOf(0xFFA7D2FF.toInt(), 0xFF66B2FF.toInt())
         ).apply {
             cornerRadius = dp(15).toFloat()
-            setStroke(dp(1), 0x88FFF0D4.toInt())
+            setStroke(dp(1), 0x42FFFFFF)
         } else if (lightMode) GradientDrawable(
             GradientDrawable.Orientation.TL_BR,
-            intArrayOf(0xEFFFFFFF.toInt(), 0xDDEBE2D4.toInt())
+            intArrayOf(0xEFFFFFFF.toInt(), 0xDDE9EEF7.toInt())
         ).apply {
             cornerRadius = dp(15).toFloat()
-            setStroke(dp(1), 0x668F806A)
+            setStroke(dp(1), 0x6698ACC9)
         } else GradientDrawable(
             GradientDrawable.Orientation.TL_BR,
-            intArrayOf(0x2CE7C28B, 0x16FFFFFF)
+            intArrayOf(0x2CFFFFFF, 0x16FFFFFF)
         ).apply {
             cornerRadius = dp(15).toFloat()
-            setStroke(dp(1), 0x45E7C28B)
+            setStroke(dp(1), 0x35FFFFFF)
         }
         isClickable = true
         isFocusable = true

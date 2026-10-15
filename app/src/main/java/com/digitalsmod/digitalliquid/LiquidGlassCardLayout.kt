@@ -22,7 +22,7 @@ class LiquidGlassCardLayout(context: Context) : LinearLayout(context) {
         strokeWidth = dp(0.8f)
     }
     private val lightSurface = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val radius = dp(20f)
+    private val radius = dp(24f)
 
     init {
         setWillNotDraw(false)
@@ -37,7 +37,7 @@ class LiquidGlassCardLayout(context: Context) : LinearLayout(context) {
     override fun dispatchDraw(canvas: Canvas) {
         if (width > 0 && height > 0) {
             val p = AppPrefs.get(context)
-            val lightMode = p.getBoolean(AppPrefs.LIGHT_MODE, false)
+            val lightMode = p.getBoolean(AppPrefs.LIGHT_MODE, true)
             bounds.set(0f, 0f, width.toFloat(), height.toFloat())
             shape.reset()
             shape.addRoundRect(bounds, radius, radius, Path.Direction.CW)
@@ -47,15 +47,15 @@ class LiquidGlassCardLayout(context: Context) : LinearLayout(context) {
                 // A real light palette, not white text placed on the dark glass shader.
                 lightSurface.shader = LinearGradient(
                     0f, 0f, width.toFloat(), height.toFloat(),
-                    intArrayOf(0xF6FFFFFF.toInt(), 0xE8F0F2FA.toInt(), 0xF1F9FAFF.toInt()),
-                    floatArrayOf(0f, 0.55f, 1f), Shader.TileMode.CLAMP
+                    intArrayOf(0xF7FFFFFF.toInt(), 0xE8EAF1FA.toInt(), 0xF2F6FCFF.toInt()),
+                    floatArrayOf(0f, 0.52f, 1f), Shader.TileMode.CLAMP
                 )
                 canvas.drawRoundRect(bounds, radius, radius, lightSurface)
                 lightSurface.shader = null
             } else {
                 glass.configure(
-                    p.getInt(AppPrefs.GLASS_STRENGTH, 68),
-                    "graphite",
+                    p.getInt(AppPrefs.GLASS_STRENGTH, 72),
+                    p.getString(AppPrefs.TINT, "midnight") ?: "midnight",
                     expandedNow = true
                 )
                 glass.layout(0, 0, width, height)
@@ -66,8 +66,8 @@ class LiquidGlassCardLayout(context: Context) : LinearLayout(context) {
 
             rim.shader = LinearGradient(
                 0f, 0f, width.toFloat(), height.toFloat(),
-                if (lightMode) intArrayOf(0x85FFFFFF.toInt(), 0x36B99C65, 0x558CA1A8, 0x65FFFFFF)
-                else intArrayOf(0x66F8D6A2, 0x16FFFFFF, 0x35B99A67, 0x22FFFFFF),
+                if (lightMode) intArrayOf(0x95FFFFFF.toInt(), 0x3388A7D8, 0x557E9EC6, 0x75FFFFFF)
+                else intArrayOf(0x3FFFFFFF, 0x12FFFFFF, 0x36D9D6FF, 0x16FFFFFF),
                 floatArrayOf(0f, 0.35f, 0.72f, 1f), Shader.TileMode.CLAMP
             )
             canvas.drawRoundRect(bounds, radius, radius, rim)

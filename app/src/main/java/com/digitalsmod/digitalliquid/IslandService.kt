@@ -97,6 +97,7 @@ class IslandService : Service() {
     private var overlayHost: FrameLayout? = null
     private val ghostLayers = mutableListOf<View>()
     private var hostInsetPx = 0
+    private var lastRefreshRatePreference = -1
     private var content: LinearLayout? = null
     private var glassView: LiquidGlassView? = null
     private var backgroundHost: FrameLayout? = null
@@ -600,9 +601,30 @@ class IslandService : Service() {
         cornerRadius = radiusPx
     }
 
+    @Suppress("DEPRECATION")
+    private fun applyPreferredRefreshRate(layout: WindowManager.LayoutParams) {
+        if (Build.VERSION.SDK_INT < 23) return
+        val requested = AppPrefs.get(this).getInt(AppPrefs.ISLAND_REFRESH_RATE, 120).coerceIn(30, 240)
+        if (lastRefreshRatePreference == requested && layout.preferredRefreshRate > 0f) return
+        try {
+            val supported = windowManager.defaultDisplay.supportedModes.toList()
+            val selected = supported.minByOrNull { kotlin.math.abs(it.refreshRate - requested.toFloat()) }
+            if (selected != null) {
+                layout.preferredDisplayModeId = selected.modeId
+                layout.preferredRefreshRate = selected.refreshRate
+            } else {
+                layout.preferredRefreshRate = requested.toFloat()
+            }
+        } catch (_: Exception) {
+            layout.preferredRefreshRate = requested.toFloat()
+        }
+        lastRefreshRatePreference = requested
+    }
+
     private fun updateOverlayWindow(lp: WindowManager.LayoutParams? = params) {
         val host = overlayHost ?: return
         val layout = lp ?: return
+        applyPreferredRefreshRate(layout)
         try { windowManager.updateViewLayout(host, layout) } catch (_: Exception) { }
     }
 
@@ -739,23 +761,7 @@ class IslandService : Service() {
             gravity = windowGravity()
             x = windowX()
             y = windowY()
-            if (Build.VERSION.SDK_INT >= 23) {
-                try {
-                    @Suppress("DEPRECATION")
-                    val supported = windowManager.defaultDisplay.supportedModes.toList()
-                    val selected = supported.filter { it.refreshRate <= 120.5f }
-                        .maxByOrNull { it.refreshRate }
-                        ?: supported.minByOrNull { kotlin.math.abs(it.refreshRate - 120f) }
-                    if (selected != null) {
-                        preferredDisplayModeId = selected.modeId
-                        preferredRefreshRate = selected.refreshRate
-                    } else {
-                        preferredRefreshRate = 120f
-                    }
-                } catch (_: Exception) {
-                    preferredRefreshRate = 120f
-                }
-            }
+            applyPreferredRefreshRate(this)
             if (Build.VERSION.SDK_INT >= 28) {
                 layoutInDisplayCutoutMode = if (Build.VERSION.SDK_INT >= 30) {
                     WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
@@ -903,10 +909,29 @@ class IslandService : Service() {
     }
 
     private fun openDefaultAssistant() {
-        // Use the shared assistant launcher: active system sessions get a bounded show request,
-        // while devices without the assistant role always receive the visual Siri fallback.
-        // This avoids ACTION_ASSIST silently handing the gesture to another provider on HyperOS.
-        DigitalLiquidAssistantLauncher.open(this)
+        val roleHeld = if (Build.VERSION.SDK_INT >= 29) {
+            try {
+                val manager = getSystemService(android.app.role.RoleManager::class.java)
+                manager != null && manager.isRoleAvailable(android.app.role.RoleManager.ROLE_ASSISTANT) &&
+                    manager.isRoleHeld(android.app.role.RoleManager.ROLE_ASSISTANT)
+            } catch (_: Exception) { false }
+        } else {
+            try {
+                val selected = android.provider.Settings.Secure.getString(contentResolver, "voice_interaction_service").orEmpty()
+                selected.contains("DigitalLiquidVoiceInteractionService", ignoreCase = true)
+            } catch (_: Exception) { false }
+        }
+        val launch = if (roleHeld) {
+            Intent(Intent.ACTION_ASSIST).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        } else {
+            Intent(this, AssistantFallbackActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        try {
+            startActivity(launch)
+        } catch (_: Exception) {
+            try { startActivity(Intent(this, AssistantFallbackActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+            catch (_: Exception) { showTransientServiceNotice("Không thể mở giao diện trợ lý trên thiết bị này.") }
+        }
     }
 
     private val longPressRunnable = Runnable {

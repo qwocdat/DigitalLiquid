@@ -145,11 +145,10 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Spatial Glass redesign migration. Existing feature preferences remain untouched; only
-        // the first-launch palette is migrated to the new obsidian/champagne visual identity.
-        if (!prefs.getBoolean("ui_spatial_glass_migrated", false)) {
-            prefs.edit().putBoolean(AppPrefs.LIGHT_MODE, false)
-                .putBoolean("ui_spatial_glass_migrated", true).apply()
+        // One-time visual refresh: new installs and upgraded installs start with the redesigned light UI.
+        // Users can still switch back to dark mode after this migration.
+        if (!prefs.getBoolean("ui_redesign_153_migrated", false)) {
+            prefs.edit().putBoolean(AppPrefs.LIGHT_MODE, true).putBoolean("ui_redesign_153_migrated", true).apply()
         }
         applySystemBars()
         val compatibility = checkDeviceCompatibility()
@@ -275,7 +274,7 @@ class MainActivity : Activity() {
     }
 
     private fun applySystemBars() {
-        val lightMode = prefs.getBoolean(AppPrefs.LIGHT_MODE, false)
+        val lightMode = prefs.getBoolean(AppPrefs.LIGHT_MODE, true)
         window.statusBarColor = if (lightMode) 0xFFF4F6FB.toInt() else Color.rgb(10, 11, 16)
         window.navigationBarColor = if (lightMode) 0xFFF4F6FB.toInt() else Color.rgb(10, 11, 16)
         val lightFlags = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
@@ -288,6 +287,13 @@ class MainActivity : Activity() {
         if (Build.VERSION.SDK_INT >= 29) {
             window.isNavigationBarContrastEnforced = false
             window.isStatusBarContrastEnforced = false
+        }
+        if (Build.VERSION.SDK_INT >= 23) {
+            try {
+                window.attributes = window.attributes.apply {
+                    preferredRefreshRate = prefs.getInt(AppPrefs.ISLAND_REFRESH_RATE, 120).toFloat()
+                }
+            } catch (_: Exception) { }
         }
     }
 
@@ -332,7 +338,7 @@ class MainActivity : Activity() {
         }
         column.addView(welcome, LinearLayout.LayoutParams(-1, dp(64)))
         column.addView(View(this).apply {
-            background = rounded(0xFFC99A5B.toInt(), 50)
+            background = rounded(0xFF167FE8.toInt(), 50)
         }, LinearLayout.LayoutParams(dp(28), dp(3)).apply { topMargin = dp(16); bottomMargin = dp(26) })
         column.addView(ImageView(this).apply {
             setImageResource(R.drawable.digitalliquid_hero)
@@ -423,10 +429,10 @@ class MainActivity : Activity() {
         shell.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
         when (tab) {
             0 -> buildOverview(pageContent)
-            1 -> buildAppearance(pageContent)
+            1 -> buildFeatures(pageContent)
             2 -> buildAssistant(pageContent)
-            3 -> buildFeatures(pageContent)
-            else -> buildSettings(pageContent)
+            3 -> buildSettings(pageContent)
+            else -> buildAppearance(pageContent)
         }
         bottomNavView = buildBottomNav()
         // GlassTabBar contains MATCH_PARENT children; WRAP_CONTENT here can make
@@ -466,17 +472,18 @@ class MainActivity : Activity() {
 
     private fun buildTopBar(): View {
         val subtitle = when (tab) {
-            0 -> "ĐẢO NỔI"
-            1 -> "GIAO DIỆN"
-            2 -> "TRỢ LÝ AI"
-            3 -> "TÍNH NĂNG"
-            else -> "CÀI ĐẶT"
+            0 -> "DIGITALLIQUID · LIQUID EDITION"
+            1 -> "ACTIVITIES · LIVE STATUS"
+            2 -> "SHORTCUTS · SIRI & AI"
+            3 -> "SYSTEM · PERMISSIONS"
+            else -> "APPEARANCE · LIQUID GLASS"
         }
         return GlassNavBar(
             this,
-            "DigitalLiquid",
+            "Liquid Island",
             subtitle,
-            prefs.getBoolean(AppPrefs.SERVICE_ENABLED, false)
+            prefs.getBoolean(AppPrefs.SERVICE_ENABLED, false),
+            onAssistant = { openSiriEffect() }
         ).also { bar ->
             titleLabel = bar.titleView
             subtitleLabel = bar.subtitleView
@@ -484,15 +491,15 @@ class MainActivity : Activity() {
     }
 
     private fun buildOverview(target: LinearLayout) {
-        addEyebrow(target, "LIQUID EDITION  ·  SPATIAL GLASS")
+        addEyebrow(target, "LIQUID INTERFACE · OVERVIEW")
         target.addView(TextView(this).apply {
-            text = "Một giao diện. Một chút phép màu."
+            text = "Không gian điều khiển"
             textSize = 25f
             typeface = Typeface.create("sans-serif", Typeface.BOLD)
             setTextColor(Color.WHITE)
         }, marginTop(4))
-        target.addView(bodyText("Đảo nổi tối giản, chất liệu kính khúc xạ và hiệu ứng trợ lý lấy cảm hứng từ ánh sáng trên mặt kính."), marginTop(7))
-        target.addView(buildSiriHero(), marginTop(18))
+        target.addView(bodyText("Một bề mặt kính gọn nhẹ cho đảo nổi, hoạt động và trợ lý AI. Các quyền hệ thống vẫn do bạn kiểm soát."), marginTop(7))
+        target.addView(textButton("Mở hiệu ứng Siri  ↗", primary = true) { openSiriEffect() }, marginTop(14))
 
         val hero = card().apply { setPadding(dp(16), dp(16), dp(16), dp(16)) }
         val heroHeader = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
@@ -501,7 +508,7 @@ class MainActivity : Activity() {
             textSize = 10f
             letterSpacing = 0.08f
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setTextColor(0xFFD9AE71.toInt())
+            setTextColor(0xFF1682F5.toInt())
         }, LinearLayout.LayoutParams(0, -2, 1f))
         heroHeader.addView(TextView(this).apply {
             text = if (prefs.getBoolean(AppPrefs.SERVICE_ENABLED, false)) "ĐANG CHẠY" else "CHƯA BẬT"
@@ -537,63 +544,6 @@ class MainActivity : Activity() {
         target.addView(infoCard("Tương tác", "Chạm một lần để viên thuốc rung lắc với vệt mờ chuyển động. Giữ khoảng nửa giây để mở bảng đen; tải ảnh hoặc video trong máy để dùng làm nền."), marginTop(18))
     }
 
-    private fun buildSiriHero(): View {
-        val outer = card().apply {
-            setPadding(dp(14), dp(12), dp(14), dp(14))
-            clipChildren = false
-            clipToPadding = false
-        }
-        val caption = TextView(this).apply {
-            text = "SIRI  /  SPATIAL ASSISTANT"
-            textSize = 9.5f
-            letterSpacing = 0.16f
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setTextColor(0xFFE8C995.toInt())
-        }
-        outer.addView(caption)
-        val stage = FrameLayout(this).apply {
-            background = GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                intArrayOf(0xFF17171A.toInt(), 0xFF101319.toInt(), 0xFF1B1712.toInt())).apply {
-                cornerRadius = dp(25).toFloat()
-                setStroke(dp(1), 0x36E9C68E)
-            }
-            clipChildren = false
-            clipToPadding = false
-            contentDescription = "Xem trước hiệu ứng Siri Glass"
-        }
-        stage.addView(SiriGlassOrbView(this), FrameLayout.LayoutParams(-1, dp(188), Gravity.TOP or Gravity.CENTER_HORIZONTAL))
-        val stageLabel = TextView(this).apply {
-            text = "KÍCH HOẠT HIỆU ỨNG"
-            textSize = 9f
-            letterSpacing = 0.18f
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            gravity = Gravity.CENTER
-            setTextColor(0xFFC9C3B9.toInt())
-        }
-        stage.addView(stageLabel, FrameLayout.LayoutParams(-1, dp(26), Gravity.BOTTOM))
-        outer.addView(stage, LinearLayout.LayoutParams(-1, dp(210)).apply { topMargin = dp(10) })
-        outer.addView(TextView(this).apply {
-            text = "Quả cầu kính · quang phổ chuyển động · viền phản xạ"
-            textSize = 11f
-            gravity = Gravity.CENTER
-            setTextColor(0xFFA7A5A1.toInt())
-        }, marginTop(10))
-        outer.addView(textButton("Mở giao diện Siri  ↗", true) { openSiriVisual() }, marginTop(12))
-        return outer
-    }
-
-    private fun openSiriVisual() {
-        try {
-            // The visual fallback is declared as a real Activity and does not depend on the
-            // phone accepting DigitalLiquid as its system-wide assistant first.
-            startActivity(Intent(this, AssistantFallbackActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            })
-        } catch (error: Exception) {
-            LiquidNotice.show(this, "Không mở được hiệu ứng Siri: ${error.message ?: "kiểm tra cấu hình ứng dụng"}", 3600L)
-        }
-    }
-
     private fun buildOnlineControlCard(): View {
         val outer = card().apply { setPadding(dp(15), dp(14), dp(15), dp(14)) }
         val line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
@@ -603,7 +553,7 @@ class MainActivity : Activity() {
             textSize = 10f
             letterSpacing = 0.08f
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setTextColor(0xFFC99A5B.toInt())
+            setTextColor(0xFF167FE8.toInt())
         })
         textColumn.addView(TextView(this@MainActivity).apply {
             text = "Thông báo · phiên bản · bảo trì"
@@ -615,7 +565,7 @@ class MainActivity : Activity() {
         line.addView(TextView(this@MainActivity).apply {
             text = "↻"
             textSize = 22f
-            setTextColor(0xFFD9AE71.toInt())
+            setTextColor(0xFF167EE8.toInt())
         })
         outer.addView(line)
         outer.addView(textButton("Kiểm tra máy chủ", false) {
@@ -765,7 +715,7 @@ class MainActivity : Activity() {
             setPadding(dp(10), dp(10), dp(10), dp(10))
             addView(segmentedOptions(
                 listOf("Tối" to "dark", "Sáng" to "light"),
-                if (prefs.getBoolean(AppPrefs.LIGHT_MODE, false)) "light" else "dark"
+                if (prefs.getBoolean(AppPrefs.LIGHT_MODE, true)) "light" else "dark"
             ) { selected ->
                 prefs.edit().putBoolean(AppPrefs.LIGHT_MODE, selected == "light").apply()
                 applySystemBars()
@@ -778,7 +728,7 @@ class MainActivity : Activity() {
             text = "CHẠM: RUNG LẮC  ·  GIỮ: TÙY CHỈNH"
             textSize = 9.5f
             letterSpacing = 0.055f
-            setTextColor(0xFFD9AE71.toInt())
+            setTextColor(0xFF167FE8.toInt())
             gravity = Gravity.CENTER
         }, marginTop(12))
         target.addView(previewCard, marginTop(18))
@@ -814,13 +764,58 @@ class MainActivity : Activity() {
         }.apply { setPadding(dp(15), dp(15), dp(15), dp(15)) }, marginTop(8))
         target.addView(seekCard("Vị trí dọc", "0 là sát mép trên trong vùng thanh trạng thái", AppPrefs.OFFSET_TOP, 0, 140, " dp") { applyConfig() }, marginTop(8))
         target.addView(toggleCard("Giảm chuyển động", "Tắt chuyển động rung lắc và co giãn; giữ giao diện cơ bản.", AppPrefs.REDUCE_MOTION), marginTop(18))
-        target.addView(infoCard("Hiệu ứng theo tần số màn hình", "Chuyển động dùng animation phần cứng và cập nhật theo nhịp khung hình Android. Tốc độ thực tế vẫn do tần số quét, hiệu năng và chính sách hệ thống của máy quyết định."), marginTop(14))
+        target.addView(sectionTitle("Island Refresh Rate"), marginTop(22))
+        target.addView(refreshRateCard(), marginTop(8))
+        target.addView(infoCard("Tần số khung hình", "DigitalLiquid sẽ yêu cầu mức gần nhất mà màn hình hỗ trợ. Các lựa chọn 140/165 FPS không thể ép màn hình 60/90/120 Hz vượt giới hạn phần cứng; HyperOS vẫn quyết định tốc độ thực tế."), marginTop(10))
+    }
+
+    private fun refreshRateCard(): View {
+        val outer = card().apply { setPadding(dp(10), dp(12), dp(10), dp(12)) }
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
+        val rates = listOf(60, 90, 120, 140, 165)
+        val selectedRate = prefs.getInt(AppPrefs.ISLAND_REFRESH_RATE, 120)
+        rates.forEachIndexed { index, rate ->
+            val selected = rate == selectedRate
+            val tile = TextView(this).apply {
+                text = "$rate\nFPS"
+                textSize = 15f
+                typeface = Typeface.create("sans-serif", Typeface.BOLD)
+                gravity = Gravity.CENTER
+                setLineSpacing(0f, 0.92f)
+                setTextColor(if (selected) 0xFF167FE8.toInt() else 0xFF252838.toInt())
+                background = GradientDrawable(
+                    GradientDrawable.Orientation.TL_BR,
+                    if (selected) intArrayOf(0xDDE0EEFF.toInt(), 0xE0CFE2FF.toInt())
+                    else intArrayOf(0xF7FFFFFF.toInt(), 0xEDEFF5FA.toInt())
+                ).apply {
+                    cornerRadius = dp(16).toFloat()
+                    setStroke(dp(if (selected) 2 else 1), if (selected) 0xFF2687F5.toInt() else 0x2293A5C2)
+                }
+                isClickable = true
+                isFocusable = true
+                setOnClickListener {
+                    if (prefs.getInt(AppPrefs.ISLAND_REFRESH_RATE, 120) != rate) {
+                        prefs.edit().putInt(AppPrefs.ISLAND_REFRESH_RATE, rate).apply()
+                        applySystemBars()
+                        applyConfig()
+                        renderMain()
+                        LiquidNotice.show(this@MainActivity, "Đã đặt mục tiêu $rate FPS. Tốc độ thực tế phụ thuộc tần số quét hỗ trợ của máy.", 2800L)
+                    }
+                }
+            }
+            row.addView(tile, LinearLayout.LayoutParams(0, dp(70), 1f).apply {
+                if (index > 0) marginStart = dp(5)
+                if (index < rates.lastIndex) marginEnd = dp(1)
+            })
+        }
+        outer.addView(row)
+        return outer
     }
 
     private fun buildFeatures(target: LinearLayout) {
-        addEyebrow(target, "TÍCH HỢP HYPEROS")
+        addEyebrow(target, "ACTIVITIES · LIVE STATUS")
         target.addView(TextView(this).apply {
-            text = "Bổ sung, không giành việc của hệ thống"
+            text = "Trạng thái hoạt động"
             textSize = 22f
             typeface = Typeface.create("sans-serif", Typeface.BOLD)
             setTextColor(Color.WHITE)
@@ -839,8 +834,19 @@ class MainActivity : Activity() {
     }
 
     private fun buildAssistant(target: LinearLayout) {
-        addEyebrow(target, "DIGITALLIQUID  ·  SIRI GLASS")
-        target.addView(buildSiriHero(), marginTop(10))
+        addEyebrow(target, "SHORTCUTS · SIRI · AI")
+        val siriLaunchCard = card().apply { setPadding(dp(15), dp(14), dp(15), dp(14)) }
+        siriLaunchCard.addView(TextView(this).apply {
+            text = "Siri Glass Effect"
+            textSize = 18f
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
+            setTextColor(Color.WHITE)
+        })
+        siriLaunchCard.addView(bodyText("Mở lớp kính quang học nhiều màu quanh Dynamic Island. Hiệu ứng hoạt động độc lập với trạng thái kết nối AI."), marginTop(5))
+        siriLaunchCard.addView(textButton("Mở Siri  ↗", primary = true) { openSiriEffect() }, marginTop(12))
+        target.addView(siriLaunchCard, marginTop(8))
+        target.addView(toggleCard("Nhấn đúp viên thuốc để mở Siri", "Mở giao diện Siri Glass. Nếu trợ lý hệ thống chưa sẵn sàng, ứng dụng tự chuyển sang giao diện dự phòng.", AppPrefs.DOUBLE_TAP_ASSISTANT), marginTop(10))
+        target.addView(toggleCard("Chạm 6 lần để chuyển ứng dụng", "Bật cử chỉ chuyển sang ứng dụng gần đây. Cần cấp quyền truy cập mức sử dụng ứng dụng trong Cài đặt.", AppPrefs.ISLAND_APP_SWITCH_GESTURE), marginTop(8))
         target.addView(TextView(this).apply {
             text = "Hỏi DigitalLiquid"
             textSize = 30f
@@ -855,7 +861,7 @@ class MainActivity : Activity() {
         val modelOptions = AiModels.all.map { it.label to it.id }.toMutableList()
         if (AiModels.all.none { it.id == selectedModel }) modelOptions.add("Tùy chỉnh · ${selectedModel.substringAfterLast('/') }" to selectedModel)
         val modelRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        val lightPalette = prefs.getBoolean(AppPrefs.LIGHT_MODE, false)
+        val lightPalette = prefs.getBoolean(AppPrefs.LIGHT_MODE, true)
         fun renderModelPicker() {
             modelRow.removeAllViews()
             modelOptions.forEachIndexed { index, option ->
@@ -866,10 +872,10 @@ class MainActivity : Activity() {
                     maxLines = 1
                     gravity = Gravity.CENTER
                     setPadding(dp(12), 0, dp(12), 0)
-                    setTextColor(if (active) 0xFF102727.toInt() else if (lightPalette) 0xFF3A4554.toInt() else 0xFFE1E5EF.toInt())
+                    setTextColor(if (active) 0xFF07356E.toInt() else if (lightPalette) 0xFF3A4554.toInt() else 0xFFE1E5EF.toInt())
                     background = GradientDrawable(
                         GradientDrawable.Orientation.LEFT_RIGHT,
-                        if (active) intArrayOf(0xFF82EAD3.toInt(), 0xFF48C3BB.toInt())
+                        if (active) intArrayOf(0xFF8CC5FF.toInt(), 0xFF287EF0.toInt())
                         else if (lightPalette) intArrayOf(0xFFF6FAFC.toInt(), 0xFFE7EEF4.toInt())
                         else intArrayOf(0xFF242936.toInt(), 0xFF171B25.toInt())
                     ).apply {
@@ -906,24 +912,24 @@ class MainActivity : Activity() {
         val response = TextView(this).apply {
             text = if (assistantHistory.isEmpty()) "DigitalLiquid sẵn sàng. Hãy nhập câu hỏi bên dưới." else assistantHistory.takeLast(6).joinToString("\n\n") { (role, text) -> (if (role == "user") "Bạn" else "DigitalLiquid AI") + ":\n" + text }
             textSize = 13f
-            setTextColor(0xFFE5E6F0.toInt())
+            setTextColor(if (lightPalette) 0xFF252838.toInt() else 0xFFE5E6F0.toInt())
             setLineSpacing(dp(3).toFloat(), 1.08f)
             setPadding(dp(12), dp(12), dp(12), dp(12))
-            background = rounded(0xA5181A25.toInt(), 16)
+            background = rounded(if (lightPalette) 0xFFEAF0F9.toInt() else 0xA5181A25.toInt(), 16)
             minHeight = dp(130)
             gravity = Gravity.TOP or Gravity.START
         }
         chatCard.addView(response, marginTop(10))
         val prompt = EditText(this).apply {
             hint = "Viết câu hỏi của bạn…"
-            setHintTextColor(0xFF777B8A.toInt())
-            setTextColor(Color.WHITE)
+            setHintTextColor(if (lightPalette) 0xFF75849A.toInt() else 0xFF777B8A.toInt())
+            setTextColor(if (lightPalette) 0xFF182735.toInt() else Color.WHITE)
             textSize = 14f
             minLines = 2
             maxLines = 5
             gravity = Gravity.TOP or Gravity.START
             setPadding(dp(12), dp(12), dp(12), dp(12))
-            background = rounded(0xFF151722.toInt(), 16)
+            background = rounded(if (lightPalette) 0xFFF4F7FC.toInt() else 0xFF151722.toInt(), 16)
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
         }
         chatCard.addView(prompt, marginTop(10))
@@ -1110,7 +1116,7 @@ class MainActivity : Activity() {
         target.addView(settingAction("Kết nối AI bảo mật", if (prefs.getString(AppPrefs.AI_ENDPOINT, "").orEmpty().isBlank()) "Chưa cấu hình" else "Đã lưu endpoint HTTPS", "Thiết lập địa chỉ dịch vụ AI. Thông tin bí mật không được lưu trực tiếp trong ứng dụng.") {
             editAiEndpoint()
         }, marginTop(8))
-        target.addView(settingAction("Model AI mặc định", AiModels.labelFor(AiModels.selectedId(this)), "Mở tab Trợ lý AI để chọn model hoặc đặt model tùy chỉnh.") {
+        target.addView(settingAction("Model AI mặc định", AiModels.labelFor(AiModels.selectedId(this)), "Mở tab Shortcuts để chọn model hoặc đặt model tùy chỉnh.") {
             tab = 2
             renderMain()
         }, marginTop(8))
@@ -1167,7 +1173,7 @@ class MainActivity : Activity() {
                         prefs.edit().clear()
                             .putBoolean(AppPrefs.ONBOARDING_DONE, true)
                             .putBoolean(AppPrefs.SERVICE_ENABLED, false)
-                            .putBoolean(AppPrefs.LIGHT_MODE, false)
+                            .putBoolean(AppPrefs.LIGHT_MODE, true)
                             .apply()
                         stopIsland()
                         renderMain()
@@ -1180,12 +1186,15 @@ class MainActivity : Activity() {
 
     private fun buildGlassPreview(): View {
         val frame = FrameLayout(this).apply {
-            // Obsidian surface with a champagne rim matches the new Spatial Glass identity.
-            background = GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                intArrayOf(0xFF1A1B20.toInt(), 0xFF0B0D12.toInt(), 0xFF211A13.toInt())).apply {
-                cornerRadius = dp(22).toFloat()
-                setStroke(dp(1), 0x2DE3C18A)
+            // A cool white-blue canvas keeps the silhouette crisp while fitting the new glass palette.
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TL_BR,
+                intArrayOf(0xFFF8FAFF.toInt(), 0xFFE7EEFA.toInt(), 0xFFF2F5FC.toInt())
+            ).apply {
+                cornerRadius = dp(23).toFloat()
+                setStroke(dp(1), 0x88FFFFFF.toInt())
             }
+            clipToOutline = true
             clipChildren = false
             clipToPadding = false
             contentDescription = "Bản xem trước tương tác DigitalLiquid"
@@ -1295,7 +1304,8 @@ class MainActivity : Activity() {
                             previewTapCount == 2 && prefs.getBoolean(AppPrefs.DOUBLE_TAP_ASSISTANT, false) -> {
                                 view.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
                                 // Route to the real assistant screen, not a decorative fake response.
-                                openSiriVisual()
+                                tab = 2
+                                renderMain()
                                 return@setOnTouchListener true
                             }
                             previewExpanded -> {
@@ -1331,7 +1341,7 @@ class MainActivity : Activity() {
             text = "TỔNG QUAN QUYỀN"
             textSize = 10f
             letterSpacing = 0.11f
-            setTextColor(0xFFC99A5B.toInt())
+            setTextColor(0xFF247D73.toInt())
         })
         outer.addView(statusLine("Lớp phủ trên thanh trạng thái", hasHyperIslandAccessibility()), marginTop(10))
         outer.addView(statusLine("Phát hiện quay màn hình", hasNotificationAccess()), marginTop(8))
@@ -1396,7 +1406,7 @@ class MainActivity : Activity() {
             text = "$initial$suffix"
             textSize = 12f
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setTextColor(0xFF267F78.toInt())
+            setTextColor(0xFF167FE8.toInt())
             gravity = Gravity.END
         }
         line.addView(value, LinearLayout.LayoutParams(dp(72), -2))
@@ -1437,9 +1447,9 @@ class MainActivity : Activity() {
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             setTextColor(Color.WHITE)
         })
-        textColumn.addView(TextView(this@MainActivity).apply { text = status; textSize = 11f; setTextColor(0xFFD9AE71.toInt()) }, marginTop(4))
+        textColumn.addView(TextView(this@MainActivity).apply { text = status; textSize = 11f; setTextColor(0xFF167FE8.toInt()) }, marginTop(4))
         row.addView(textColumn, LinearLayout.LayoutParams(0, -2, 1f))
-        row.addView(TextView(this).apply { text = "›"; textSize = 26f; setTextColor(0xFFD9AE71.toInt()) })
+        row.addView(TextView(this).apply { text = "›"; textSize = 26f; setTextColor(0xFF167FE8.toInt()) })
         outer.addView(row)
         outer.addView(bodyText(description), marginTop(8))
         outer.setOnClickListener { action() }
@@ -1455,7 +1465,7 @@ class MainActivity : Activity() {
             textSize = 10f
             letterSpacing = 0.06f
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setTextColor(0xFFD9AE71.toInt())
+            setTextColor(0xFF167FE8.toInt())
             gravity = Gravity.CENTER
             background = rounded(0x1EFFFEFF, 9)
         }, LinearLayout.LayoutParams(dp(40), dp(36)))
@@ -1481,7 +1491,7 @@ class MainActivity : Activity() {
             this.text = title
             textSize = 13f
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setTextColor(0xFFE8C995.toInt())
+            setTextColor(0xFF47646D.toInt())
         })
         outer.addView(bodyText(text), marginTop(6))
         return outer
@@ -1500,7 +1510,7 @@ class MainActivity : Activity() {
             textSize = 10f
             letterSpacing = 0.13f
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setTextColor(0xFFC99A5B.toInt())
+            setTextColor(0xFF167FE8.toInt())
         }
         target.addView(label, marginTop(topMarginDp))
     }
@@ -1534,7 +1544,7 @@ class MainActivity : Activity() {
     }
 
     private fun appBackground(): android.graphics.drawable.Drawable =
-        LiquidBackdropDrawable(prefs.getBoolean(AppPrefs.LIGHT_MODE, false))
+        LiquidBackdropDrawable(prefs.getBoolean(AppPrefs.LIGHT_MODE, true))
 
     /** Soft radial lighting, with separate readable palettes for dark and light mode. */
     private class LiquidBackdropDrawable(private val lightMode: Boolean) : android.graphics.drawable.Drawable() {
@@ -1543,21 +1553,21 @@ class MainActivity : Activity() {
         override fun draw(canvas: android.graphics.Canvas) {
             val area = bounds
             if (area.isEmpty) return
-            canvas.drawColor(if (lightMode) 0xFFF2F0EC.toInt() else Color.rgb(5, 6, 9))
+            canvas.drawColor(if (lightMode) 0xFFF0F2F8.toInt() else Color.rgb(7, 8, 13))
             val width = area.width().toFloat()
             val height = area.height().toFloat()
             val radius = maxOf(width, height) * 0.78f
             paint.shader = android.graphics.RadialGradient(
-                area.left + width * 0.08f, area.top + height * 0.06f, radius,
-                if (lightMode) intArrayOf(0x75E6C99C, 0x39D8D4CC, 0x00F2F0EC)
-                else intArrayOf(0x644C3020, 0x2A423124, 0x00050609),
-                floatArrayOf(0f, 0.48f, 1f), android.graphics.Shader.TileMode.CLAMP
+                area.left + width * 0.10f, area.top + height * 0.05f, radius,
+                if (lightMode) intArrayOf(0x805A9BFF.toInt(), 0x40B9C9FF, 0x00F4F8FB)
+                else intArrayOf(0x70453891, 0x302B245D, 0x0007080D),
+                floatArrayOf(0f, 0.52f, 1f), android.graphics.Shader.TileMode.CLAMP
             )
             canvas.drawRect(area, paint)
             paint.shader = android.graphics.RadialGradient(
-                area.left + width * 0.96f, area.top + height * 0.62f, radius * 0.78f,
-                if (lightMode) intArrayOf(0x4ABBC9D1, 0x20E5D7BC, 0x00F2F0EC)
-                else intArrayOf(0x323B4A5E, 0x1E8C6340, 0x00050609),
+                area.left + width * 0.96f, area.top + height * 0.64f, radius * 0.78f,
+                if (lightMode) intArrayOf(0x5072B4FF, 0x24C9D8FF, 0x00F4F8FB)
+                else intArrayOf(0x302B6692, 0x14203953, 0x0007080D),
                 floatArrayOf(0f, 0.55f, 1f), android.graphics.Shader.TileMode.CLAMP
             )
             canvas.drawRect(area, paint)
@@ -1570,7 +1580,7 @@ class MainActivity : Activity() {
     }
 
     private fun applyPaletteToTree(root: View) {
-        val lightMode = prefs.getBoolean(AppPrefs.LIGHT_MODE, false)
+        val lightMode = prefs.getBoolean(AppPrefs.LIGHT_MODE, true)
         if (!lightMode) return
         fun walk(view: View) {
             if (view.tag == "digitalliquid-preview-island") return
@@ -1591,7 +1601,7 @@ class MainActivity : Activity() {
                     r > g * 1.35 && r > b * 1.35 -> 0xFFB12C39.toInt()
                     g > r * 1.15 && g > b * 1.06 -> 0xFF236C49.toInt()
                     b > r * 1.15 && b > g * 1.08 -> 0xFF3555A4.toInt()
-                    r > 170 && b > 150 && g > 100 -> 0xFF167D74.toInt()
+                    r > 170 && b > 150 && g > 100 -> 0xFF167FE8.toInt()
                     luminance > 165 -> 0xFF252838.toInt()
                     luminance > 112 -> 0xFF5A6072.toInt()
                     else -> old
@@ -1613,11 +1623,11 @@ class MainActivity : Activity() {
         return GlassTabBar(
             this,
             listOf(
-                GlassTabBar.Item("⌂", "Đảo nổi"),
-                GlassTabBar.Item("◉", "Giao diện"),
-                GlassTabBar.Item("✦", "Trợ lý AI"),
-                GlassTabBar.Item("◌", "Tính năng"),
-                GlassTabBar.Item("⚙", "Cài đặt")
+                GlassTabBar.Item("⌂", "Home"),
+                GlassTabBar.Item("▦", "Activities"),
+                GlassTabBar.Item("✦", "Shortcuts"),
+                GlassTabBar.Item("⚙", "Settings"),
+                GlassTabBar.Item("◉", "Appearance")
             ),
             tab
         ) { selected ->
@@ -1630,6 +1640,15 @@ class MainActivity : Activity() {
         welcomeTypewriter?.let { uiHandler.removeCallbacks(it) }
         welcomeTypewriter = null
         super.onDestroy()
+    }
+
+    private fun openSiriEffect() {
+        try {
+            startActivity(Intent(this, AssistantFallbackActivity::class.java))
+        } catch (error: Exception) {
+            android.util.Log.e("DigitalLiquidSiri", "Could not open Siri Glass fallback", error)
+            LiquidNotice.show(this, "Không mở được hiệu ứng Siri. Hãy cài lại bản DigitalLiquid mới nhất.", 3600L)
+        }
     }
 
     private fun isDigitalLiquidAssistant(): Boolean {

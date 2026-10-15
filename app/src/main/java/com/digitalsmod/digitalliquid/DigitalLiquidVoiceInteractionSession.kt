@@ -37,6 +37,7 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
     private var promptInput: EditText? = null
     private var sendButton: TextView? = null
     private var status: TextView? = null
+    private var siriLens: SiriLensEffectView? = null
     private var recognizer: SpeechRecognizer? = null
     private val history = mutableListOf<Pair<String, String>>()
     private val main = Handler(Looper.getMainLooper())
@@ -58,20 +59,18 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
             elevation = dp(18).toFloat()
             isClickable = true
         }
-        val orb = SiriGlassOrbView(uiContext).apply { alpha = 0.82f; isClickable = false }
-        card.addView(orb, FrameLayout.LayoutParams(-1, dp(194), Gravity.TOP))
-        val wave = SiriWaveGlassView(uiContext).apply { alpha = 0.36f; isClickable = false }
-        card.addView(wave, FrameLayout.LayoutParams(-1, dp(94), Gravity.BOTTOM))
-
         val content = LinearLayout(uiContext).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(14), dp(9), dp(14), dp(12))
             background = GradientDrawable().apply {
-                setColor(0x86080A10.toInt())
+                setColor(0xD9080A10.toInt())
                 cornerRadius = dp(32).toFloat()
             }
         }
         card.addView(content, FrameLayout.LayoutParams(-1, -1))
+        val lensView = SiriLensEffectView(uiContext).apply { alpha = 0.98f; isClickable = false }
+        siriLens = lensView
+        content.addView(lensView, LinearLayout.LayoutParams(-1, dp(152)).apply { bottomMargin = dp(3) })
 
         val header = LinearLayout(uiContext).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         val dot = View(uiContext).apply {
@@ -118,10 +117,10 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
                     maxLines = 1
                     gravity = Gravity.CENTER
                     setPadding(dp(12), 0, dp(12), 0)
-                    setTextColor(if (active) 0xFF0B2828.toInt() else 0xFFE1E7F0.toInt())
+                    setTextColor(if (active) 0xFF07356E.toInt() else 0xFFE1E7F0.toInt())
                     background = GradientDrawable(
                         GradientDrawable.Orientation.LEFT_RIGHT,
-                        if (active) intArrayOf(0xFF82EAD3.toInt(), 0xFF46BDB4.toInt())
+                        if (active) intArrayOf(0xFF9BCBFF.toInt(), 0xFF5EABFF.toInt())
                         else intArrayOf(0xFF222B38.toInt(), 0xFF161D29.toInt())
                     ).apply {
                         cornerRadius = dp(14).toFloat()
@@ -206,7 +205,7 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
             textSize = 22f
             gravity = Gravity.CENTER
             setTextColor(Color.WHITE)
-            background = GradientDrawable().apply { setColor(0xFF49BDB4.toInt()); cornerRadius = dp(14).toFloat() }
+            background = GradientDrawable().apply { setColor(0xFF328CFA.toInt()); cornerRadius = dp(14).toFloat() }
             setOnClickListener { sendPrompt() }
         }
         sendButton = send
@@ -263,13 +262,14 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
             recognizer?.destroy()
             recognizer = SpeechRecognizer.createSpeechRecognizer(uiContext).apply {
                 setRecognitionListener(object : RecognitionListener {
-                    override fun onReadyForSpeech(params: Bundle?) { status?.text = "Đang nghe…" }
+                    override fun onReadyForSpeech(params: Bundle?) { status?.text = "Đang nghe…"; siriLens?.setListening(true) }
                     override fun onBeginningOfSpeech() = Unit
                     override fun onRmsChanged(rmsdB: Float) = Unit
                     override fun onBufferReceived(buffer: ByteArray?) = Unit
-                    override fun onEndOfSpeech() { status?.text = "Đang xử lý giọng nói…" }
-                    override fun onError(error: Int) { status?.text = "Không nhận dạng được giọng nói (mã $error)." }
+                    override fun onEndOfSpeech() { status?.text = "Đang xử lý giọng nói…"; siriLens?.setListening(false) }
+                    override fun onError(error: Int) { status?.text = "Không nhận dạng được giọng nói (mã $error)."; siriLens?.setListening(false) }
                     override fun onResults(results: Bundle?) {
+                        siriLens?.setListening(false)
                         val words = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
                         if (!words.isNullOrBlank()) {
                             promptInput?.setText(words)
@@ -311,6 +311,7 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
         // The visual assistant must always open. Authentication gates AI requests, not the Siri animation.
         applyWindowStyleAndPosition()
         panel?.visibility = View.VISIBLE
+        siriLens?.setListening(true)
         if (!KeyAuthGate.isAuthorizedInCurrentProcess(uiContext)) {
             status?.text = "Hiệu ứng Siri đã mở · xác thực key trong DigitalLiquid để trò chuyện với AI."
             // The session lives in a separate process, so a saved-key recheck may take time.
@@ -332,6 +333,7 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
     override fun onHide() {
         Log.i("DigitalLiquidSiri", "VoiceInteractionSession onHide")
         panel?.visibility = View.GONE
+        siriLens?.setListening(false)
         try { recognizer?.stopListening() } catch (_: Exception) { }
         try { recognizer?.destroy() } catch (_: Exception) { }
         recognizer = null
@@ -344,6 +346,7 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
         recognizer = null
         main.removeCallbacksAndMessages(null)
         panel = null
+        siriLens = null
         super.onDestroy()
     }
 
@@ -359,9 +362,9 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
         val win = window?.window ?: return
         win.setBackgroundDrawable(GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
-            setColor(0x100A0907)
+            setColor(0x08090D15)
             cornerRadius = dp(32).toFloat()
-            setStroke(dp(1), 0x33E7C28B)
+            setStroke(dp(1), 0x33FFFFFF)
         })
         val attrs = win.attributes
         val wm = uiContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -395,6 +398,9 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
         attrs.flags = attrs.flags and WindowManager.LayoutParams.FLAG_DIM_BEHIND.inv()
         attrs.dimAmount = 0f
         attrs.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN
+        if (Build.VERSION.SDK_INT >= 23) {
+            attrs.preferredRefreshRate = AppPrefs.get(uiContext).getInt(AppPrefs.ISLAND_REFRESH_RATE, 120).toFloat()
+        }
         if (Build.VERSION.SDK_INT >= 28) attrs.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
         val landscape = uiContext.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
         val sideCutout = landscape && cutout != null && (cutout!!.left <= dp(18) || cutout!!.right >= width - dp(18))

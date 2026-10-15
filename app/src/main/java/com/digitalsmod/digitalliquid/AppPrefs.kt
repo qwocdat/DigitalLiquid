@@ -11,6 +11,7 @@ object AppPrefs {
     const val SERVICE_ENABLED = "service_enabled"
     const val WIDTH = "island_width_dp"
     const val HEIGHT = "island_height_dp"
+    const val ISLAND_REFRESH_RATE = "island_refresh_rate_fps"
     const val OFFSET_TOP = "island_top_offset_dp"
     const val ALIGNMENT = "island_alignment"
     const val GLASS_STRENGTH = "glass_strength"
