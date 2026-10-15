@@ -66,6 +66,9 @@ object OnlineControlManager {
                 !signerMatches
     }
 
+    /** Call only from a background thread; returns the cached/refreshed Firebase ID token. */
+    fun getAuthTokenForRequest(context: Context): String = getIdToken(context.applicationContext)
+
     fun fetch(context: Context, callback: (RemoteControl?, String?) -> Unit) {
         val appContext = context.applicationContext
         executor.execute {
