@@ -28,7 +28,7 @@
         android:icon="@drawable/digitalliquid_brand"
         android:roundIcon="@drawable/digitalliquid_brand"
         android:label="DigitalLiquid"
-        android:theme="@android:style/Theme.Material.NoActionBar"
+        android:theme="@style/DigitalLiquidTheme"
         android:usesCleartextTraffic="false">
 
         <activity
