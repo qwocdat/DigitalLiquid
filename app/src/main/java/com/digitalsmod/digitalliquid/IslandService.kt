@@ -152,6 +152,7 @@ class IslandService : Service() {
     private var panelMediaPlayer: MediaPlayer? = null
     private var panelVideoSurface: Surface? = null
     private var panelTextureView: TextureView? = null
+    private var panelMediaGeneration = 0
     private var playPanelIntro = false
     private var lastBackgroundUri: String? = null
     private var panelBrandTitle: TextView? = null
@@ -169,20 +170,43 @@ class IslandService : Service() {
     private var longPressTriggered = false
     private var lastTapAt = 0L
     private var tapBurstCount = 0
-    private var appSwitchLastTapAt = 0L
-    private var appSwitchSequenceCount = 0
+    private var appSwitchTapCount = 0
+    private var lastAppSwitchTapAt = 0L
     private var appSwitchModeActive = false
-    private val appSwitchIdleRunnable = Runnable {
+    private var ringerTransitionHideUntil = 0L
+    private var lastGeometrySignature = ""
+    private val ringerTransitionHideReset = object : Runnable {
+        override fun run() {
+            val remaining = ringerTransitionHideUntil - android.os.SystemClock.elapsedRealtime()
+            if (remaining > 0L) handler.postDelayed(this, remaining)
+            else {
+                ringerTransitionHideUntil = 0L
+                applyNativeActivityVisibility()
+            }
+        }
+    }
+    private val appSwitchModeExitRunnable = Runnable {
         appSwitchModeActive = false
-        appSwitchSequenceCount = 0
-        appSwitchLastTapAt = 0L
+        appSwitchTapCount = 0
+        lastAppSwitchTapAt = 0L
         tapBurstCount = 0
+        lastTapAt = 0L
+    }
+    private val geometryRefreshRunnable = Runnable {
+        if (isFaceUnlockShrinking || islandRoot == null) return@Runnable
+        val signature = "${displayWidthPx()}x${displayHeightPx()}:${resources.configuration.orientation}:${currentCameraCutoutBounds()}"
+        if (signature == lastGeometrySignature) return@Runnable
+        lastGeometrySignature = signature
+        applyPreferences()
+        render(animateSize = false)
+        updatePosition()
     }
     private val singleTapRunnable = Runnable {
         val prefs = AppPrefs.get(this)
+        val appSwitchSequenceInProgress = prefs.getBoolean(AppPrefs.ISLAND_APP_SWITCH_GESTURE, false) && appSwitchTapCount in 2 until APP_SWITCH_START_TAPS
         when {
             panelOpen -> closeCustomizationPanel()
-            prefs.getBoolean(AppPrefs.DOUBLE_TAP_ASSISTANT, false) && tapBurstCount == 2 -> openDefaultAssistant()
+            prefs.getBoolean(AppPrefs.DOUBLE_TAP_ASSISTANT, false) && tapBurstCount == 2 && !appSwitchSequenceInProgress -> openDefaultAssistant()
             else -> wobblePill()
         }
         tapBurstCount = 0
@@ -192,7 +216,7 @@ class IslandService : Service() {
     private val displayListener = object : DisplayManager.DisplayListener {
         override fun onDisplayAdded(displayId: Int) { checkVirtualDisplayState() }
         override fun onDisplayRemoved(displayId: Int) { checkVirtualDisplayState() }
-        override fun onDisplayChanged(displayId: Int) { checkVirtualDisplayState() }
+        override fun onDisplayChanged(displayId: Int) { checkVirtualDisplayState(); if (displayId == Display.DEFAULT_DISPLAY) scheduleGeometryRefresh() }
     }
 
     private val audioRecordingCallback = if (Build.VERSION.SDK_INT >= 24) {
@@ -239,6 +263,16 @@ class IslandService : Service() {
         }
     }
 
+    private val soundNotificationTransitionReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                AudioManager.RINGER_MODE_CHANGED_ACTION,
+                NotificationManager.ACTION_INTERRUPTION_FILTER_CHANGED,
+                NotificationManager.ACTION_NOTIFICATION_POLICY_CHANGED -> beginRingerTransitionHide()
+            }
+        }
+    }
+
     private val configReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != ACTION_APPLY_CONFIG) return
@@ -257,11 +291,7 @@ class IslandService : Service() {
             applyPreferences()
             // Orientation changes are geometry changes, not a user-requested morph.
             // One immediate layout pass avoids a resize animator fighting updatePosition().
-            handler.post {
-                if (isFaceUnlockShrinking || islandRoot == null) return@post
-                render(animateSize = false)
-                updatePosition()
-            }
+            scheduleGeometryRefresh(force = true)
         }
     }
 
@@ -311,7 +341,6 @@ class IslandService : Service() {
         checkVirtualDisplayState()
         handler.postDelayed(onlinePolicyWatchdog, 12_000L)
 
-        AppPrefs.get(this).edit().putBoolean(AppPrefs.SERVICE_ATTACHED, false).putBoolean(AppPrefs.SERVICE_VISIBLE, false).apply()
         refreshOverlayWindowManager()
         createNotificationChannel()
         val foregroundNotification = buildForegroundNotification()
@@ -321,6 +350,7 @@ class IslandService : Service() {
             startForeground(42, foregroundNotification)
         }
         applyPreferences()
+        RecentAppSwitcher.warmUp(this)
         AppPrefs.get(this).edit().putBoolean(AppPrefs.SERVICE_ENABLED, true).apply()
         try {
             val filter = IntentFilter().apply {
@@ -337,12 +367,19 @@ class IslandService : Service() {
                 addAction("miui.intent.action.SCREEN_RECORDER_STARTED")
                 addAction("miui.intent.action.SCREEN_RECORDER_STOPPED")
             }
+            val modeTransitionFilter = IntentFilter(AudioManager.RINGER_MODE_CHANGED_ACTION).apply {
+                if (Build.VERSION.SDK_INT >= 23) {
+                    addAction(NotificationManager.ACTION_INTERRUPTION_FILTER_CHANGED)
+                    addAction(NotificationManager.ACTION_NOTIFICATION_POLICY_CHANGED)
+                }
+            }
 
             if (Build.VERSION.SDK_INT >= 33) {
                 registerReceiver(configReceiver, IntentFilter(ACTION_APPLY_CONFIG), Context.RECEIVER_NOT_EXPORTED)
                 registerReceiver(orientationReceiver, IntentFilter(Intent.ACTION_CONFIGURATION_CHANGED), Context.RECEIVER_NOT_EXPORTED)
                 registerReceiver(unlockReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
                 registerReceiver(miuiScreenRecorderReceiver, miuiFilter, Context.RECEIVER_EXPORTED)
+                registerReceiver(soundNotificationTransitionReceiver, modeTransitionFilter, Context.RECEIVER_EXPORTED)
             } else {
                 @Suppress("DEPRECATION")
                 registerReceiver(configReceiver, IntentFilter(ACTION_APPLY_CONFIG))
@@ -351,6 +388,7 @@ class IslandService : Service() {
                 registerReceiver(unlockReceiver, filter)
                 @Suppress("DEPRECATION")
                 registerReceiver(miuiScreenRecorderReceiver, miuiFilter)
+                registerReceiver(soundNotificationTransitionReceiver, modeTransitionFilter)
             }
         } catch (_: Exception) { }
         waitForAccessibilityOverlay()
@@ -415,7 +453,7 @@ class IslandService : Service() {
         if (overlayStartupAttempts++ < 8) {
             handler.postDelayed({ waitForAccessibilityOverlay() }, 250L)
         } else {
-            LiquidNotice.makeText(this, "DigitalLiquid chưa kết nối được lớp phủ Trợ năng. Hãy bật lại quyền Theo dõi HyperIsland rồi thử lại.", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "DigitalLiquid chưa kết nối được lớp phủ Trợ năng. Hãy bật lại quyền Theo dõi HyperIsland rồi thử lại.", Toast.LENGTH_LONG).show()
             stopSelf()
         }
     }
@@ -426,6 +464,20 @@ class IslandService : Service() {
             return START_NOT_STICKY
         }
         return START_STICKY
+    }
+
+    private fun scheduleGeometryRefresh(force: Boolean = false) {
+        if (isFaceUnlockShrinking) return
+        if (force) lastGeometrySignature = ""
+        handler.removeCallbacks(geometryRefreshRunnable)
+        handler.postDelayed(geometryRefreshRunnable, 90L)
+    }
+
+    private fun beginRingerTransitionHide() {
+        ringerTransitionHideUntil = android.os.SystemClock.elapsedRealtime() + RINGER_TRANSITION_HIDE_MS
+        handler.removeCallbacks(ringerTransitionHideReset)
+        handler.postDelayed(ringerTransitionHideReset, RINGER_TRANSITION_HIDE_MS)
+        applyNativeActivityVisibility()
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -466,8 +518,8 @@ class IslandService : Service() {
 
     private fun applyPreferences() {
         val prefs = AppPrefs.get(this)
-        widthDp = prefs.getInt(AppPrefs.WIDTH, 148).coerceIn(126, 330)
-        heightDp = prefs.getInt(AppPrefs.HEIGHT, 38).coerceIn(34, 72)
+        widthDp = prefs.getInt(AppPrefs.WIDTH, 148).coerceIn(72, 330)
+        heightDp = prefs.getInt(AppPrefs.HEIGHT, 38).coerceIn(22, 72)
         topOffsetDp = prefs.getInt(AppPrefs.OFFSET_TOP, 0).coerceIn(0, 140)
         alignment = prefs.getString(AppPrefs.ALIGNMENT, "center") ?: "center"
         glassStrength = prefs.getInt(AppPrefs.GLASS_STRENGTH, 72).coerceIn(15, 100)
@@ -717,17 +769,12 @@ class IslandService : Service() {
         try {
             windowManager.addView(host, initialParams)
         } catch (_: Exception) {
-            LiquidNotice.makeText(this, "Android từ chối lớp phủ trên thanh trạng thái. Kiểm tra quyền Trợ năng DigitalLiquid.", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Android từ chối lớp phủ trên thanh trạng thái. Kiểm tra quyền Trợ năng DigitalLiquid.", Toast.LENGTH_LONG).show()
             stopSelf()
             return
         }
         syncOverlayChildBounds(targetWidth(), targetHeight())
         render()
-        AppPrefs.get(this).edit()
-            .putBoolean(AppPrefs.SERVICE_ATTACHED, true)
-            .putBoolean(AppPrefs.SERVICE_VISIBLE, host.visibility == View.VISIBLE)
-            .putBoolean(AppPrefs.SERVICE_ENABLED, true)
-            .apply()
     }
 
     private fun refreshOverlayWindowManager() {
@@ -802,46 +849,42 @@ class IslandService : Service() {
                     view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
                     val now = android.os.SystemClock.elapsedRealtime()
                     val prefs = AppPrefs.get(this)
-                    val switchGestureEnabled = prefs.getBoolean(AppPrefs.ISLAND_APP_SWITCH_GESTURE, false)
+                    val appSwitchEnabled = prefs.getBoolean(AppPrefs.ISLAND_APP_SWITCH_GESTURE, false)
 
-                    if (switchGestureEnabled && appSwitchModeActive) {
-                        // Once six quick taps arm this mode, every further tap switches immediately.
-                        // Keep the mode alive through brief app-launch animations, then disarm on idle.
+                    // After the six-tap arm sequence, subsequent taps switch immediately. The
+                    // mode stays armed only while the user continues tapping; no package scan is
+                    // performed on the touch/UI thread.
+                    if (appSwitchEnabled && appSwitchModeActive) {
                         handler.removeCallbacks(singleTapRunnable)
+                        RecentAppSwitcher.switchNext(this)
+                        handler.removeCallbacks(appSwitchModeExitRunnable)
+                        handler.postDelayed(appSwitchModeExitRunnable, APP_SWITCH_MODE_IDLE_MS)
                         tapBurstCount = 0
                         lastTapAt = now
-                        appSwitchLastTapAt = now
-                        RecentAppSwitcher.switch(this)
-                        handler.removeCallbacks(appSwitchIdleRunnable)
-                        handler.postDelayed(appSwitchIdleRunnable, APP_SWITCH_IDLE_TIMEOUT_MS)
                         return true
                     }
 
-                    if (switchGestureEnabled) {
-                        appSwitchSequenceCount = if (now - appSwitchLastTapAt <= APP_SWITCH_SEQUENCE_GAP_MS) {
-                            appSwitchSequenceCount + 1
-                        } else {
-                            1
-                        }
-                        appSwitchLastTapAt = now
-                        if (appSwitchSequenceCount >= APP_SWITCH_START_TAPS) {
+                    if (appSwitchEnabled) {
+                        appSwitchTapCount = if (now - lastAppSwitchTapAt <= APP_SWITCH_SEQUENCE_GAP_MS) appSwitchTapCount + 1 else 1
+                        lastAppSwitchTapAt = now
+                        // Prepare the usage-order cache by tap five so the first switch has no scan delay.
+                        if (appSwitchTapCount >= APP_SWITCH_START_TAPS - 1) RecentAppSwitcher.warmUp(this)
+                        if (appSwitchTapCount >= APP_SWITCH_START_TAPS) {
+                            appSwitchTapCount = 0
+                            lastAppSwitchTapAt = 0L
                             appSwitchModeActive = true
-                                                handler.removeCallbacks(singleTapRunnable)
+                            handler.removeCallbacks(singleTapRunnable)
                             tapBurstCount = 0
-                            lastTapAt = 0L
-                            RecentAppSwitcher.switch(this)
-                            handler.removeCallbacks(appSwitchIdleRunnable)
-                            handler.postDelayed(appSwitchIdleRunnable, APP_SWITCH_IDLE_TIMEOUT_MS)
+                            RecentAppSwitcher.warmUp(this, force = true)
+                            handler.removeCallbacks(appSwitchModeExitRunnable)
+                            handler.postDelayed(appSwitchModeExitRunnable, APP_SWITCH_MODE_IDLE_MS)
                             return true
                         }
                     } else {
-                        appSwitchModeActive = false
-                        appSwitchSequenceCount = 0
-                        appSwitchLastTapAt = 0L
-                        handler.removeCallbacks(appSwitchIdleRunnable)
+                        appSwitchTapCount = 0
+                        lastAppSwitchTapAt = 0L
                     }
 
-                    // Normal tap/double-tap handling remains independent of the six-tap sequence.
                     if (now - lastTapAt <= APP_SWITCH_SEQUENCE_GAP_MS) tapBurstCount++ else tapBurstCount = 1
                     lastTapAt = now
                     handler.removeCallbacks(singleTapRunnable)
@@ -853,10 +896,6 @@ class IslandService : Service() {
                 handler.removeCallbacks(longPressRunnable)
                 handler.removeCallbacks(singleTapRunnable)
                 tapBurstCount = 0
-                if (!appSwitchModeActive) {
-                    appSwitchSequenceCount = 0
-                    appSwitchLastTapAt = 0L
-                }
                 return true
             }
         }
@@ -864,10 +903,28 @@ class IslandService : Service() {
     }
 
     private fun openDefaultAssistant() {
+        val roleHeld = if (Build.VERSION.SDK_INT >= 29) {
+            try {
+                val manager = getSystemService(android.app.role.RoleManager::class.java)
+                manager != null && manager.isRoleAvailable(android.app.role.RoleManager.ROLE_ASSISTANT) &&
+                    manager.isRoleHeld(android.app.role.RoleManager.ROLE_ASSISTANT)
+            } catch (_: Exception) { false }
+        } else {
+            try {
+                val selected = android.provider.Settings.Secure.getString(contentResolver, "voice_interaction_service").orEmpty()
+                selected.contains("DigitalLiquidVoiceInteractionService", ignoreCase = true)
+            } catch (_: Exception) { false }
+        }
+        val launch = if (roleHeld) {
+            Intent(Intent.ACTION_ASSIST).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        } else {
+            Intent(this, AssistantFallbackActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
         try {
-            startActivity(Intent(Intent.ACTION_ASSIST).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            startActivity(launch)
         } catch (_: Exception) {
-            LiquidNotice.makeText(this, "Hãy đặt DigitalLiquid làm trợ lý mặc định trong Cài đặt.", Toast.LENGTH_SHORT).show()
+            try { startActivity(Intent(this, AssistantFallbackActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+            catch (_: Exception) { Toast.makeText(this, "Không thể mở giao diện trợ lý trên thiết bị này.", Toast.LENGTH_SHORT).show() }
         }
     }
 
@@ -1045,7 +1102,7 @@ class IslandService : Service() {
             else -> widthDp
         }
         val maxWidthPx = (screenWidthPx - dp(12)).coerceAtLeast(dp(36))
-        return dp(desiredDp).coerceIn(dp(126), maxWidthPx)
+        return dp(desiredDp).coerceIn(dp(72).coerceAtMost(maxWidthPx), maxWidthPx)
     }
 
     private fun targetHeight(): Int = when {
@@ -1256,12 +1313,17 @@ class IslandService : Service() {
         val host = overlayHost ?: return
         val lp = params ?: return
         val prefs = AppPrefs.get(this)
-        val hideForSystemIsland = prefs.getBoolean(AppPrefs.AUTO_HIDE_SYSTEM_ISLAND, false) && hyperIslandVisibilityOverride == true
-        val hideForOtherActivity = prefs.getBoolean(AppPrefs.HIDE_WHEN_NATIVE_ACTIVITY, false) && nativeActivityActive
-        val hideForMusic = prefs.getBoolean(AppPrefs.HIDE_WHEN_MEDIA_PLAYING, false) && mediaPlaybackActive
-        val hideForRingerUi = prefs.getBoolean(AppPrefs.HIDE_WHEN_RINGER_UI, true) && ringerUiActive
+        val hideForSystemIsland = prefs.getBoolean(AppPrefs.AUTO_HIDE_SYSTEM_ISLAND, true) && hyperIslandVisibilityOverride == true
+        val hideForOtherActivity = prefs.getBoolean(AppPrefs.HIDE_WHEN_NATIVE_ACTIVITY, true) && nativeActivityActive
+        val hideForMusic = prefs.getBoolean(AppPrefs.HIDE_WHEN_MEDIA_PLAYING, true) && mediaPlaybackActive
+        val ringerTransitionActive = android.os.SystemClock.elapsedRealtime() < ringerTransitionHideUntil
+        val hideForRingerUi = prefs.getBoolean(AppPrefs.HIDE_WHEN_RINGER_UI, true) && ringerTransitionActive
         val nativeIslandVisible = hideForSystemIsland || hideForOtherActivity || hideForMusic || hideForRingerUi
-        val suppress = !screenRecording && !cameraActive && nativeIslandVisible && !faceUnlocking && !isFaceUnlockShrinking
+        // A short sound/DND/notification popup must hide our pill even while recording or camera state is active.
+        // Other native activities keep the existing recording/camera priority behavior.
+        val suppress = !faceUnlocking && !isFaceUnlockShrinking && (
+            ringerTransitionActive || (!screenRecording && !cameraActive && nativeIslandVisible)
+        )
         val wantedVisibility = if (suppress) View.GONE else View.VISIBLE
         val hasNotTouchable = (lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) != 0
         if (host.visibility != wantedVisibility || hasNotTouchable != suppress) {
@@ -1272,10 +1334,6 @@ class IslandService : Service() {
                 lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
             }
             updateOverlayWindow(lp)
-        }
-        val isActuallyVisible = host.isAttachedToWindow && host.visibility == View.VISIBLE
-        if (prefs.getBoolean(AppPrefs.SERVICE_VISIBLE, false) != isActuallyVisible) {
-            prefs.edit().putBoolean(AppPrefs.SERVICE_VISIBLE, isActuallyVisible).apply()
         }
     }
 
@@ -1565,50 +1623,74 @@ class IslandService : Service() {
         host.removeAllViews()
         lastBackgroundUri = uriString
         val uri = Uri.parse(uriString)
-        val mime = try { contentResolver.getType(uri).orEmpty() } catch (_: Exception) { "" }
-        if (mime.startsWith("video/", ignoreCase = true)) {
+        val savedKind = AppPrefs.get(this).getString(AppPrefs.PANEL_BACKGROUND_KIND, null)
+        val kind = savedKind ?: PanelBackgroundMedia.kind(this, uri)
+        if (kind == "video") {
             val texture = TextureView(this)
             panelTextureView = texture
-            texture.isOpaque = true
+            texture.isOpaque = false
             texture.isClickable = false
             texture.isFocusable = false
             texture.background = roundedBackground(30f, Color.BLACK)
             texture.clipToOutline = true
             texture.outlineProvider = ViewOutlineProvider.BACKGROUND
             texture.elevation = dp(8).toFloat()
+            val generation = panelMediaGeneration
+            var localPlayer: MediaPlayer? = null
+            var localSurface: Surface? = null
             texture.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                 override fun onSurfaceTextureAvailable(surfaceTexture: android.graphics.SurfaceTexture, width: Int, height: Int) {
-                    val surface = Surface(surfaceTexture)
-                    panelVideoSurface = surface
-                    val player = MediaPlayer()
-                    panelMediaPlayer = player
+                    if (generation != panelMediaGeneration || panelTextureView !== texture) return
                     try {
+                        val surface = Surface(surfaceTexture)
+                        val player = MediaPlayer()
+                        localSurface = surface
+                        localPlayer = player
+                        panelVideoSurface = surface
+                        panelMediaPlayer = player
+                        player.setOnErrorListener { failed, _, _ ->
+                            if (generation == panelMediaGeneration && panelMediaPlayer === failed) {
+                                stopPanelMedia()
+                            } else {
+                                releaseDetachedPanelMedia(localPlayer, localSurface)
+                            }
+                            true
+                        }
+                        player.setOnVideoSizeChangedListener { _, videoWidth, videoHeight ->
+                            if (generation == panelMediaGeneration && panelTextureView === texture) {
+                                applyVideoCenterCrop(texture, videoWidth, videoHeight)
+                            }
+                        }
+                        player.setOnPreparedListener { prepared ->
+                            if (generation != panelMediaGeneration || panelTextureView !== texture || panelMediaPlayer !== prepared) {
+                                releaseDetachedPanelMedia(localPlayer, localSurface)
+                                return@setOnPreparedListener
+                            }
+                            try {
+                                applyVideoCenterCrop(texture, prepared.videoWidth, prepared.videoHeight)
+                                prepared.start()
+                            } catch (_: Exception) {
+                                stopPanelMedia()
+                            }
+                        }
                         player.setDataSource(this@IslandService, uri)
                         player.setSurface(surface)
                         player.isLooping = true
                         player.setVolume(0f, 0f)
-                        player.setOnVideoSizeChangedListener { _, videoWidth, videoHeight ->
-                            applyVideoCenterCrop(texture, videoWidth, videoHeight)
-                        }
-                        player.setOnPreparedListener { prepared ->
-                            applyVideoCenterCrop(texture, prepared.videoWidth, prepared.videoHeight)
-                            prepared.start()
-                        }
-                        player.setOnErrorListener { _, _, _ ->
-                            stopPanelMedia()
-                            true
-                        }
                         player.prepareAsync()
                     } catch (_: Exception) {
-                        stopPanelMedia()
+                        if (generation == panelMediaGeneration) stopPanelMedia()
+                        else releaseDetachedPanelMedia(localPlayer, localSurface)
                     }
                 }
                 override fun onSurfaceTextureSizeChanged(surfaceTexture: android.graphics.SurfaceTexture, width: Int, height: Int) {
-                    val player = panelMediaPlayer
-                    if (player != null) applyVideoCenterCrop(texture, player.videoWidth, player.videoHeight)
+                    if (generation != panelMediaGeneration || panelTextureView !== texture) return
+                    val player = localPlayer ?: return
+                    try { applyVideoCenterCrop(texture, player.videoWidth, player.videoHeight) } catch (_: Exception) { }
                 }
                 override fun onSurfaceTextureDestroyed(surfaceTexture: android.graphics.SurfaceTexture): Boolean {
-                    stopPanelMedia()
+                    if (generation == panelMediaGeneration && panelTextureView === texture) stopPanelMedia()
+                    else releaseDetachedPanelMedia(localPlayer, localSurface)
                     return true
                 }
                 override fun onSurfaceTextureUpdated(surfaceTexture: android.graphics.SurfaceTexture) = Unit
@@ -1635,13 +1717,26 @@ class IslandService : Service() {
         val videoAspect = videoWidth.toFloat() / videoHeight.toFloat()
         val viewAspect = viewWidth / viewHeight
         val scaleX = if (videoAspect > viewAspect) videoAspect / viewAspect else 1f
-        val scaleY = if (videoAspect < viewAspect) viewAspect / viewAspect else 1f
+        val scaleY = if (videoAspect < viewAspect) viewAspect / videoAspect else 1f
         val matrix = Matrix()
         matrix.setScale(scaleX, scaleY, viewWidth / 2f, viewHeight / 2f)
         texture.setTransform(matrix)
     }
 
+    private fun releaseDetachedPanelMedia(player: MediaPlayer?, surface: Surface?) {
+        if (player != null && player !== panelMediaPlayer) {
+            try { player.setOnPreparedListener(null) } catch (_: Exception) { }
+            try { player.setOnVideoSizeChangedListener(null) } catch (_: Exception) { }
+            try { player.setOnErrorListener(null) } catch (_: Exception) { }
+            try { player.stop() } catch (_: Exception) { }
+            try { player.reset() } catch (_: Exception) { }
+            try { player.release() } catch (_: Exception) { }
+        }
+        if (surface != null && surface !== panelVideoSurface) try { surface.release() } catch (_: Exception) { }
+    }
+
     private fun stopPanelMedia() {
+        panelMediaGeneration++
         try { panelMediaPlayer?.setOnPreparedListener(null) } catch (_: Exception) { }
         try { panelMediaPlayer?.setOnVideoSizeChangedListener(null) } catch (_: Exception) { }
         try { panelMediaPlayer?.setOnErrorListener(null) } catch (_: Exception) { }
@@ -1833,10 +1928,10 @@ class IslandService : Service() {
             setPadding(dp(17), dp(15), dp(17), dp(15))
             background = GradientDrawable(
                 GradientDrawable.Orientation.TL_BR,
-                intArrayOf(0xFCFFFFFF.toInt(), 0xF1F1F4FA.toInt())
+                intArrayOf(0xF51B1D28.toInt(), 0xF20A0C13.toInt())
             ).apply {
                 cornerRadius = dp(25).toFloat()
-                setStroke(dp(1), 0x558795B1)
+                setStroke(dp(1), 0x55FFFFFF)
             }
             alpha = 0f
             translationY = -dp(10).toFloat()
@@ -1856,13 +1951,13 @@ class IslandService : Service() {
             text = title.ifBlank { "Thông báo DigitalLiquid" }
             textSize = 16f
             typeface = Typeface.create("sans-serif", Typeface.BOLD)
-            setTextColor(0xFF202333.toInt())
+            setTextColor(Color.WHITE)
             maxLines = 2
         }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(7) })
         card.addView(TextView(this).apply {
             text = message
             textSize = 13f
-            setTextColor(0xFF62697A.toInt())
+            setTextColor(0xFFD2D4DF.toInt())
             setLineSpacing(dp(2).toFloat(), 1.08f)
             maxLines = 5
         }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(5) })
@@ -1872,13 +1967,13 @@ class IslandService : Service() {
             textSize = 10f
             letterSpacing = 0.03f
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setTextColor(0xFF6256BB.toInt())
+            setTextColor(0xFFE2DCFF.toInt())
         }, LinearLayout.LayoutParams(0, dp(28), 1f))
         bottom.addView(TextView(this).apply {
             text = "×"
             textSize = 22f
             gravity = Gravity.CENTER
-            setTextColor(0xFF6B7182.toInt())
+            setTextColor(0xFFB8BBC9.toInt())
             setPadding(dp(8), 0, dp(3), 0)
             setOnClickListener { dismissCustomAppNotice() }
         }, LinearLayout.LayoutParams(dp(32), dp(30)))
@@ -1937,17 +2032,44 @@ class IslandService : Service() {
         }
     }
 
+    private fun remoteNotificationsManager(): NotificationManager? {
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return null
+        if (Build.VERSION.SDK_INT >= 26 && manager.getNotificationChannel(REMOTE_NOTICE_CHANNEL) == null) {
+            manager.createNotificationChannel(NotificationChannel(REMOTE_NOTICE_CHANNEL, "DigitalLiquid Admin", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "Thông báo, bảo trì và cập nhật từ quản trị viên DigitalLiquid"
+            })
+        }
+        return manager
+    }
+
     private fun postRemoteAnnouncement(control: OnlineControlManager.RemoteControl) {
         val noticeId = control.announcementId.ifBlank { control.announcementTitle + "|" + control.announcementMessage }
-        if (LiquidNoticeQueue.wasHandled(this, noticeId)) return
-        val title = control.announcementTitle.ifBlank { "Thông báo DigitalLiquid" }
-        if (showCustomAppNotice(title, control.announcementMessage, control.announcementUrl)) {
-            LiquidNoticeQueue.markHandled(this, noticeId)
+        val noticePrefs = getSharedPreferences(REMOTE_NOTICE_PREFS, MODE_PRIVATE)
+        if (noticePrefs.getString(REMOTE_NOTICE_LAST_ID, "") == noticeId) return
+        if (showCustomAppNotice(control.announcementTitle, control.announcementMessage, control.announcementUrl)) {
+            noticePrefs.edit().putString(REMOTE_NOTICE_LAST_ID, noticeId).apply()
             return
         }
-        // If the overlay cannot be drawn, queue a branded in-app dialog for the next app launch.
-        // Do not fall back to a generic Android notification card.
-        LiquidNoticeQueue.enqueue(this, noticeId, title, control.announcementMessage, control.announcementUrl)
+        val openIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pending = PendingIntent.getActivity(
+            this, REMOTE_ANNOUNCEMENT_NOTIFICATION_ID, openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = Notification.Builder(this, REMOTE_NOTICE_CHANNEL)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle(control.announcementTitle.ifBlank { "Thông báo DigitalLiquid" })
+            .setContentText(control.announcementMessage)
+            .setStyle(Notification.BigTextStyle().bigText(control.announcementMessage))
+            .setContentIntent(pending)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+            .build()
+        try {
+            remoteNotificationsManager()?.notify(REMOTE_ANNOUNCEMENT_NOTIFICATION_ID, notification)
+            noticePrefs.edit().putString(REMOTE_NOTICE_LAST_ID, noticeId).apply()
+        } catch (_: Exception) { }
     }
 
     private fun postRemotePolicyNotice(control: OnlineControlManager.RemoteControl, localVersion: Int) {
@@ -1957,12 +2079,12 @@ class IslandService : Service() {
         when {
             !control.signerMatches -> {
                 title = "Bản dựng không được xác minh"
-                message = "Chữ ký APK không khớp với chứng thư được phép. Hãy cài bản phát hành chính thức."
+                message = "Chữ ký APK không khớp với chứng thư được quản trị viên cho phép. Hãy cài bản chính thức."
                 targetUrl = control.downloadUrl
             }
             !control.appEnabled -> {
-                title = "DigitalLiquid đã tạm dừng"
-                message = "Phiên bản này không còn được phép sử dụng. Mở DigitalLiquid để xem trạng thái."
+                title = "DigitalLiquid đã bị vô hiệu hóa"
+                message = "Quản trị viên đã tắt quyền sử dụng phiên bản này."
                 targetUrl = ""
             }
             control.maintenanceEnabled -> {
@@ -1977,15 +2099,44 @@ class IslandService : Service() {
             }
             else -> return
         }
-        // Policy enforcement is also checked by MainActivity and shown with LiquidDialog.
-        // When the floating surface is available, use it; otherwise rely on the in-app policy gate.
-        showCustomAppNotice(title, message, targetUrl)
+        val openIntent = try {
+            (if (targetUrl.startsWith("https://") || targetUrl.startsWith("http://")) {
+                Intent(Intent.ACTION_VIEW, Uri.parse(targetUrl))
+            } else {
+                Intent(this, MainActivity::class.java)
+            }).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            }
+        } catch (_: Exception) {
+            Intent(this, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            }
+        }
+        val pending = PendingIntent.getActivity(
+            this, REMOTE_POLICY_NOTIFICATION_ID, openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = Notification.Builder(this, REMOTE_NOTICE_CHANNEL)
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setContentTitle(title)
+            .setContentText(message)
+            .setStyle(Notification.BigTextStyle().bigText(message))
+            .setContentIntent(pending)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+            .build()
+        try { remoteNotificationsManager()?.notify(REMOTE_POLICY_NOTIFICATION_ID, notification) } catch (_: Exception) { }
     }
 
     override fun onDestroy() {
         handler.removeCallbacks(keyAuthorizationWatchdog)
         handler.removeCallbacks(onlinePolicyWatchdog)
         handler.removeCallbacks(faceShrinkSafety)
+        handler.removeCallbacks(appSwitchModeExitRunnable)
+        handler.removeCallbacks(ringerTransitionHideReset)
+        handler.removeCallbacks(geometryRefreshRunnable)
+        handler.removeCallbacks(singleTapRunnable)
+        handler.removeCallbacks(longPressRunnable)
         
         try { displayManager.unregisterDisplayListener(displayListener) } catch (_: Exception) { }
         if (Build.VERSION.SDK_INT >= 24 && audioRecordingCallback != null) {
@@ -1993,11 +2144,7 @@ class IslandService : Service() {
         }
 
         instance = null
-        AppPrefs.get(this).edit()
-            .putBoolean(AppPrefs.SERVICE_ATTACHED, false)
-            .putBoolean(AppPrefs.SERVICE_VISIBLE, false)
-            .putBoolean(AppPrefs.SERVICE_ENABLED, false)
-            .apply()
+        AppPrefs.get(this).edit().putBoolean(AppPrefs.SERVICE_ENABLED, false).apply()
         resizeAnimator?.cancel()
         wobbleAnimator?.cancel()
         recordingPulse?.cancel()
@@ -2012,6 +2159,7 @@ class IslandService : Service() {
         try { unregisterReceiver(orientationReceiver) } catch (_: Exception) { }
         try { unregisterReceiver(unlockReceiver) } catch (_: Exception) { }
         try { unregisterReceiver(miuiScreenRecorderReceiver) } catch (_: Exception) { }
+        try { unregisterReceiver(soundNotificationTransitionReceiver) } catch (_: Exception) { }
         overlayHost?.let { try { windowManager.removeView(it) } catch (_: Exception) { } }
         overlayHost = null
         islandRoot = null
@@ -2026,12 +2174,18 @@ class IslandService : Service() {
         const val EXTRA_PICK_PANEL_BACKGROUND = "com.digitalsmod.digitalliquid.PICK_PANEL_BACKGROUND"
         const val PANEL_BACKGROUND_URI = "custom_panel_background_uri"
         private const val CHANNEL_ID = "digitalliquid_overlay"
+        private const val REMOTE_NOTICE_CHANNEL = "digitalliquid_admin_notices"
+        private const val REMOTE_NOTICE_PREFS = "digitalliquid_remote_notices"
+        private const val REMOTE_NOTICE_LAST_ID = "last_announcement_id"
+        private const val REMOTE_ANNOUNCEMENT_NOTIFICATION_ID = 43
+        private const val REMOTE_POLICY_NOTIFICATION_ID = 44
         private const val CUSTOM_NOTICE_DURATION_MS = 6500L
         private const val LONG_PRESS_MS = 430L
         private const val DOUBLE_TAP_WINDOW_MS = 310L
         private const val APP_SWITCH_SEQUENCE_GAP_MS = 720L
-        private const val APP_SWITCH_IDLE_TIMEOUT_MS = 1800L
         private const val APP_SWITCH_START_TAPS = 6
+        private const val APP_SWITCH_MODE_IDLE_MS = 1800L
+        private const val RINGER_TRANSITION_HIDE_MS = 2100L
         private const val TRAIL_EXTENT_DP = 38
 
         private const val FACE_SIZE_DP = 150
@@ -2096,9 +2250,13 @@ class IslandService : Service() {
             lastRingerUiActive = active
             val service = instance ?: return
             service.handler.post {
-                if (service.ringerUiActive == active) return@post
+                if (service.ringerUiActive == active) {
+                    if (active) service.beginRingerTransitionHide()
+                    return@post
+                }
                 service.ringerUiActive = active
-                service.applyNativeActivityVisibility()
+                if (active) service.beginRingerTransitionHide()
+                else service.applyNativeActivityVisibility()
             }
         }
 

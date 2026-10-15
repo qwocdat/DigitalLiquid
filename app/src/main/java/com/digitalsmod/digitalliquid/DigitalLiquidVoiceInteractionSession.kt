@@ -2,6 +2,7 @@ package com.digitalsmod.digitalliquid
 
 import android.Manifest
 import android.content.Context
+import android.content.res.Configuration
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -19,10 +20,12 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewOutlineProvider
 import android.view.WindowManager
+import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.Spinner
 import android.widget.TextView
 import kotlin.math.max
 import android.widget.Toast
@@ -46,23 +49,23 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
             clipToPadding = true
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                setColor(0xF8FFFFFF.toInt())
+                setColor(0xF90A0B10.toInt())
                 cornerRadius = dp(32).toFloat()
-                setStroke(dp(1), 0x558795B1)
+                setStroke(dp(1), 0x55FFFFFF)
             }
             outlineProvider = ViewOutlineProvider.BACKGROUND
             clipToOutline = true
             elevation = dp(18).toFloat()
             isClickable = true
         }
-        val wave = SiriWaveGlassView(uiContext).apply { alpha = 0.20f; isClickable = false }
+        val wave = SiriWaveGlassView(uiContext).apply { alpha = 0.95f; isClickable = false }
         card.addView(wave, FrameLayout.LayoutParams(-1, dp(152), Gravity.BOTTOM))
 
         val content = LinearLayout(uiContext).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(14), dp(9), dp(14), dp(12))
             background = GradientDrawable().apply {
-                setColor(0xEAFBFCFF.toInt())
+                setColor(0xD9080A10.toInt())
                 cornerRadius = dp(32).toFloat()
             }
         }
@@ -77,52 +80,53 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
         titleColumn.addView(TextView(uiContext).apply {
             text = "DigitalLiquid AI"
             textSize = 15f
-            setTextColor(0xFF202333.toInt())
+            setTextColor(Color.WHITE)
             typeface = android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.BOLD)
         })
         titleColumn.addView(TextView(uiContext).apply {
-            text = "TRỢ LÝ CÁ NHÂN"
+            text = "Siri mode · OpenRouter"
             textSize = 10f
-            setTextColor(0xFF6556BB.toInt())
+            setTextColor(0xFFB2B8C8.toInt())
         })
         header.addView(titleColumn, LinearLayout.LayoutParams(0, -2, 1f))
         val close = TextView(uiContext).apply {
             text = "×"
             textSize = 27f
             gravity = Gravity.CENTER
-            setTextColor(0xFF5F6576.toInt())
+            setTextColor(0xDDFFFFFF.toInt())
             setOnClickListener { hide() }
         }
         header.addView(close, LinearLayout.LayoutParams(dp(32), dp(38)))
         content.addView(header, LinearLayout.LayoutParams(-1, dp(42)))
 
         val currentModel = AiModels.selectedId(uiContext)
-        val modelButton = TextView(uiContext).apply {
-            text = "${AiModels.displayLabelFor(currentModel)}   ·   ĐỔI"
-            textSize = 12f
-            setTextColor(0xFF40366F.toInt())
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(12), 0, dp(12), 0)
-            background = GradientDrawable().apply {
-                setColor(0xFFF0EEFF.toInt())
-                cornerRadius = dp(14).toFloat()
-                setStroke(dp(1), 0x668F83E4)
+        val modelLabels = AiModels.all.map { it.label }.toMutableList()
+        val customModelIndex = if (AiModels.all.none { it.id == currentModel }) {
+            modelLabels.add("Tùy chỉnh · $currentModel")
+            modelLabels.lastIndex
+        } else -1
+        val modelSpinner = Spinner(uiContext).apply {
+            adapter = ArrayAdapter(uiContext, android.R.layout.simple_spinner_item, modelLabels).also {
+                it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
             }
-            setOnClickListener {
-                LiquidModelPicker.show(uiContext, AiModels.selectedId(uiContext)) { selected ->
-                    AppPrefs.get(uiContext).edit().putString(AppPrefs.AI_MODEL, selected).apply()
-                    text = "${AiModels.displayLabelFor(selected)}   ·   ĐỔI"
+            setSelection(AiModels.all.indexOfFirst { it.id == currentModel }.let { if (it >= 0) it else customModelIndex }, false)
+            setBackground(GradientDrawable().apply { setColor(0xFF191C28.toInt()); cornerRadius = dp(12).toFloat() })
+            setPadding(dp(7), dp(2), dp(7), dp(2))
+            onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+                override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
+                override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    AiModels.all.getOrNull(position)?.let { AppPrefs.get(uiContext).edit().putString(AppPrefs.AI_MODEL, it.id).apply() }
                 }
             }
         }
-        content.addView(modelButton, LinearLayout.LayoutParams(-1, dp(39)).apply { topMargin = dp(6) })
+        content.addView(modelSpinner, LinearLayout.LayoutParams(-1, dp(39)).apply { topMargin = dp(6) })
 
         status = TextView(uiContext).apply {
             text = if (AppPrefs.get(uiContext).getString(AppPrefs.AI_ENDPOINT, "").orEmpty().isBlank())
-                "Chưa cấu hình kết nối trợ lý trong DigitalLiquid → Trợ lý AI."
+                "Chưa cấu hình AI proxy trong DigitalLiquid → Trợ lý AI."
             else "Sẵn sàng. Nhập câu hỏi hoặc dùng nút Nói."
             textSize = 10.5f
-            setTextColor(0xFF62697A.toInt())
+            setTextColor(0xFFD8D9E3.toInt())
             setPadding(dp(2), dp(6), dp(2), dp(4))
         }
         content.addView(status, LinearLayout.LayoutParams(-1, -2))
@@ -130,10 +134,10 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
         val conversationText = TextView(uiContext).apply {
             text = "Chào bạn. Tôi là trợ lý AI của DigitalLiquid."
             textSize = 13f
-            setTextColor(0xFF252838.toInt())
+            setTextColor(0xFFF1F2F8.toInt())
             setLineSpacing(dp(3).toFloat(), 1.08f)
             setPadding(dp(11), dp(10), dp(11), dp(10))
-            background = GradientDrawable().apply { setColor(0xFFF8F9FD.toInt()); cornerRadius = dp(15).toFloat(); setStroke(dp(1), 0x338795B1) }
+            background = GradientDrawable().apply { setColor(0x55181B28); cornerRadius = dp(15).toFloat(); setStroke(dp(1), 0x22FFFFFF) }
         }
         conversation = conversationText
         val chatScroll = ScrollView(uiContext).apply {
@@ -147,14 +151,14 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
         val composer = LinearLayout(uiContext).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         val input = EditText(uiContext).apply {
             hint = "Hỏi điều gì đó…"
-            setHintTextColor(0xFF858B9D.toInt())
-            setTextColor(0xFF252838.toInt())
+            setHintTextColor(0xFF818797.toInt())
+            setTextColor(Color.WHITE)
             textSize = 13f
             maxLines = 3
             minLines = 1
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(11), dp(8), dp(11), dp(8))
-            background = GradientDrawable().apply { setColor(0xFFF9FAFD.toInt()); cornerRadius = dp(15).toFloat(); setStroke(dp(1), 0x668795B1) }
+            background = GradientDrawable().apply { setColor(0xFF141722.toInt()); cornerRadius = dp(15).toFloat(); setStroke(dp(1), 0x33FFFFFF) }
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
         }
         promptInput = input
@@ -163,9 +167,9 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
             text = "Nói"
             textSize = 11f
             gravity = Gravity.CENTER
-            setTextColor(0xFF40366F.toInt())
+            setTextColor(Color.WHITE)
             setPadding(dp(9), 0, dp(9), 0)
-            background = GradientDrawable().apply { setColor(0xFFEDEBFC.toInt()); cornerRadius = dp(14).toFloat(); setStroke(dp(1), 0x558F83E4) }
+            background = GradientDrawable().apply { setColor(0xFF323746.toInt()); cornerRadius = dp(14).toFloat() }
             setOnClickListener { beginSpeechRecognition() }
         }
         composer.addView(speak, LinearLayout.LayoutParams(-2, dp(43)).apply { marginStart = dp(6) })
@@ -198,7 +202,7 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
         input.setText("")
         input.isEnabled = false
         sendButton?.isEnabled = false
-        status?.text = "Đang kết nối trợ lý…"
+        status?.text = "Đang kết nối OpenRouter…"
         val model = AiModels.selectedId(uiContext)
         OpenRouterClient.chatMessages(uiContext, model, history.toList()) { answer, error ->
             input.isEnabled = true
@@ -206,7 +210,7 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
             if (answer != null) {
                 history.add("assistant" to answer)
                 conversation?.text = formatHistory()
-                status?.text = "Đã trả lời · ${AiModels.displayLabelFor(model)}"
+                status?.text = "Đã trả lời · ${AiModels.labelFor(model)}"
             } else {
                 status?.text = error ?: "AI không phản hồi."
                 conversation?.text = formatHistory()
@@ -221,7 +225,7 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
     private fun beginSpeechRecognition() {
         if (uiContext.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             status?.text = "Cần cấp quyền micro trong DigitalLiquid → Cài đặt trước khi dùng Nói."
-            LiquidNotice.makeText(uiContext, "Cấp quyền micro từ màn hình Cài đặt của DigitalLiquid.", Toast.LENGTH_LONG).show()
+            Toast.makeText(uiContext, "Cấp quyền micro từ màn hình Cài đặt của DigitalLiquid.", Toast.LENGTH_LONG).show()
             return
         }
         if (!SpeechRecognizer.isRecognitionAvailable(uiContext)) {
@@ -282,6 +286,14 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
         }
     }
 
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        main.post {
+            applyWindowStyleAndPosition()
+            panel?.requestLayout()
+        }
+    }
+
     override fun onHide() {
         panel?.visibility = View.GONE
         try { recognizer?.stopListening() } catch (_: Exception) { }
@@ -320,8 +332,11 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
                     ?.maxByOrNull { it.width().toLong() * it.height().toLong() }
             } catch (_: Exception) { }
         }
-        val panelW = minOf(dp(360), width - dp(20)).coerceAtLeast(dp(280))
-        val panelH = minOf(dp(455), height - dp(24)).coerceAtLeast(dp(300))
+        val usableWidth = (width - dp(20)).coerceAtLeast(dp(1))
+        val usableHeight = (height - dp(16)).coerceAtLeast(dp(1))
+        val panelW = minOf(dp(360), usableWidth)
+        // Never force a 300dp minimum: in landscape that can exceed the entire display height.
+        val panelH = minOf(dp(455), usableHeight)
         attrs.width = panelW
         attrs.height = panelH
         attrs.flags = attrs.flags or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
@@ -329,7 +344,7 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
         attrs.dimAmount = 0f
         attrs.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN
         if (Build.VERSION.SDK_INT >= 28) attrs.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
-        val landscape = uiContext.resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+        val landscape = uiContext.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
         val sideCutout = landscape && cutout != null && (cutout!!.left <= dp(18) || cutout!!.right >= width - dp(18))
         if (sideCutout) {
             attrs.gravity = Gravity.TOP or Gravity.LEFT

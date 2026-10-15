@@ -1,9 +1,9 @@
 package com.digitalsmod.digitalliquid
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.Manifest
 import android.content.pm.PackageManager
-import android.content.res.Configuration
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
@@ -22,10 +22,13 @@ import android.view.WindowInsets
 import android.view.Window
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ArrayAdapter
+import android.widget.AdapterView
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ImageView
 import android.widget.ScrollView
+import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import kotlin.random.Random
@@ -50,15 +53,8 @@ class MainActivity : Activity() {
     private lateinit var pageContent: LinearLayout
     private var titleLabel: TextView? = null
     private var subtitleLabel: TextView? = null
-    private var stateLabel: TextView? = null
-    private var overviewServiceStatus: TextView? = null
-    private var overlayActionButton: IOSButton? = null
     private var bottomNavView: View? = null
     private var lastScrollY = 0
-    private var lastRenderedTab = -1
-    private val tabPages = mutableMapOf<Int, LinearLayout>()
-    private val tabScrollPositions = mutableMapOf<Int, Int>()
-    private var overlayStatusCheck: Runnable? = null
     private val assistantHistory = mutableListOf<Pair<String, String>>()
 
     private val prefs by lazy { AppPrefs.get(this) }
@@ -162,7 +158,7 @@ class MainActivity : Activity() {
 
         // Keep the app behind a blank surface until the server accepts a typed key.
         setContentView(LinearLayout(this).apply {
-            background = appBackground()
+            setBackgroundColor(Color.rgb(7, 8, 12))
             layoutParams = ViewGroup.LayoutParams(-1, -1)
         })
         KeyAuthGate.requireKey(this) {
@@ -176,10 +172,27 @@ class MainActivity : Activity() {
         if (!keyAuthorized || authorizedUiInitialized || isFinishing || isDestroyed) return
         authorizedUiInitialized = true
         if (prefs.getBoolean(AppPrefs.ONBOARDING_DONE, false)) renderMain() else renderOnboarding(0)
-        LiquidNotice.showPending(this)
-        showQueuedCustomNotice()
         checkOnlineControl(force = true)
         maybePickPanelBackground(intent)
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        applySystemBars()
+        if (!keyAuthorized || isFinishing || isDestroyed) return
+        if (prefs.getBoolean(AppPrefs.ONBOARDING_DONE, false)) {
+            val savedScroll = if (::scroll.isInitialized) scroll.scrollY else lastScrollY
+            renderMain()
+            if (::scroll.isInitialized) {
+                scroll.post {
+                    val childHeight = scroll.getChildAt(0)?.height ?: 0
+                    val maxScroll = (childHeight - scroll.height).coerceAtLeast(0)
+                    scroll.scrollTo(0, savedScroll.coerceIn(0, maxScroll))
+                }
+            }
+        } else {
+            renderOnboarding(onboardingPage)
+        }
     }
 
     override fun onNewIntent(intent: Intent?) {
@@ -187,20 +200,6 @@ class MainActivity : Activity() {
         if (intent != null) setIntent(intent)
         // A service/panel intent must not open a picker or other app UI before the key gate passes.
         if (keyAuthorized) maybePickPanelBackground(intent)
-    }
-
-    private fun showQueuedCustomNotice() {
-        val pending = LiquidNoticeQueue.pending(this) ?: return
-        LiquidDialog.show(
-            this,
-            pending.title,
-            pending.message,
-            actions = listOf(LiquidDialog.Action(if (pending.url.startsWith("https://") || pending.url.startsWith("http://")) "Mở liên kết" else "Đã hiểu") {
-                if (pending.url.startsWith("https://") || pending.url.startsWith("http://")) openRemoteUrl(pending.url)
-                LiquidNoticeQueue.clear(this, pending.id)
-            }),
-            onDismiss = { LiquidNoticeQueue.clear(this, pending.id) }
-        )
     }
 
     private fun openBackgroundPicker() {
@@ -213,7 +212,7 @@ class MainActivity : Activity() {
         try {
             startActivityForResult(picker, REQUEST_PANEL_BACKGROUND)
         } catch (_: Exception) {
-            LiquidNotice.makeText(this, "Không mở được trình chọn ảnh/video.", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Không mở được trình chọn ảnh/video.", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -232,33 +231,30 @@ class MainActivity : Activity() {
             val resultIntent = data
             val uri = resultIntent?.data
             if (resultIntent != null && uri != null) {
-                try {
-                    val flags = resultIntent.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION
-                    if (flags != 0) contentResolver.takePersistableUriPermission(uri, flags)
-                } catch (_: Exception) { }
-                prefs.edit().putString(IslandService.PANEL_BACKGROUND_URI, uri.toString()).apply()
-                sendBroadcast(Intent(IslandService.ACTION_APPLY_CONFIG).setPackage(packageName))
-                LiquidNotice.makeText(this, "Đã cập nhật nền ảnh/video.", Toast.LENGTH_SHORT).show()
-                if (!launchedForPanelPicker && prefs.getBoolean(AppPrefs.ONBOARDING_DONE, false)) renderMain()
+                val mediaKind = PanelBackgroundMedia.kind(this, uri)
+                if (mediaKind == null) {
+                    Toast.makeText(this, "Định dạng không được hỗ trợ. Hãy chọn ảnh hoặc video phổ biến (MP4, MOV, JPG, PNG, WebP…).", Toast.LENGTH_LONG).show()
+                } else {
+                    val grantedFlags = resultIntent.flags and
+                        (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                    val persistableGrant = (resultIntent.flags and Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION) != 0
+                    if (persistableGrant && grantedFlags != 0) {
+                        try { contentResolver.takePersistableUriPermission(uri, grantedFlags) } catch (_: SecurityException) { }
+                        catch (_: Exception) { }
+                    }
+                    prefs.edit()
+                        .putString(IslandService.PANEL_BACKGROUND_URI, uri.toString())
+                        .putString(AppPrefs.PANEL_BACKGROUND_KIND, mediaKind)
+                        .apply()
+                    sendBroadcast(Intent(IslandService.ACTION_APPLY_CONFIG).setPackage(packageName))
+                    Toast.makeText(this, if (mediaKind == "video") "Đã chọn video nền. Video sẽ phát khi mở bảng tùy chỉnh." else "Đã cập nhật nền ảnh.", Toast.LENGTH_SHORT).show()
+                    if (!launchedForPanelPicker && prefs.getBoolean(AppPrefs.ONBOARDING_DONE, false)) renderMain()
+                }
             }
         }
         if (launchedForPanelPicker) {
             launchedForPanelPicker = false
             finish()
-        }
-    }
-
-    override fun onConfigurationChanged(newConfig: Configuration) {
-        super.onConfigurationChanged(newConfig)
-        // The dashboard can now rotate with the device. Rebuild only the current page so
-        // role-selection and model dialogs use the real landscape bounds while tab/scroll
-        // state remains stored in the existing page cache.
-        applySystemBars()
-        if (!keyAuthorized || unsupportedDevice || isFinishing || isDestroyed) return
-        if (prefs.getBoolean(AppPrefs.ONBOARDING_DONE, false)) {
-            renderMain()
-        } else {
-            renderOnboarding(onboardingPage)
         }
     }
 
@@ -272,17 +268,12 @@ class MainActivity : Activity() {
         }
         // Do not render the dashboard/onboarding while the key dialog is pending or the user is in Get Key.
         if (!keyAuthorized) return
-        // Rebuild stale permission/status cards after returning from Android settings, but keep scroll offset.
-        if (prefs.getBoolean(AppPrefs.ONBOARDING_DONE, false)) {
-            tabPages.clear()
-            renderMain()
-        }
-        syncLiveStatusViews()
+        if (prefs.getBoolean(AppPrefs.ONBOARDING_DONE, false)) renderMain()
         checkOnlineControl(force = false)
     }
 
     private fun applySystemBars() {
-        val lightMode = prefs.getBoolean(AppPrefs.LIGHT_MODE, true)
+        val lightMode = prefs.getBoolean(AppPrefs.LIGHT_MODE, false)
         window.statusBarColor = if (lightMode) 0xFFF4F6FB.toInt() else Color.rgb(10, 11, 16)
         window.navigationBarColor = if (lightMode) 0xFFF4F6FB.toInt() else Color.rgb(10, 11, 16)
         val lightFlags = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
@@ -410,9 +401,6 @@ class MainActivity : Activity() {
             renderOnboarding(onboardingPage)
             return
         }
-        if (::scroll.isInitialized && lastRenderedTab >= 0) {
-            tabScrollPositions[lastRenderedTab] = scroll.scrollY
-        }
         shell = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(18), dp(18), dp(8))
@@ -424,28 +412,20 @@ class MainActivity : Activity() {
             clipToPadding = false
             setPadding(0, 0, 0, dp(8))
         }
-        // Explicit refreshes rebuild only the active page. Normal tab changes use selectTab()
-        // and keep cached pages alive, preserving text drafts and scroll offsets.
-        tabPages.remove(tab)
-        pageContent = tabPages.getOrPut(tab) {
-            LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                clipChildren = false
-                clipToPadding = false
-            }.also { page ->
-                when (tab) {
-                    0 -> buildOverview(page)
-                    1 -> buildAppearance(page)
-                    2 -> buildAssistant(page)
-                    3 -> buildFeatures(page)
-                    else -> buildSettings(page)
-                }
-            }
+        pageContent = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            clipChildren = false
+            clipToPadding = false
         }
-        // Cached pages must be detached from the old ScrollView before reusing them.
-        (pageContent.parent as? ViewGroup)?.removeView(pageContent)
-        scroll.addView(pageContent, ViewGroup.LayoutParams(-1, -2))
+        scroll.addView(pageContent)
         shell.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        when (tab) {
+            0 -> buildOverview(pageContent)
+            1 -> buildAppearance(pageContent)
+            2 -> buildAssistant(pageContent)
+            3 -> buildFeatures(pageContent)
+            else -> buildSettings(pageContent)
+        }
         bottomNavView = buildBottomNav()
         // GlassTabBar contains MATCH_PARENT children; WRAP_CONTENT here can make
         // FrameLayout measure itself as tall as the available screen. Keep it compact.
@@ -479,58 +459,7 @@ class MainActivity : Activity() {
         applyPaletteToTree(shell)
         applySystemBars()
         installRootInsets(shell, dp(18), dp(18), dp(18), dp(8))
-        lastRenderedTab = tab
-        scroll.post { scroll.scrollTo(0, (tabScrollPositions[tab] ?: 0).coerceAtLeast(0)) }
-        syncLiveStatusViews()
         shell.animate().alpha(1f).translationY(0f).setDuration(240L).start()
-    }
-
-    private fun selectTab(selected: Int) {
-        val next = selected.coerceIn(0, 4)
-        if (next == tab || !::scroll.isInitialized || !::shell.isInitialized || !::pageContent.isInitialized) {
-            tab = next
-            renderMain()
-            return
-        }
-        tabScrollPositions[tab] = scroll.scrollY
-        tab = next
-        val newPage = tabPages.getOrPut(tab) {
-            LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                clipChildren = false
-                clipToPadding = false
-            }.also { page ->
-                when (tab) {
-                    0 -> buildOverview(page)
-                    1 -> buildAppearance(page)
-                    2 -> buildAssistant(page)
-                    3 -> buildFeatures(page)
-                    else -> buildSettings(page)
-                }
-            }
-        }
-        (newPage.parent as? ViewGroup)?.removeView(newPage)
-        scroll.removeAllViews()
-        pageContent = newPage
-        scroll.addView(pageContent, ViewGroup.LayoutParams(-1, -2))
-        val subtitle = when (tab) {
-            0 -> "ĐẢO NỔI"
-            1 -> "GIAO DIỆN"
-            2 -> "TRỢ LÝ AI"
-            3 -> "TÍNH NĂNG"
-            else -> "CÀI ĐẶT"
-        }
-        subtitleLabel?.text = subtitle
-        titleLabel?.text = "DigitalLiquid"
-        bottomNavView?.alpha = 1f
-        bottomNavView?.translationY = 0f
-        applyPaletteToTree(pageContent)
-        lastRenderedTab = tab
-        scroll.post { scroll.scrollTo(0, (tabScrollPositions[tab] ?: 0).coerceAtLeast(0)) }
-        syncLiveStatusViews()
-        // Animate only the new page; the shell, navigation bar and Activity window stay put.
-        pageContent.alpha = 0.92f
-        pageContent.animate().alpha(1f).setDuration(140L).start()
     }
 
     private fun buildTopBar(): View {
@@ -545,31 +474,11 @@ class MainActivity : Activity() {
             this,
             "DigitalLiquid",
             subtitle,
-            prefs.getBoolean(AppPrefs.SERVICE_VISIBLE, false)
+            prefs.getBoolean(AppPrefs.SERVICE_ENABLED, false)
         ).also { bar ->
             titleLabel = bar.titleView
             subtitleLabel = bar.subtitleView
-            stateLabel = bar.stateView
         }
-    }
-
-    private fun syncLiveStatusViews() {
-        val attached = prefs.getBoolean(AppPrefs.SERVICE_ATTACHED, false)
-        val visible = prefs.getBoolean(AppPrefs.SERVICE_VISIBLE, false)
-        val requested = prefs.getBoolean(AppPrefs.SERVICE_ENABLED, false)
-        stateLabel?.text = when {
-            attached && visible -> "ĐANG HIỂN THỊ"
-            attached && requested -> "ĐANG TẠM ẨN"
-            requested -> "ĐANG KẾT NỐI"
-            else -> "ĐANG TẮT"
-        }
-        overviewServiceStatus?.text = when {
-            visible -> "ĐANG HIỂN THỊ"
-            attached && requested -> "ĐANG TẠM ẨN"
-            requested -> "ĐANG KẾT NỐI"
-            else -> "CHƯA BẬT"
-        }
-        overlayActionButton?.style(if (requested) "Tắt đảo nổi" else "Bật đảo nổi  →", primary = !requested)
     }
 
     private fun buildOverview(target: LinearLayout) {
@@ -580,7 +489,7 @@ class MainActivity : Activity() {
             typeface = Typeface.create("sans-serif", Typeface.BOLD)
             setTextColor(Color.WHITE)
         }, marginTop(4))
-        target.addView(bodyText("Một giao diện nhỏ gọn ở cạnh trên màn hình, luôn sẵn sàng khi bạn cần."), marginTop(7))
+        target.addView(bodyText("Bật đảo nổi, cấp quyền cần thiết và để mọi thứ hoạt động bên trên ứng dụng khác."), marginTop(7))
 
         val hero = card().apply { setPadding(dp(16), dp(16), dp(16), dp(16)) }
         val heroHeader = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
@@ -591,13 +500,11 @@ class MainActivity : Activity() {
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             setTextColor(0xFFBAB4FF.toInt())
         }, LinearLayout.LayoutParams(0, -2, 1f))
-        overviewServiceStatus = TextView(this).apply {
-            text = when { prefs.getBoolean(AppPrefs.SERVICE_VISIBLE, false) -> "ĐANG HIỂN THỊ"; prefs.getBoolean(AppPrefs.SERVICE_ATTACHED, false) -> "ĐANG TẠM ẨN"; prefs.getBoolean(AppPrefs.SERVICE_ENABLED, false) -> "ĐANG KẾT NỐI"; else -> "CHƯA BẬT" }
+        heroHeader.addView(TextView(this).apply {
+            text = if (prefs.getBoolean(AppPrefs.SERVICE_ENABLED, false)) "ĐANG CHẠY" else "CHƯA BẬT"
             textSize = 9f
-            letterSpacing = 0.03f
-            setTextColor(0xFF5A6072.toInt())
-        }
-        heroHeader.addView(overviewServiceStatus)
+            setTextColor(0xFF9DA2B1.toInt())
+        })
         hero.addView(heroHeader)
         hero.addView(buildGlassPreview(), marginTop(15))
         hero.addView(TextView(this).apply {
@@ -605,19 +512,18 @@ class MainActivity : Activity() {
             textSize = 11f
             setTextColor(0xFF9397A6.toInt())
         }, marginTop(12))
-        val islandAction = textButton(
+        hero.addView(textButton(
             if (prefs.getBoolean(AppPrefs.SERVICE_ENABLED, false)) "Tắt đảo nổi" else "Bật đảo nổi  →",
             primary = !prefs.getBoolean(AppPrefs.SERVICE_ENABLED, false)
         ) {
             if (prefs.getBoolean(AppPrefs.SERVICE_ENABLED, false)) stopIsland() else startIsland()
-        }
-        overlayActionButton = islandAction
-        hero.addView(islandAction, marginTop(15))
+        }, marginTop(15))
         target.addView(hero, marginTop(20))
 
         addEyebrow(target, "CÀI ĐẶT NHANH", 24)
         target.addView(permissionStatusCard(), marginTop(8))
-        target.addView(featureMiniCard("TRỢ NĂNG", "Lớp phủ trên thanh trạng thái", if (hasHyperIslandAccessibility()) "Đã bật lớp phủ tin cậy và theo dõi HyperIsland." else "Cho phép viên thuốc hiển thị trên thanh trạng thái và nhận thao tác chạm."), marginTop(10))
+        target.addView(buildOnlineControlCard(), marginTop(12))
+        target.addView(featureMiniCard("TRỢ NĂNG", "Lớp phủ trên thanh trạng thái", if (hasHyperIslandAccessibility()) "Đã bật lớp phủ tin cậy và theo dõi HyperIsland." else "Bắt buộc để viên thuốc nằm trên status bar và nhận chạm trong vùng camera."), marginTop(10))
         target.addView(textButton(if (hasHyperIslandAccessibility()) "Quản lý quyền Trợ năng" else "Bật quyền Trợ năng", false) {
             openAccessibilitySettings()
         }, marginTop(8))
@@ -633,14 +539,14 @@ class MainActivity : Activity() {
         val line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         val textColumn = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         textColumn.addView(TextView(this@MainActivity).apply {
-            text = "CẬP NHẬT ỨNG DỤNG"
+            text = "ĐIỀU KHIỂN TRỰC TUYẾN"
             textSize = 10f
             letterSpacing = 0.08f
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             setTextColor(0xFFB9AEFF.toInt())
         })
         textColumn.addView(TextView(this@MainActivity).apply {
-            text = "Thông báo và phiên bản mới"
+            text = "Thông báo · phiên bản · bảo trì"
             textSize = 13f
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             setTextColor(Color.WHITE)
@@ -654,7 +560,7 @@ class MainActivity : Activity() {
         outer.addView(line)
         outer.addView(textButton("Kiểm tra máy chủ", false) {
             checkOnlineControl(force = true)
-            LiquidNotice.makeText(this@MainActivity, "Đang kiểm tra cập nhật…", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this@MainActivity, "Đang kiểm tra Firebase…", Toast.LENGTH_SHORT).show()
         }, marginTop(10))
         return outer
     }
@@ -673,15 +579,15 @@ class MainActivity : Activity() {
         if (!force && now - lastRemoteCheckAt < 45_000L) return
         remoteCheckInFlight = true
         lastRemoteCheckAt = now
-        OnlineControlManager.fetch(this) { control, _ ->
+        OnlineControlManager.fetch(this) { control, error ->
             remoteCheckInFlight = false
             if (isFinishing || isDestroyed) return@fetch
             if (control == null) {
-                if (force) LiquidNotice.makeText(this, "Không thể kiểm tra cập nhật. Hãy kiểm tra kết nối Internet rồi thử lại.", Toast.LENGTH_LONG).show()
+                if (force) Toast.makeText(this, "Không kết nối được Firebase: ${error ?: "hãy kiểm tra Internet và Database Rules."}", Toast.LENGTH_LONG).show()
                 return@fetch
             }
             if (!control.configFound) {
-                if (force) LiquidNotice.makeText(this, "Chưa có thông tin cập nhật mới cho ứng dụng.", Toast.LENGTH_LONG).show()
+                if (force) Toast.makeText(this, "Firebase chưa có cấu hình appControl. Hãy tạo node này trong Realtime Database.", Toast.LENGTH_LONG).show()
                 return@fetch
             }
             val currentVersion = try {
@@ -692,13 +598,12 @@ class MainActivity : Activity() {
                 remoteBlocked = true
                 prefs.edit().putBoolean(AppPrefs.SERVICE_ENABLED, false).apply()
                 stopService(Intent(this, IslandService::class.java))
-                LiquidDialog.show(
-                    this,
-                    "Không thể xác minh ứng dụng",
-                    "Bản cài đặt này không khớp với chữ ký được phép. Hãy cài bản phát hành chính thức.",
-                    actions = listOf(LiquidDialog.Action("Đóng ứng dụng") { finish() }),
-                    cancelable = false
-                )
+                AlertDialog.Builder(this)
+                    .setTitle("Bản dựng không được xác minh")
+                    .setMessage("Chữ ký của ứng dụng không khớp với chứng thư được quản trị viên cho phép. Hãy cài bản chính thức từ nguồn phát hành.")
+                    .setCancelable(false)
+                    .setPositiveButton("Đóng ứng dụng") { _, _ -> finish() }
+                    .show()
                 return@fetch
             }
             if (!control.appEnabled || control.maintenanceEnabled) {
@@ -706,13 +611,12 @@ class MainActivity : Activity() {
                 prefs.edit().putBoolean(AppPrefs.SERVICE_ENABLED, false).apply()
                 stopService(Intent(this, IslandService::class.java))
                 val message = if (!control.appEnabled) "Phiên bản ứng dụng này đã bị quản trị viên vô hiệu hóa." else control.maintenanceMessage
-                LiquidDialog.show(
-                    this,
-                    if (!control.appEnabled) "Ứng dụng tạm dừng" else "DigitalLiquid đang bảo trì",
-                    message,
-                    actions = listOf(LiquidDialog.Action("Đóng ứng dụng") { finish() }),
-                    cancelable = false
-                )
+                AlertDialog.Builder(this)
+                    .setTitle(if (!control.appEnabled) "Ứng dụng đã bị vô hiệu hóa" else "DigitalLiquid đang bảo trì")
+                    .setMessage(message)
+                    .setCancelable(false)
+                    .setPositiveButton("Đóng ứng dụng") { _, _ -> finish() }
+                    .show()
                 return@fetch
             }
 
@@ -723,25 +627,19 @@ class MainActivity : Activity() {
                 if (remoteDialogVisible) return@fetch
                 remoteDialogVisible = true
                 val versionText = control.latestVersionName.ifBlank { "mã ${control.latestVersionCode}" }
-                val updateActions = if (mandatoryUpdate) {
-                    listOf(LiquidDialog.Action("Tải bản cập nhật") {
+                val builder = AlertDialog.Builder(this)
+                    .setTitle(if (mandatoryUpdate) "Cần cập nhật DigitalLiquid" else "Có phiên bản mới")
+                    .setMessage("Phiên bản mới: $versionText\n\n${if (mandatoryUpdate) "Phiên bản hiện tại đã hết thời gian hỗ trợ. Hãy cập nhật để tiếp tục dùng ứng dụng." else "Bản cập nhật mới đã sẵn sàng."}")
+                    .setPositiveButton("Tải bản cập nhật") { dialog, _ ->
+                        dialog.dismiss()
                         openRemoteUrl(control.downloadUrl)
-                        finish()
-                    })
-                } else {
-                    listOf(
-                        LiquidDialog.Action("Để sau", false) { prefs.edit().putInt(AppPrefs.DISMISSED_UPDATE_CODE, control.latestVersionCode).apply() },
-                        LiquidDialog.Action("Tải bản cập nhật") { openRemoteUrl(control.downloadUrl) }
-                    )
-                }
-                LiquidDialog.show(
-                    this,
-                    if (mandatoryUpdate) "Cần cập nhật DigitalLiquid" else "Có phiên bản mới",
-                    "Phiên bản mới: $versionText\n\n${if (mandatoryUpdate) "Phiên bản hiện tại đã ngừng hỗ trợ. Hãy cập nhật để tiếp tục sử dụng." else "Bản cập nhật mới đã sẵn sàng."}",
-                    actions = updateActions,
-                    cancelable = !mandatoryUpdate,
-                    onDismiss = { remoteDialogVisible = false }
-                )
+                        if (mandatoryUpdate) finish()
+                    }
+                    .setCancelable(!mandatoryUpdate)
+                if (!mandatoryUpdate) builder.setNegativeButton("Để sau") { _, _ -> prefs.edit().putInt(AppPrefs.DISMISSED_UPDATE_CODE, control.latestVersionCode).apply() }
+                val dialog = builder.create()
+                dialog.setOnDismissListener { remoteDialogVisible = false }
+                dialog.show()
                 return@fetch
             }
 
@@ -749,22 +647,22 @@ class MainActivity : Activity() {
                 val announcementId = control.announcementId.ifBlank { control.announcementTitle + control.announcementMessage }
                 if (prefs.getString(AppPrefs.LAST_ANNOUNCEMENT_ID, "") != announcementId && !remoteDialogVisible) {
                     remoteDialogVisible = true
-                    LiquidDialog.show(
-                        this,
-                        control.announcementTitle.ifBlank { "Thông báo DigitalLiquid" },
-                        control.announcementMessage,
-                        actions = listOf(LiquidDialog.Action(if (control.announcementUrl.isBlank()) "Đã hiểu" else "Mở liên kết") {
+                    val builder = AlertDialog.Builder(this)
+                        .setTitle(control.announcementTitle.ifBlank { "Thông báo DigitalLiquid" })
+                        .setMessage(control.announcementMessage)
+                        .setPositiveButton(if (control.announcementUrl.isBlank()) "Đã hiểu" else "Mở liên kết") { _, _ ->
                             prefs.edit().putString(AppPrefs.LAST_ANNOUNCEMENT_ID, announcementId).apply()
                             if (control.announcementUrl.isNotBlank()) openRemoteUrl(control.announcementUrl)
-                        }),
-                        onDismiss = {
-                            prefs.edit().putString(AppPrefs.LAST_ANNOUNCEMENT_ID, announcementId).apply()
-                            remoteDialogVisible = false
                         }
-                    )
+                    val dialog = builder.create()
+                    dialog.setOnDismissListener {
+                        prefs.edit().putString(AppPrefs.LAST_ANNOUNCEMENT_ID, announcementId).apply()
+                        remoteDialogVisible = false
+                    }
+                    dialog.show()
                 }
             } else if (force) {
-                LiquidNotice.makeText(this, "Bạn đang dùng phiên bản mới nhất.", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Đã kiểm tra máy chủ. Không có thông báo hoặc cập nhật mới.", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -775,7 +673,7 @@ class MainActivity : Activity() {
             if (uri.scheme != "https" && uri.scheme != "http") throw IllegalArgumentException("URL không hợp lệ")
             startActivity(Intent(Intent.ACTION_VIEW, uri))
         } catch (_: Exception) {
-            LiquidNotice.makeText(this, "Liên kết tải xuống không hợp lệ.", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Liên kết tải xuống không hợp lệ.", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -793,12 +691,9 @@ class MainActivity : Activity() {
             setPadding(dp(10), dp(10), dp(10), dp(10))
             addView(segmentedOptions(
                 listOf("Tối" to "dark", "Sáng" to "light"),
-                if (prefs.getBoolean(AppPrefs.LIGHT_MODE, true)) "light" else "dark"
+                if (prefs.getBoolean(AppPrefs.LIGHT_MODE, false)) "light" else "dark"
             ) { selected ->
                 prefs.edit().putBoolean(AppPrefs.LIGHT_MODE, selected == "light").apply()
-                tabPages.clear()
-                tabScrollPositions.clear()
-                lastRenderedTab = -1
                 applySystemBars()
                 renderMain()
             })
@@ -821,15 +716,15 @@ class MainActivity : Activity() {
         ) { openBackgroundPicker() }, marginTop(14))
         if (!selectedBackground.isNullOrBlank()) {
             target.addView(textButton("Xóa nền đã chọn", primary = false) {
-                prefs.edit().remove(IslandService.PANEL_BACKGROUND_URI).apply()
+                prefs.edit().remove(IslandService.PANEL_BACKGROUND_URI).remove(AppPrefs.PANEL_BACKGROUND_KIND).apply()
                 applyConfig()
                 renderMain()
             }, marginTop(7))
         }
 
         target.addView(sectionTitle("Kích thước"), marginTop(22))
-        target.addView(seekCard("Chiều rộng", "126–330 dp", AppPrefs.WIDTH, 126, 330, " dp") { applyConfig() }, marginTop(8))
-        target.addView(seekCard("Chiều cao", "34–72 dp", AppPrefs.HEIGHT, 34, 72, " dp") { applyConfig() }, marginTop(8))
+        target.addView(seekCard("Chiều rộng", "72–330 dp · có thể thu nhỏ sát cụm camera", AppPrefs.WIDTH, 72, 330, " dp") { applyConfig() }, marginTop(8))
+        target.addView(seekCard("Chiều cao", "22–72 dp", AppPrefs.HEIGHT, 22, 72, " dp") { applyConfig() }, marginTop(8))
 
         target.addView(sectionTitle("Vị trí"), marginTop(22))
         target.addView(card().apply {
@@ -870,29 +765,47 @@ class MainActivity : Activity() {
     }
 
     private fun buildAssistant(target: LinearLayout) {
-        addEyebrow(target, "TRỢ LÝ CÁ NHÂN")
+        addEyebrow(target, "DIGITALLIQUID AI")
+        target.addView(textButton("Mở hiệu ứng Siri", primary = true) {
+            try { startActivity(Intent(this@MainActivity, AssistantFallbackActivity::class.java)) }
+            catch (_: Exception) { }
+        }, marginTop(10))
         target.addView(TextView(this).apply {
             text = "Hỏi DigitalLiquid"
             textSize = 30f
             typeface = Typeface.create("sans-serif", Typeface.BOLD)
             setTextColor(Color.WHITE)
         }, marginTop(4))
-        target.addView(bodyText("Đặt câu hỏi, chọn cách trả lời và dùng trợ lý ngay trong DigitalLiquid."), marginTop(7))
+        target.addView(bodyText("Chọn model, hỏi bằng văn bản và nhận câu trả lời trong giao diện kính lỏng. Khóa OpenRouter được giữ ở proxy máy chủ, không lưu trong APK."), marginTop(7))
 
         val config = card().apply { setPadding(dp(15), dp(15), dp(15), dp(15)) }
         config.addView(sectionTitle("Model mặc định"))
         val currentModel = AiModels.selectedId(this)
-        val modelButton = textButton("${AiModels.displayLabelFor(currentModel)}  ·  Chọn mô hình", false) {
-            LiquidModelPicker.show(this, AiModels.selectedId(this)) { selectedId ->
-                prefs.edit().putString(AppPrefs.AI_MODEL, selectedId).apply()
-                renderMain()
+        val modelLabels = AiModels.all.map { it.label }.toMutableList()
+        val customModelIndex = if (AiModels.all.none { it.id == currentModel }) {
+            modelLabels.add("Tùy chỉnh · $currentModel")
+            modelLabels.lastIndex
+        } else -1
+        val spinner = Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_item, modelLabels).also {
+                it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+            }
+            setSelection(AiModels.all.indexOfFirst { it.id == currentModel }.let { if (it >= 0) it else customModelIndex }, false)
+            setBackground(rounded(0xFF1A1C27.toInt(), 14))
+            setPadding(dp(10), dp(6), dp(10), dp(6))
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    // A custom model is preserved until the user chooses a built-in model.
+                    AiModels.all.getOrNull(position)?.let { prefs.edit().putString(AppPrefs.AI_MODEL, it.id).apply() }
+                }
             }
         }
-        config.addView(modelButton, marginTop(8))
-        config.addView(textButton("Mô hình khác…", false) { editAiModel() }, marginTop(8))
-        config.addView(textButton("Cấu hình kết nối trợ lý", false) { editAiEndpoint() }, marginTop(8))
-        val endpointConfigured = prefs.getString(AppPrefs.AI_ENDPOINT, "").orEmpty().isNotBlank()
-        config.addView(bodyText(if (endpointConfigured) "Kết nối đã được cấu hình" else "Chưa cấu hình kết nối trợ lý"), marginTop(8))
+        config.addView(spinner, marginTop(8))
+        config.addView(textButton("Nhập model ID tùy chỉnh", false) { editAiModel() }, marginTop(8))
+        config.addView(textButton("Cấu hình endpoint máy chủ", false) { editAiEndpoint() }, marginTop(8))
+        val endpointText = prefs.getString(AppPrefs.AI_ENDPOINT, "").orEmpty().ifBlank { "Chưa cấu hình máy chủ HTTPS" }
+        config.addView(bodyText(endpointText), marginTop(8))
         target.addView(config, marginTop(14))
 
         val chatCard = card().apply { setPadding(dp(15), dp(15), dp(15), dp(15)) }
@@ -900,34 +813,34 @@ class MainActivity : Activity() {
         val response = TextView(this).apply {
             text = if (assistantHistory.isEmpty()) "DigitalLiquid sẵn sàng. Hãy nhập câu hỏi bên dưới." else assistantHistory.takeLast(6).joinToString("\n\n") { (role, text) -> (if (role == "user") "Bạn" else "DigitalLiquid AI") + ":\n" + text }
             textSize = 13f
-            setTextColor(0xFF252838.toInt())
+            setTextColor(0xFFE5E6F0.toInt())
             setLineSpacing(dp(3).toFloat(), 1.08f)
             setPadding(dp(12), dp(12), dp(12), dp(12))
-            background = rounded(0xFFF8F9FD.toInt(), 16)
+            background = rounded(0xA5181A25.toInt(), 16)
             minHeight = dp(130)
             gravity = Gravity.TOP or Gravity.START
         }
         chatCard.addView(response, marginTop(10))
         val prompt = EditText(this).apply {
             hint = "Viết câu hỏi của bạn…"
-            setHintTextColor(0xFF858B9D.toInt())
-            setTextColor(0xFF252838.toInt())
+            setHintTextColor(0xFF777B8A.toInt())
+            setTextColor(Color.WHITE)
             textSize = 14f
             minLines = 2
             maxLines = 5
             gravity = Gravity.TOP or Gravity.START
             setPadding(dp(12), dp(12), dp(12), dp(12))
-            background = roundedGradient(intArrayOf(0xFFFEFFFF.toInt(), 0xFFF3F5FA.toInt()), 16, 0x558795B1)
+            background = rounded(0xFF151722.toInt(), 16)
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
         }
         chatCard.addView(prompt, marginTop(10))
         val send = textButton("Gửi câu hỏi", true) {
             val text = prompt.text?.toString()?.trim().orEmpty()
             if (text.isBlank()) {
-                LiquidNotice.makeText(this, "Hãy nhập câu hỏi trước.", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Hãy nhập câu hỏi trước.", Toast.LENGTH_SHORT).show()
             } else {
                 assistantHistory.add("user" to text)
-                response.text = "Đang kết nối trợ lý…"
+                response.text = "Đang kết nối OpenRouter…"
                 prompt.isEnabled = false
                 val model = AiModels.selectedId(this)
                 OpenRouterClient.chatMessages(this, model, assistantHistory.toList()) { answer, error ->
@@ -950,116 +863,69 @@ class MainActivity : Activity() {
             prompt.setText("")
         }, marginTop(7))
         target.addView(chatCard, marginTop(14))
-        target.addView(infoCard("Kết nối trợ lý", "Kết nối dịch vụ trợ lý an toàn. Không nhập khóa bí mật trực tiếp vào ứng dụng."), marginTop(14))
-    }
-
-    private fun showAppTextInput(
-        title: String,
-        message: String,
-        hint: String,
-        initial: String,
-        neutralLabel: String? = null,
-        validate: (String) -> String? = { null },
-        onSave: (String) -> Unit,
-        onNeutral: (() -> Unit)? = null
-    ) {
-        val dialog = android.app.Dialog(this)
-        val panel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(21), dp(22), dp(21), dp(18))
-            background = roundedGradient(intArrayOf(0xFFFEFFFF.toInt(), 0xFFF0F3FA.toInt()), 26, 0x668795B1)
-        }
-        panel.addView(TextView(this).apply {
-            text = "DIGITALLIQUID"
-            textSize = 10f
-            letterSpacing = .12f
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setTextColor(0xFF6556BB.toInt())
-        })
-        panel.addView(TextView(this).apply {
-            text = title
-            textSize = 21f
-            typeface = Typeface.create("sans-serif", Typeface.BOLD)
-            setTextColor(0xFF202333.toInt())
-        }, marginTop(7))
-        panel.addView(TextView(this).apply {
-            text = message
-            textSize = 13f
-            setTextColor(0xFF62697A.toInt())
-            setLineSpacing(dp(2).toFloat(), 1.04f)
-        }, marginTop(7))
-        val input = EditText(this).apply {
-            this.hint = hint
-            setText(initial)
-            setTextColor(0xFF25293A.toInt())
-            setHintTextColor(0xFF9298A8.toInt())
-            textSize = 13f
-            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI
-            setSingleLine(true)
-            setPadding(dp(13), dp(12), dp(13), dp(12))
-            background = roundedGradient(intArrayOf(0xFFF9FAFD.toInt(), 0xFFEFF2F8.toInt()), 14, 0x668795B1)
-        }
-        panel.addView(input, marginTop(15))
-        val validation = TextView(this).apply {
-            textSize = 11.5f
-            setTextColor(0xFFB12C39.toInt())
-            visibility = View.GONE
-        }
-        panel.addView(validation, marginTop(5))
-        val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        if (neutralLabel != null && onNeutral != null) {
-            buttons.addView(textButton(neutralLabel, false) {
-                dialog.dismiss()
-                onNeutral.invoke()
-            }, LinearLayout.LayoutParams(0, dp(45), 1f).apply { marginEnd = dp(7) })
-        } else {
-            buttons.addView(textButton("Hủy", false) { dialog.dismiss() }, LinearLayout.LayoutParams(0, dp(45), 1f).apply { marginEnd = dp(7) })
-        }
-        buttons.addView(textButton("Lưu", true) {
-            val value = input.text?.toString()?.trim().orEmpty()
-            val error = validate(value)
-            if (error != null) {
-                validation.text = error
-                validation.visibility = View.VISIBLE
-                return@textButton
-            }
-            dialog.dismiss()
-            onSave(value)
-        }, LinearLayout.LayoutParams(0, dp(45), 1f))
-        panel.addView(buttons, marginTop(17))
-        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
-        dialog.setContentView(panel)
-        dialog.setCancelable(true)
-        dialog.show()
-        dialog.window?.apply {
-            setBackgroundDrawableResource(android.R.color.transparent)
-            setLayout((resources.displayMetrics.widthPixels * .91f).toInt(), android.view.WindowManager.LayoutParams.WRAP_CONTENT)
-            setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
-        }
+        target.addView(infoCard("Cấu hình proxy", "Triển khai thư mục openrouter-worker lên Cloudflare Workers, thêm secret OPENROUTER_API_KEY phía máy chủ, rồi nhập URL Worker tại đây. Đừng dùng lại khóa đã dán trong cuộc trò chuyện; hãy thu hồi khóa đó và tạo khóa mới."), marginTop(14))
     }
 
     private fun editAiEndpoint() {
-        showAppTextInput(
-            title = "Kết nối trợ lý AI",
-            message = "Nhập địa chỉ HTTPS của dịch vụ AI. Không nhập khóa bí mật tại đây.",
-            hint = "https://ten-dich-vu.example",
-            initial = prefs.getString(AppPrefs.AI_ENDPOINT, "").orEmpty(),
-            neutralLabel = "Xóa",
-            validate = { value -> if (value.isNotBlank() && !value.startsWith("https://", true)) "Địa chỉ phải bắt đầu bằng https://" else null },
-            onSave = { value -> prefs.edit().putString(AppPrefs.AI_ENDPOINT, value.trimEnd('/')).apply(); renderMain() },
-            onNeutral = { prefs.edit().remove(AppPrefs.AI_ENDPOINT).apply(); renderMain() }
-        )
+        val input = EditText(this).apply {
+            hint = "https://ten-worker.workers.dev"
+            setText(prefs.getString(AppPrefs.AI_ENDPOINT, "").orEmpty())
+            setTextColor(Color.WHITE)
+            setHintTextColor(0xFF777B8A.toInt())
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            background = rounded(0xFF181A24.toInt(), 14)
+        }
+        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(4), dp(20), 0); addView(input) }
+        AlertDialog.Builder(this).setTitle("Máy chủ AI proxy")
+            .setMessage("Nhập URL HTTPS Cloudflare Worker. Không nhập OpenRouter API key vào ứng dụng.")
+            .setView(container)
+            .setNegativeButton("Hủy", null)
+            .setNeutralButton("Xóa", null)
+            .setPositiveButton("Lưu", null)
+            .create().also { dialog ->
+                dialog.setOnShowListener {
+                    dialog.getButton(AlertDialog.BUTTON_NEUTRAL)?.setOnClickListener {
+                        prefs.edit().remove(AppPrefs.AI_ENDPOINT).apply()
+                        dialog.dismiss()
+                        renderMain()
+                    }
+                    dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.setOnClickListener {
+                        val value = input.text?.toString()?.trim().orEmpty().trimEnd('/')
+                        if (value.isNotBlank() && !value.startsWith("https://", true)) {
+                            input.error = "Endpoint phải bắt đầu bằng https://"
+                            return@setOnClickListener
+                        }
+                        prefs.edit().putString(AppPrefs.AI_ENDPOINT, value).apply()
+                        dialog.dismiss()
+                        renderMain()
+                    }
+                }
+                dialog.show()
+            }
     }
 
     private fun editAiModel() {
-        showAppTextInput(
-            title = "Mô hình AI tùy chỉnh",
-            message = "Nhập mã mô hình được hỗ trợ bởi dịch vụ trợ lý bạn đang dùng.",
-            hint = "ten-mo-hinh",
-            initial = AiModels.selectedId(this),
-            validate = { value -> if (value.isBlank()) "Hãy nhập mã mô hình." else null },
-            onSave = { value -> prefs.edit().putString(AppPrefs.AI_MODEL, value).apply(); renderMain() }
-        )
+        val input = EditText(this).apply {
+            hint = "provider/model-id"
+            setText(AiModels.selectedId(this@MainActivity))
+            setTextColor(Color.WHITE)
+            setHintTextColor(0xFF777B8A.toInt())
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            background = rounded(0xFF181A24.toInt(), 14)
+        }
+        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(4), dp(20), 0); addView(input) }
+        AlertDialog.Builder(this).setTitle("Model ID tùy chỉnh")
+            .setMessage("Model phải được cho phép trong OPENROUTER_ALLOWED_MODELS ở Worker.")
+            .setView(container)
+            .setNegativeButton("Hủy", null)
+            .setPositiveButton("Lưu") { _, _ ->
+                val value = input.text?.toString()?.trim().orEmpty()
+                if (value.isNotBlank() && value.contains('/')) {
+                    prefs.edit().putString(AppPrefs.AI_MODEL, value).apply()
+                }
+                renderMain()
+            }.show()
     }
 
     private fun buildSettings(target: LinearLayout) {
@@ -1074,11 +940,11 @@ class MainActivity : Activity() {
         target.addView(settingAction("Trợ lý mặc định", if (isDigitalLiquidAssistant()) "Đã chọn DigitalLiquid" else "Chưa chọn DigitalLiquid", "Sau khi chọn DigitalLiquid làm trợ lý mặc định, giữ nút nguồn theo cử chỉ trợ lý của hệ thống khoảng 2 giây để gọi giao diện Siri. Android/HyperOS vẫn có thể thay đổi thời lượng hoặc cử chỉ này.") {
             requestAssistantRole()
         }, marginTop(10))
-        target.addView(settingAction("Quyền truy cập thông báo", if (hasNotificationAccess()) "Đã cấp quyền" else "Chưa cấp quyền", "Đọc trạng thái thông báo đang hoạt động để phát hiện quay màn hình, nhạc và đồng hồ") {
+        target.addView(settingAction("Notification Access", if (hasNotificationAccess()) "Đã cấp quyền" else "Chưa cấp quyền", "Đọc trạng thái thông báo đang hoạt động để phát hiện quay màn hình, nhạc và đồng hồ") {
             startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
         }, marginTop(10))
         val microphoneGranted = Build.VERSION.SDK_INT < 23 || checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-        target.addView(settingAction("Nhận dạng giọng nói", if (microphoneGranted) "Đã cấp quyền" else "Chưa cấp quyền", "Cho phép dùng nút Nói trong giao diện Siri. Giọng nói chỉ được chuyển thành văn bản trên thiết bị thông qua dịch vụ nhận dạng Android.") {
+        target.addView(settingAction("Microphone / nhận dạng giọng nói", if (microphoneGranted) "Đã cấp quyền" else "Chưa cấp quyền", "Cho phép dùng nút Nói trong giao diện Siri. Giọng nói chỉ được chuyển thành văn bản trên thiết bị thông qua dịch vụ nhận dạng Android.") {
             if (Build.VERSION.SDK_INT >= 23 && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
                 requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 8110)
             } else {
@@ -1124,17 +990,17 @@ class MainActivity : Activity() {
         target.addView(toggleCard("Tự ẩn khi HyperIsland của hệ thống hiện", "Ẩn viên thuốc của DigitalLiquid khi phát hiện hoạt động hệ thống ở đúng vùng camera, rồi hiện lại khi hoạt động biến mất.", AppPrefs.AUTO_HIDE_SYSTEM_ISLAND), marginTop(8))
         target.addView(toggleCard("Tự ẩn khi đang phát nhạc", "Theo dõi trạng thái MediaController và hiện lại khi nhạc dừng hoặc tạm dừng.", AppPrefs.HIDE_WHEN_MEDIA_PLAYING), marginTop(8))
         target.addView(toggleCard("Tự ẩn khi hoạt động hệ thống khác xuất hiện", "Áp dụng cho hẹn giờ, cuộc gọi và các hoạt động nền được NotificationListener nhận diện.", AppPrefs.HIDE_WHEN_NATIVE_ACTIVITY), marginTop(8))
-        target.addView(toggleCard("Ẩn tạm khi HyperOS hiện thông báo chuông", "Chỉ ẩn viên thuốc khi HyperOS hiển thị popup HyperIsland về chuông hoặc thông báo ở vùng camera. Không tự ẩn chỉ vì mở bảng âm lượng hay Trung tâm điều khiển.", AppPrefs.HIDE_WHEN_RINGER_UI), marginTop(8))
-        target.addView(toggleCard("Nhấn đúp viên thuốc để mở trợ lý AI", "Gọi ACTION_ASSIST của Android khi nhấn nhanh hai lần. DigitalLiquid phải được chọn làm trợ lý mặc định.", AppPrefs.DOUBLE_TAP_ASSISTANT), marginTop(8))
-        target.addView(toggleCard("Nhấn 6 lần để kích hoạt chuyển ứng dụng", "Sau 6 lần chạm nhanh, mỗi lần chạm tiếp theo sẽ chuyển ứng dụng ngay. Dừng chạm khoảng 1,8 giây để thoát chế độ; muốn dùng lại cần chạm đủ 6 lần. Cần cấp quyền Truy cập mức sử dụng ứng dụng.", AppPrefs.ISLAND_APP_SWITCH_GESTURE), marginTop(8))
+        target.addView(toggleCard("Tự ẩn khi bật/tắt chuông hoặc chế độ im lặng", "Tạm ẩn khi Trợ năng phát hiện giao diện âm lượng, rung, im lặng hoặc Không làm phiền ở vùng camera.", AppPrefs.HIDE_WHEN_RINGER_UI), marginTop(8))
+        target.addView(toggleCard("Nhấn đúp viên thuốc để mở trợ lý AI", "Mở hiệu ứng Siri của DigitalLiquid. Nếu chưa chọn trợ lý mặc định, ứng dụng vẫn mở giao diện dự phòng riêng.", AppPrefs.DOUBLE_TAP_ASSISTANT), marginTop(8))
+        target.addView(toggleCard("Nhấn từ 6 lần để chuyển ứng dụng", "Lần thứ 6 mở ứng dụng dùng gần đây nhất; những lần tiếp theo mở ứng dụng ngẫu nhiên. Cần bật quyền Truy cập mức sử dụng ứng dụng.", AppPrefs.ISLAND_APP_SWITCH_GESTURE), marginTop(8))
         target.addView(toggleCard("Thông báo Liquid Glass trong ứng dụng", "Hiển thị thông báo quản trị dưới dạng thẻ tùy chỉnh nổi khi lớp phủ được kết nối; nếu không thể hiện, dùng thông báo hệ thống làm dự phòng.", AppPrefs.CUSTOM_APP_NOTICES), marginTop(8))
         target.addView(toggleCard("Tương tác Live Preview", "Cho phép thử chạm, nhấn đúp, nhấn giữ và cử chỉ nhiều lần ngay trong bản xem trước.", AppPrefs.LIVE_PREVIEW_INTERACTIVE), marginTop(8))
         target.addView(settingAction("Truy cập mức sử dụng ứng dụng", if (RecentAppSwitcher.hasUsageAccess(this)) "Đã cấp quyền" else "Chưa cấp quyền", "Cho phép sắp xếp ứng dụng theo lần dùng gần nhất và chuyển ứng dụng. Quyền này do Android quản lý.") {
             try { startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) } catch (_: Exception) { startActivity(Intent(Settings.ACTION_SETTINGS)) }
         }, marginTop(8))
 
-        target.addView(sectionTitle("Trợ lý AI"), marginTop(20))
-        target.addView(settingAction("Kết nối trợ lý AI", if (prefs.getString(AppPrefs.AI_ENDPOINT, "").orEmpty().isBlank()) "Chưa kết nối" else "Đã lưu địa chỉ bảo mật", "Quản lý địa chỉ dịch vụ AI được sử dụng bởi trợ lý.") {
+        target.addView(sectionTitle("Trợ lý AI / OpenRouter"), marginTop(20))
+        target.addView(settingAction("Máy chủ AI proxy", if (prefs.getString(AppPrefs.AI_ENDPOINT, "").orEmpty().isBlank()) "Chưa cấu hình" else "Đã lưu endpoint HTTPS", "Nhập URL Cloudflare Worker của bạn. API key được giữ ở máy chủ, không nằm trong APK.") {
             editAiEndpoint()
         }, marginTop(8))
         target.addView(settingAction("Model AI mặc định", AiModels.labelFor(AiModels.selectedId(this)), "Mở tab Trợ lý AI để chọn model hoặc đặt model tùy chỉnh.") {
@@ -1151,12 +1017,12 @@ class MainActivity : Activity() {
                     if (!savedKeyEnabled) {
                         prefs.edit().putBoolean(AppPrefs.AUTO_START, false).apply()
                         isChecked = false
-                        LiquidNotice.makeText(this@MainActivity, "Để tự khởi chạy an toàn, hãy xác thực key và chọn ‘Lưu key trên thiết bị’ trước.", Toast.LENGTH_LONG).show()
+                        Toast.makeText(this@MainActivity, "Để tự khởi chạy an toàn, hãy xác thực key và chọn ‘Lưu key trên thiết bị’ trước.", Toast.LENGTH_LONG).show()
                         return@setOnCheckedChangeListener
                     }
                 }
                 prefs.edit().putBoolean(AppPrefs.AUTO_START, checked).apply()
-                LiquidNotice.makeText(this@MainActivity, if (checked) "Đã bật tự khởi chạy. HyperOS vẫn có thể yêu cầu quyền tự khởi động." else "Đã tắt tự khởi chạy.", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@MainActivity, if (checked) "Đã bật tự khởi chạy. HyperOS vẫn có thể yêu cầu quyền tự khởi động." else "Đã tắt tự khởi chạy.", Toast.LENGTH_SHORT).show()
             }
         }
         target.addView(card().apply {
@@ -1169,38 +1035,31 @@ class MainActivity : Activity() {
             }, LinearLayout.LayoutParams(0, -2, 1f))
             row.addView(autoStartSwitch, LinearLayout.LayoutParams(dp(51), dp(31)))
             addView(row)
-            addView(bodyText("Chỉ khôi phục khi bạn đã bật đảo nổi và bật lưu mã kích hoạt. HyperOS có thể yêu cầu cho phép tự khởi chạy."), marginTop(6))
+            addView(bodyText("Chỉ khôi phục khi bạn đã bật đảo nổi, lưu key và máy chủ xác thực key vẫn còn hiệu lực. HyperOS có thể áp dụng thêm quyền Tự khởi động."), marginTop(6))
         }.apply { setPadding(dp(15), dp(14), dp(14), dp(14)) }, marginTop(18))
 
-        target.addView(settingAction("Thông báo và cập nhật", "Trạng thái ứng dụng", "Kiểm tra thông báo, phiên bản mới và trạng thái dịch vụ.") {
+        target.addView(settingAction("Điều khiển trực tuyến", "Firebase · thông báo · bảo trì · cập nhật", "Ứng dụng đọc chính sách phiên bản và thông báo từ Firebase. Trình quản trị web được cung cấp riêng trong repository.") {
             checkOnlineControl(force = true)
-            LiquidNotice.makeText(this, "Đang kiểm tra trạng thái ứng dụng…", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Đang kiểm tra cấu hình trực tuyến…", Toast.LENGTH_SHORT).show()
         }, marginTop(12))
-        target.addView(infoCard("Quyền riêng tư", "Các quyền đặc biệt chỉ được sử dụng để hiển thị đảo nổi, phát hiện hoạt động được bật và hỗ trợ những tính năng bạn lựa chọn."), marginTop(12))
+        target.addView(infoCard("Bảo vệ bản quyền", "APK được làm rối mã bằng R8. Nếu cấu hình dấu vân tay chứng thư ký trong Firebase, ứng dụng có thể từ chối bản ký bằng chứng thư khác. Muốn kiểm tra chữ ký nhất quán giữa các bản build, cần dùng một khóa ký phát hành ổn định; bản debug tự ký không phù hợp cho allowlist lâu dài."), marginTop(12))
 
         target.addView(settingAction("Chạy lại onboarding", "Xem lại giới thiệu", "Hiện lại màn hình Chào mừng") {
             prefs.edit().putBoolean(AppPrefs.ONBOARDING_DONE, false).apply()
             renderOnboarding(0)
         }, marginTop(22))
         target.addView(settingAction("Khôi phục mặc định", "Xóa các tùy chỉnh", "Đặt lại kích thước, vị trí và công tắc mô-đun") {
-            LiquidDialog.show(
-                this,
-                "Khôi phục mặc định?",
-                "Thiết lập giao diện và tính năng sẽ được đặt lại. Giới thiệu ban đầu vẫn được ghi nhớ.",
-                actions = listOf(
-                    LiquidDialog.Action("Hủy", false),
-                    LiquidDialog.Action("Khôi phục") {
-                        prefs.edit().clear().putBoolean(AppPrefs.ONBOARDING_DONE, true).putBoolean(AppPrefs.SERVICE_ENABLED, false).putBoolean(AppPrefs.LIGHT_MODE, true).apply()
-                        stopIsland()
-                        tabPages.clear()
-                        tabScrollPositions.clear()
-                        lastRenderedTab = -1
-                        renderMain()
-                    }
-                )
-            )
+            AlertDialog.Builder(this)
+                .setTitle("Khôi phục mặc định?")
+                .setMessage("Các thiết lập giao diện và mô-đun sẽ bị đặt lại. Trạng thái onboarding không đổi.")
+                .setNegativeButton("Hủy", null)
+                .setPositiveButton("Khôi phục") { _, _ ->
+                    prefs.edit().clear().putBoolean(AppPrefs.ONBOARDING_DONE, true).putBoolean(AppPrefs.SERVICE_ENABLED, false).apply()
+                    stopIsland()
+                    renderMain()
+                }.show()
         }, marginTop(10))
-        target.addView(infoCard("DigitalLiquid", "Một số tính năng cần mã truy cập hợp lệ. Bạn có thể tắt quyền hoặc dừng viên thuốc bất cứ lúc nào."), marginTop(20))
+        target.addView(infoCard("DigitalLiquid", "Không cần tài khoản Firebase. Việc sử dụng vẫn cần key cấp phép DigitalLiquid. Bạn có thể tắt quyền hoặc dừng viên thuốc bất cứ lúc nào."), marginTop(20))
     }
 
     private fun buildGlassPreview(): View {
@@ -1256,12 +1115,14 @@ class MainActivity : Activity() {
         var previewExpanded = false
         var previewLastTap = 0L
         var previewTapCount = 0
-        var previewSwitchArmed = false
+        var previewSwitchModeActive = false
         val previewHandler = Handler(Looper.getMainLooper())
-        val previewSwitchIdle = Runnable {
-            previewSwitchArmed = false
-            previewTapCount = 0
-            previewLastTap = 0L
+        val previewSwitchReset = object : Runnable {
+            override fun run() {
+                previewSwitchModeActive = false
+                previewTapCount = 0
+                previewLastTap = 0L
+            }
         }
         var previewLong = false
         val previewLongPress = Runnable {
@@ -1294,23 +1155,23 @@ class MainActivity : Activity() {
                         .setDuration(240L).setInterpolator(android.view.animation.OvershootInterpolator(0.7f)).start()
                     if (!previewLong) {
                         val now = android.os.SystemClock.elapsedRealtime()
-                        val appSwitchEnabled = prefs.getBoolean(AppPrefs.ISLAND_APP_SWITCH_GESTURE, false)
-                        previewTapCount = if (now - previewLastTap <= 750L) previewTapCount + 1 else 1
+                        val switchEnabled = prefs.getBoolean(AppPrefs.ISLAND_APP_SWITCH_GESTURE, false)
+                        if (switchEnabled && previewSwitchModeActive) {
+                            RecentAppSwitcher.switchNext(this@MainActivity)
+                            previewHandler.removeCallbacks(previewSwitchReset)
+                            previewHandler.postDelayed(previewSwitchReset, 1800L)
+                            previewLastTap = now
+                            return@setOnTouchListener true
+                        }
+                        previewTapCount = if (now - previewLastTap <= 720L) previewTapCount + 1 else 1
                         previewLastTap = now
-                        if (appSwitchEnabled && previewSwitchArmed) {
-                            RecentAppSwitcher.switch(this)
-                            previewHandler.removeCallbacks(previewSwitchIdle)
-                            previewHandler.postDelayed(previewSwitchIdle, 1800L)
-                            return@setOnTouchListener true
-                        }
-                        if (appSwitchEnabled && previewTapCount >= 6) {
-                            previewSwitchArmed = true
-                            RecentAppSwitcher.switch(this)
-                            previewHandler.removeCallbacks(previewSwitchIdle)
-                            previewHandler.postDelayed(previewSwitchIdle, 1800L)
-                            return@setOnTouchListener true
-                        }
                         when {
+                            previewTapCount >= 6 && switchEnabled -> {
+                                previewTapCount = 0
+                                previewSwitchModeActive = true
+                                previewHandler.removeCallbacks(previewSwitchReset)
+                                previewHandler.postDelayed(previewSwitchReset, 1800L)
+                            }
                             previewTapCount == 2 && prefs.getBoolean(AppPrefs.DOUBLE_TAP_ASSISTANT, false) -> {
                                 view.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
                                 // Route to the real assistant screen, not a decorative fake response.
@@ -1348,7 +1209,7 @@ class MainActivity : Activity() {
     private fun permissionStatusCard(): View {
         val outer = card().apply { setPadding(dp(14), dp(14), dp(14), dp(14)) }
         outer.addView(TextView(this).apply {
-            text = "TRẠNG THÁI TÍNH NĂNG"
+            text = "TỔNG QUAN QUYỀN"
             textSize = 10f
             letterSpacing = 0.11f
             setTextColor(0xFFA8A1F7.toInt())
@@ -1356,7 +1217,7 @@ class MainActivity : Activity() {
         outer.addView(statusLine("Lớp phủ trên thanh trạng thái", hasHyperIslandAccessibility()), marginTop(10))
         outer.addView(statusLine("Phát hiện quay màn hình", hasNotificationAccess()), marginTop(8))
         outer.addView(statusLine("Theo dõi HyperIsland", hasHyperIslandAccessibility()), marginTop(8))
-        outer.addView(statusLine("Lớp phủ Dynamic Island", prefs.getBoolean(AppPrefs.SERVICE_VISIBLE, false), if (prefs.getBoolean(AppPrefs.SERVICE_VISIBLE, false)) "Đang hiển thị" else if (prefs.getBoolean(AppPrefs.SERVICE_ATTACHED, false)) "Đang tạm ẩn" else "Chưa hiển thị"), marginTop(8))
+        outer.addView(statusLine("Hiệu ứng viên thuốc", true, "Sẵn sàng"), marginTop(8))
         return outer
     }
 
@@ -1385,13 +1246,7 @@ class MainActivity : Activity() {
         texts.addView(bodyText(description), marginTop(5))
         row.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
         val toggle = IOSSwitch(this).apply {
-            val defaultEnabled = key !in setOf(
-                AppPrefs.DOUBLE_TAP_ASSISTANT,
-                AppPrefs.ISLAND_APP_SWITCH_GESTURE,
-                AppPrefs.AUTO_HIDE_SYSTEM_ISLAND,
-                AppPrefs.HIDE_WHEN_NATIVE_ACTIVITY,
-                AppPrefs.HIDE_WHEN_MEDIA_PLAYING
-            )
+            val defaultEnabled = key != AppPrefs.ISLAND_APP_SWITCH_GESTURE
             isChecked = prefs.getBoolean(key, defaultEnabled)
             setOnCheckedChangeListener { _, checked ->
                 prefs.edit().putBoolean(key, checked).apply()
@@ -1560,7 +1415,7 @@ class MainActivity : Activity() {
     }
 
     private fun appBackground(): android.graphics.drawable.Drawable =
-        LiquidBackdropDrawable(prefs.getBoolean(AppPrefs.LIGHT_MODE, true))
+        LiquidBackdropDrawable(prefs.getBoolean(AppPrefs.LIGHT_MODE, false))
 
     /** Soft radial lighting, with separate readable palettes for dark and light mode. */
     private class LiquidBackdropDrawable(private val lightMode: Boolean) : android.graphics.drawable.Drawable() {
@@ -1596,10 +1451,10 @@ class MainActivity : Activity() {
     }
 
     private fun applyPaletteToTree(root: View) {
-        if (!prefs.getBoolean(AppPrefs.LIGHT_MODE, true)) return
+        if (!prefs.getBoolean(AppPrefs.LIGHT_MODE, false)) return
         fun walk(view: View) {
             if (view.tag == "digitalliquid-preview-island") return
-            if (view is GlassTabBar || view is GlassNavBar || view is IOSButton || view is EditText) return
+            if (view is GlassTabBar || view is GlassNavBar || view is IOSButton || view is EditText || view is Spinner) return
             if (view is TextView) {
                 val old = view.currentTextColor
                 val r = Color.red(old); val g = Color.green(old); val b = Color.blue(old)
@@ -1638,15 +1493,14 @@ class MainActivity : Activity() {
             ),
             tab
         ) { selected ->
-            selectTab(selected)
+            tab = selected
+            renderMain()
         }
     }
 
     override fun onDestroy() {
         welcomeTypewriter?.let { uiHandler.removeCallbacks(it) }
         welcomeTypewriter = null
-        overlayStatusCheck?.let { uiHandler.removeCallbacks(it) }
-        overlayStatusCheck = null
         super.onDestroy()
     }
 
@@ -1671,7 +1525,7 @@ class MainActivity : Activity() {
             startActivity(Intent(Settings.ACTION_VOICE_INPUT_SETTINGS))
         } catch (_: Exception) {
             try { startActivity(Intent(Settings.ACTION_SETTINGS)) } catch (_: Exception) { }
-            LiquidNotice.makeText(this, "Hãy vào Cài đặt hệ thống và chọn DigitalLiquid trong mục ứng dụng trợ lý mặc định.", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Hãy vào Cài đặt hệ thống và chọn DigitalLiquid trong mục ứng dụng trợ lý mặc định.", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -1686,7 +1540,7 @@ class MainActivity : Activity() {
         try {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         } catch (_: Exception) {
-            LiquidNotice.makeText(this, "Không mở được cài đặt Trợ năng.", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Không mở được cài đặt Trợ năng.", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -1699,8 +1553,11 @@ class MainActivity : Activity() {
         android.content.ComponentName(this, IslandNotificationListener::class.java).flattenToString()
 
     private fun startIsland() {
+        // An ordinary TYPE_APPLICATION_OVERLAY is placed below critical system windows
+        // such as the status bar. Require the enabled AccessibilityService so the pill
+        // can use TYPE_ACCESSIBILITY_OVERLAY and remain touchable around the camera cutout.
         if (!hasHyperIslandAccessibility()) {
-            LiquidNotice.makeText(this, "Bật quyền Trợ năng của DigitalLiquid trước để đặt viên thuốc đúng vùng thanh trạng thái.", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Hãy bật Trợ năng DigitalLiquid trước để viên thuốc nằm trên thanh trạng thái và nhận biết HyperIsland.", Toast.LENGTH_LONG).show()
             openAccessibilitySettings()
             return
         }
@@ -1708,51 +1565,19 @@ class MainActivity : Activity() {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1201)
         }
         try {
-            overlayStatusCheck?.let { uiHandler.removeCallbacks(it) }
-            prefs.edit().putBoolean(AppPrefs.SERVICE_ATTACHED, false).putBoolean(AppPrefs.SERVICE_VISIBLE, false).putBoolean(AppPrefs.SERVICE_ENABLED, true).apply()
             val intent = Intent(this, IslandService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent) else startService(intent)
-            LiquidNotice.makeText(this, "Đang kết nối viên thuốc…", Toast.LENGTH_SHORT).show()
+            prefs.edit().putBoolean(AppPrefs.SERVICE_ENABLED, true).apply()
+            Toast.makeText(this, "DigitalLiquid đã bật.", Toast.LENGTH_SHORT).show()
             renderMain()
-            verifyOverlayStarted(0)
         } catch (e: Exception) {
-            prefs.edit().putBoolean(AppPrefs.SERVICE_ATTACHED, false).putBoolean(AppPrefs.SERVICE_VISIBLE, false).putBoolean(AppPrefs.SERVICE_ENABLED, false).apply()
-            syncLiveStatusViews()
-            LiquidNotice.makeText(this, "Không thể bật đảo: ${e.message ?: "kiểm tra quyền hệ thống"}", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Không thể bật đảo: ${e.message ?: "kiểm tra quyền hệ thống"}", Toast.LENGTH_LONG).show()
         }
-    }
-
-    private fun verifyOverlayStarted(attempt: Int) {
-        overlayStatusCheck?.let { uiHandler.removeCallbacks(it) }
-        val check = Runnable {
-            if (isFinishing || isDestroyed) return@Runnable
-            if (prefs.getBoolean(AppPrefs.SERVICE_ATTACHED, false)) {
-                syncLiveStatusViews()
-                return@Runnable
-            }
-            if (attempt < 12 && prefs.getBoolean(AppPrefs.SERVICE_ENABLED, false)) {
-                verifyOverlayStarted(attempt + 1)
-            } else {
-                val didAttach = prefs.getBoolean(AppPrefs.SERVICE_ATTACHED, false)
-                if (!didAttach) {
-                    prefs.edit().putBoolean(AppPrefs.SERVICE_VISIBLE, false).putBoolean(AppPrefs.SERVICE_ENABLED, false).apply()
-                    stopService(Intent(this, IslandService::class.java))
-                    LiquidNotice.makeText(this, "Chưa hiển thị được Dynamic Island. Kiểm tra quyền Trợ năng, rồi bật lại.", Toast.LENGTH_LONG).show()
-                }
-                syncLiveStatusViews()
-                if (prefs.getBoolean(AppPrefs.ONBOARDING_DONE, false)) renderMain()
-            }
-        }
-        overlayStatusCheck = check
-        uiHandler.postDelayed(check, 350L)
     }
 
     private fun stopIsland() {
-        overlayStatusCheck?.let { uiHandler.removeCallbacks(it) }
-        overlayStatusCheck = null
         stopService(Intent(this, IslandService::class.java))
-        prefs.edit().putBoolean(AppPrefs.SERVICE_ATTACHED, false).putBoolean(AppPrefs.SERVICE_VISIBLE, false).putBoolean(AppPrefs.SERVICE_ENABLED, false).apply()
-        syncLiveStatusViews()
+        prefs.edit().putBoolean(AppPrefs.SERVICE_ENABLED, false).apply()
         if (prefs.getBoolean(AppPrefs.ONBOARDING_DONE, false)) renderMain()
     }
 
@@ -1771,7 +1596,7 @@ class MainActivity : Activity() {
         if (Build.VERSION.SDK_INT < 23) return
         val manager = getSystemService(POWER_SERVICE) as PowerManager
         if (manager.isIgnoringBatteryOptimizations(packageName)) {
-            LiquidNotice.makeText(this, "Ứng dụng đã được bỏ giới hạn pin.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Ứng dụng đã được bỏ giới hạn pin.", Toast.LENGTH_SHORT).show()
             return
         }
         try {
