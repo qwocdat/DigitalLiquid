@@ -125,7 +125,7 @@ class AssistantFallbackActivity : Activity() {
             setTextColor(Color.WHITE)
             textSize = 13f
             maxLines = 2
-            singleLine = false
+            setSingleLine(false)
             imeOptions = EditorInfo.IME_ACTION_SEND
             setPadding(dp(11), dp(7), dp(11), dp(7))
             background = roundedField(0xD9141722.toInt(), 14)
