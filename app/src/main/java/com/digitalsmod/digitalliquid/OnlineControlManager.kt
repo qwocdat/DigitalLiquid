@@ -204,7 +204,7 @@ object OnlineControlManager {
             )
         } catch (e: Exception) {
             val extra = refreshFailure?.let { " (làm mới token trước đó cũng lỗi: $it)" }.orEmpty()
-            throw IllegalStateException("${e.message ?: "Không thể đăng nhập Firebase"}$extra", e)
+            throw IllegalStateException("${e.message ?: "Không thể xác thực kết nối"}$extra", e)
         }
 
         val newIdToken = signInJson.optString("idToken")
@@ -215,8 +215,7 @@ object OnlineControlManager {
         if (newIdToken.isBlank()) {
             val detail = describeAuthError(signInJson)
             throw IllegalStateException(
-                "Firebase không cấp token. $detail. " +
-                    "Kiểm tra API key có thuộc dự án ideo-dd376 và Anonymous Authentication đã bật đúng dự án."
+                "Không thể xác thực kết nối dịch vụ. Hãy thử lại sau hoặc kiểm tra cấu hình dịch vụ."
             )
         }
 
@@ -250,7 +249,7 @@ object OnlineControlManager {
             .ifBlank { message }
         return buildString {
             if (code > 0) append("HTTP ").append(code).append(": ")
-            append(detail.ifBlank { "Phản hồi Firebase không chứa token" })
+            append(detail.ifBlank { "Phản hồi máy chủ không chứa dữ liệu xác thực" })
         }
     }
 
@@ -327,7 +326,7 @@ object OnlineControlManager {
                     .ifBlank { json.optString("error") }
                     .ifBlank { json.optString("rawResponse") }
                 throw IllegalStateException(
-                    "Firebase HTTP $status${if (reason.isBlank()) "" else ": $reason"}"
+                    "Máy chủ trả về mã HTTP $status${if (reason.isBlank()) "" else ": $reason"}"
                 )
             }
 

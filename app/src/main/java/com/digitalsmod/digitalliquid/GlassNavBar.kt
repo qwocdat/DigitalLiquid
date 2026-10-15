@@ -24,7 +24,7 @@ class GlassNavBar(
     init {
         orientation = HORIZONTAL
         gravity = android.view.Gravity.CENTER_VERTICAL
-        val lightMode = AppPrefs.get(context).getBoolean(AppPrefs.LIGHT_MODE, false)
+        val lightMode = AppPrefs.get(context).getBoolean(AppPrefs.LIGHT_MODE, true)
         val logo = ImageView(context).apply {
             setImageResource(R.drawable.digitalliquid_brand)
             scaleType = ImageView.ScaleType.CENTER_CROP

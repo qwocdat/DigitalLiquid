@@ -17,7 +17,7 @@ class IOSButton(context: Context) : TextView(context) {
         text = label
         textSize = 12f
         typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
-        val lightMode = AppPrefs.get(context).getBoolean(AppPrefs.LIGHT_MODE, false)
+        val lightMode = AppPrefs.get(context).getBoolean(AppPrefs.LIGHT_MODE, true)
         setTextColor(if (primary || !lightMode) Color.WHITE else 0xFF25283A.toInt())
         gravity = android.view.Gravity.CENTER
         setPadding(dp(12), dp(10), dp(12), dp(10))

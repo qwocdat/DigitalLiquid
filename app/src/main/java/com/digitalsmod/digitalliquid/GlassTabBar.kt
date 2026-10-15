@@ -27,7 +27,7 @@ class GlassTabBar(
     private var selected = selectedIndex.coerceIn(0, (items.size - 1).coerceAtLeast(0))
 
     init {
-        val lightMode = AppPrefs.get(context).getBoolean(AppPrefs.LIGHT_MODE, false)
+        val lightMode = AppPrefs.get(context).getBoolean(AppPrefs.LIGHT_MODE, true)
         background = GradientDrawable(
             GradientDrawable.Orientation.TL_BR,
             if (lightMode) intArrayOf(0xF4FFFFFF.toInt(), 0xE5EAF2FA.toInt())
@@ -117,7 +117,7 @@ class GlassTabBar(
             val cell = row.getChildAt(i) as? LinearLayout ?: continue
             @Suppress("UNCHECKED_CAST")
             val pair = cell.tag as? Pair<TextView, TextView> ?: continue
-            val lightMode = AppPrefs.get(context).getBoolean(AppPrefs.LIGHT_MODE, false)
+            val lightMode = AppPrefs.get(context).getBoolean(AppPrefs.LIGHT_MODE, true)
             val color = if (i == selected) Color.WHITE else if (lightMode) 0xFF5D6272.toInt() else 0xFFB5B8C5.toInt()
             pair.first.setTextColor(color)
             pair.first.textSize = if (i == selected) 21f else 19f

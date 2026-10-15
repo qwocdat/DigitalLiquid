@@ -9,6 +9,8 @@ object AppPrefs {
 
     const val ONBOARDING_DONE = "onboarding_done"
     const val SERVICE_ENABLED = "service_enabled"
+    const val SERVICE_ATTACHED = "service_attached"
+    const val SERVICE_VISIBLE = "service_visible"
     const val WIDTH = "island_width_dp"
     const val HEIGHT = "island_height_dp"
     const val OFFSET_TOP = "island_top_offset_dp"
@@ -37,6 +39,21 @@ object AppPrefs {
     const val APP_SWITCH_LAST_PACKAGE = "app_switch_last_package"
     const val DISMISSED_UPDATE_CODE = "dismissed_update_code"
 
-    fun get(context: Context): SharedPreferences =
-        context.getSharedPreferences(FILE_NAME, Context.MODE_PRIVATE)
+    private const val MIGRATION_V15_AUTO_HIDE_DEFAULTS = "migration_v15_auto_hide_defaults"
+
+    fun get(context: Context): SharedPreferences {
+        val prefs = context.getSharedPreferences(FILE_NAME, Context.MODE_PRIVATE)
+        if (!prefs.getBoolean(MIGRATION_V15_AUTO_HIDE_DEFAULTS, false)) {
+            // Earlier builds could save aggressive auto-hide settings and then suppress the
+            // island even though the main switch reported ON. Disable those rules once on 1.5.
+            prefs.edit()
+                .putBoolean(AUTO_HIDE_SYSTEM_ISLAND, false)
+                .putBoolean(HIDE_WHEN_MEDIA_PLAYING, false)
+                .putBoolean(HIDE_WHEN_NATIVE_ACTIVITY, false)
+                .putBoolean(HIDE_WHEN_RINGER_UI, false)
+                .putBoolean(MIGRATION_V15_AUTO_HIDE_DEFAULTS, true)
+                .apply()
+        }
+        return prefs
+    }
 }

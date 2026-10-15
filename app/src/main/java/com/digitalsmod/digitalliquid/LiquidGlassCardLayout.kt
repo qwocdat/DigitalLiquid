@@ -37,7 +37,7 @@ class LiquidGlassCardLayout(context: Context) : LinearLayout(context) {
     override fun dispatchDraw(canvas: Canvas) {
         if (width > 0 && height > 0) {
             val p = AppPrefs.get(context)
-            val lightMode = p.getBoolean(AppPrefs.LIGHT_MODE, false)
+            val lightMode = p.getBoolean(AppPrefs.LIGHT_MODE, true)
             bounds.set(0f, 0f, width.toFloat(), height.toFloat())
             shape.reset()
             shape.addRoundRect(bounds, radius, radius, Path.Direction.CW)

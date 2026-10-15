@@ -1,7 +1,6 @@
 package com.digitalsmod.digitalliquid
 
 import android.app.Activity
-import android.app.AlertDialog
 import android.content.Intent
 import android.content.Context
 import android.graphics.Color
@@ -11,8 +10,8 @@ import android.os.Handler
 import android.os.Looper
 import android.text.InputType
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
-import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -99,120 +98,141 @@ object KeyAuthGate {
         val density = activity.resources.displayMetrics.density
         fun dp(value: Int) = (value * density).toInt()
 
-        val container = LinearLayout(activity).apply {
+        val dialog = android.app.Dialog(activity)
+        val panel = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(12), dp(20), dp(4))
-            background = rounded(Color.rgb(19, 18, 25), dp(22))
+            setPadding(dp(22), dp(22), dp(22), dp(18))
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TL_BR,
+                intArrayOf(0xFFFEFFFF.toInt(), 0xFFF0F3FA.toInt())
+            ).apply {
+                cornerRadius = dp(28).toFloat()
+                setStroke(dp(1), 0x668795B1)
+            }
         }
-        val subtitle = TextView(activity).apply {
-            text = "DIGITALSMOD · ACCESS CONTROL"
-            setTextColor(Color.rgb(183, 151, 255))
-            textSize = 11f
-            letterSpacing = .12f
-        }
-        val body = TextView(activity).apply {
-            text = "Nhập key để mở DigitalLiquid. Chưa có key? Nhấn Get Key để mở trang xác thực trên trình duyệt."
-            setTextColor(Color.rgb(196, 191, 207))
+        panel.addView(View(activity).apply {
+            background = GradientDrawable(
+                GradientDrawable.Orientation.LEFT_RIGHT,
+                intArrayOf(0xFF9A8CF6.toInt(), 0xFF6256BB.toInt())
+            ).apply { cornerRadius = dp(4).toFloat() }
+        }, LinearLayout.LayoutParams(dp(36), dp(4)).apply { bottomMargin = dp(17) })
+        panel.addView(TextView(activity).apply {
+            text = "DIGITALLIQUID  /  ACCESS"
+            setTextColor(0xFF6256BB.toInt())
+            textSize = 10.5f
+            letterSpacing = .10f
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+        })
+        panel.addView(TextView(activity).apply {
+            text = "Mở khóa ứng dụng"
+            setTextColor(0xFF202333.toInt())
+            textSize = 24f
+            typeface = android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.BOLD)
+            includeFontPadding = false
+        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+        panel.addView(TextView(activity).apply {
+            text = "Nhập mã truy cập để tiếp tục. Mã được xác minh trực tuyến và không cần tạo tài khoản cá nhân."
+            setTextColor(0xFF62697A.toInt())
             textSize = 13f
-            setPadding(0, dp(10), 0, dp(15))
-        }
+            setLineSpacing(dp(3).toFloat(), 1.02f)
+        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8); bottomMargin = dp(15) })
         val input = EditText(activity).apply {
             hint = "DL-XXXXXX-XXXXXX-XXXXXX-XXXXXX"
-            if (prefs.getBoolean(SAVE_KEY_ENABLED, false)) {
-                setText(prefs.getString(SAVED_KEY, "").orEmpty())
-            }
+            if (prefs.getBoolean(SAVE_KEY_ENABLED, false)) setText(prefs.getString(SAVED_KEY, "").orEmpty())
             setSingleLine(true)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
-            setTextColor(Color.WHITE)
-            setHintTextColor(Color.rgb(120, 115, 132))
-            textSize = 14f
+            setTextColor(0xFF222638.toInt())
+            setHintTextColor(0xFF9298A8.toInt())
+            textSize = 13.5f
             setPadding(dp(14), dp(13), dp(14), dp(13))
-            background = rounded(Color.rgb(31, 29, 40), dp(13), Color.rgb(67, 59, 86))
+            background = rounded(0xFFF9FAFD.toInt(), dp(14), 0x668795B1)
         }
+        panel.addView(input, LinearLayout.LayoutParams(-1, -2))
         val saveKeyToggle = CheckBox(activity).apply {
-            text = "Lưu key trên thiết bị"
+            text = "Lưu mã trên thiết bị"
             textSize = 12f
-            setTextColor(Color.rgb(220, 216, 230))
-            buttonTintList = android.content.res.ColorStateList.valueOf(Color.rgb(183, 151, 255))
+            setTextColor(0xFF555D70.toInt())
+            buttonTintList = android.content.res.ColorStateList.valueOf(0xFF7968DD.toInt())
             isChecked = prefs.getBoolean(SAVE_KEY_ENABLED, false)
         }
+        panel.addView(saveKeyToggle, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) })
         val status = TextView(activity).apply {
             text = initialMessage
-            setTextColor(Color.rgb(164, 157, 180))
-            textSize = 12f
-            setPadding(0, dp(12), 0, dp(4))
+            setTextColor(0xFF737B8D.toInt())
+            textSize = 11.5f
+            setLineSpacing(dp(2).toFloat(), 1f)
         }
-        container.addView(subtitle)
-        container.addView(body)
-        container.addView(input, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        container.addView(saveKeyToggle, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(5) })
-        container.addView(status)
+        panel.addView(status, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(5) })
+        val actions = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+        }
+        val getKeyButton = IOSButton(activity).apply {
+            style("Lấy mã", false)
+        }
+        val confirmButton = IOSButton(activity).apply {
+            style("Xác nhận", true)
+        }
+        actions.addView(getKeyButton, LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginEnd = dp(8) })
+        actions.addView(confirmButton, LinearLayout.LayoutParams(0, dp(46), 1f))
+        panel.addView(actions, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(17) })
 
-        val dialog = AlertDialog.Builder(activity)
-            .setTitle("Xác thực DigitalLiquid")
-            .setView(container)
-            .setCancelable(false)
-            .setPositiveButton("Xác nhận", null)
-            .setNegativeButton("Get Key", null)
-            .create()
-
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
+        dialog.setContentView(panel)
+        dialog.setCancelable(false)
         dialog.setCanceledOnTouchOutside(false)
-        dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val typedKey = input.text?.toString()?.trim().orEmpty()
-                if (typedKey.isBlank()) {
-                    status.text = "Bạn chưa nhập key."
-                    return@setOnClickListener
-                }
-                status.text = "Đang xác thực với máy chủ…"
-                dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = false
-                dialog.getButton(AlertDialog.BUTTON_NEGATIVE).isEnabled = false
-                executor.execute {
-                    val result = runCatching {
-                        verifyKeyInRealtimeDatabase(typedKey, installId)
-                    }.getOrElse { JSONObject().put("valid", false).put("reason", it.message ?: "Không kết nối được Firebase. Kiểm tra Internet và Database Rules.") }
-                    mainHandler.post {
-                        if (activity.isFinishing || activity.isDestroyed) return@post
-                        val valid = result.optBoolean("valid", false)
-                        val permanent = result.optBoolean("permanent", false)
-                        val expiresAt = result.optLong("expiresAt", 0L)
-                        if (valid && (permanent || expiresAt > System.currentTimeMillis())) {
-                            if (saveKeyToggle.isChecked) {
-                                prefs.edit().putBoolean(SAVE_KEY_ENABLED, true).putString(SAVED_KEY, typedKey).apply()
-                            } else {
-                                prefs.edit().putBoolean(SAVE_KEY_ENABLED, false).remove(SAVED_KEY).apply()
-                            }
-                            authorizedInstallId = installId
-                            authorizedUntilMs = if (permanent) Long.MAX_VALUE else expiresAt
-                            dialog.dismiss()
-                            onAuthorized()
-                        } else {
-                            status.text = if (valid) "Máy chủ không trả về thời hạn key hợp lệ." else result.optString("reason", "Key không hợp lệ.")
-                            dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
-                            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).isEnabled = true
-                        }
-                    }
-                }
+        dialog.show()
+        dialog.window?.apply {
+            setBackgroundDrawableResource(android.R.color.transparent)
+            setLayout((activity.resources.displayMetrics.widthPixels * .92f).toInt(), ViewGroup.LayoutParams.WRAP_CONTENT)
+            setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        }
+
+        confirmButton.setOnClickListener {
+            val typedKey = input.text?.toString()?.trim().orEmpty()
+            if (typedKey.isBlank()) {
+                status.text = "Bạn chưa nhập mã truy cập."
+                return@setOnClickListener
             }
-            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener {
-                status.text = "Đang tạo phiên lấy key…"
-                dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = false
-                dialog.getButton(AlertDialog.BUTTON_NEGATIVE).isEnabled = false
-                executor.execute {
-                    val webUrl = GET_KEY_URL + "?installId=" + Uri.encode(installId)
-                    mainHandler.post {
-                        if (activity.isFinishing || activity.isDestroyed) return@post
-                        runCatching { activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(webUrl))) }
-                            .onFailure { status.text = "Không mở được trình duyệt trên thiết bị này." }
-                        dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
-                        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).isEnabled = true
+            status.text = "Đang xác minh…"
+            confirmButton.isEnabled = false
+            getKeyButton.isEnabled = false
+            executor.execute {
+                val result = runCatching { verifyKeyInRealtimeDatabase(typedKey, installId) }
+                    .getOrElse { JSONObject().put("valid", false).put("reason", it.message ?: "Không kết nối được. Hãy kiểm tra Internet.") }
+                mainHandler.post {
+                    if (activity.isFinishing || activity.isDestroyed) return@post
+                    val valid = result.optBoolean("valid", false)
+                    val permanent = result.optBoolean("permanent", false)
+                    val expiresAt = result.optLong("expiresAt", 0L)
+                    if (valid && (permanent || expiresAt > System.currentTimeMillis())) {
+                        if (saveKeyToggle.isChecked) {
+                            prefs.edit().putBoolean(SAVE_KEY_ENABLED, true).putString(SAVED_KEY, typedKey).apply()
+                        } else {
+                            prefs.edit().putBoolean(SAVE_KEY_ENABLED, false).remove(SAVED_KEY).apply()
+                        }
+                        authorizedInstallId = installId
+                        authorizedUntilMs = if (permanent) Long.MAX_VALUE else expiresAt
+                        dialog.dismiss()
+                        onAuthorized()
+                    } else {
+                        status.text = if (valid) "Máy chủ không trả về thời hạn hợp lệ." else result.optString("reason", "Mã không hợp lệ.")
+                        confirmButton.isEnabled = true
+                        getKeyButton.isEnabled = true
                     }
                 }
             }
         }
-        dialog.show()
-        dialog.window?.setBackgroundDrawable(rounded(Color.rgb(19, 18, 25), dp(24), Color.rgb(63, 54, 82)))
-        dialog.window?.setLayout((activity.resources.displayMetrics.widthPixels * .92f).toInt(), ViewGroup.LayoutParams.WRAP_CONTENT)
+        getKeyButton.setOnClickListener {
+            status.text = "Đang mở trang lấy mã…"
+            confirmButton.isEnabled = false
+            getKeyButton.isEnabled = false
+            val webUrl = GET_KEY_URL + "?installId=" + Uri.encode(installId)
+            runCatching { activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(webUrl))) }
+                .onFailure { status.text = "Không mở được trình duyệt trên thiết bị này." }
+            confirmButton.isEnabled = true
+            getKeyButton.isEnabled = true
+        }
     }
 
     private fun rounded(color: Int, radiusPx: Int, stroke: Int? = null) = GradientDrawable().apply {
@@ -229,7 +249,7 @@ object KeyAuthGate {
             "POST"
         )
         val idToken = tokenResponse.optString("idToken")
-        if (idToken.isBlank()) throw IllegalStateException("Firebase không cấp được phiên đăng nhập ẩn danh. Hãy bật Anonymous trong Authentication.")
+        if (idToken.isBlank()) throw IllegalStateException("Không thể tạo phiên xác minh. Hãy kiểm tra kết nối và thử lại.")
 
         val keyHash = sha256(normalizedKey)
         val authToken = URLEncoder.encode(idToken, "UTF-8")
@@ -280,14 +300,14 @@ object KeyAuthGate {
             val status = connection.responseCode
             val stream = if (status in 200..299) connection.inputStream else connection.errorStream
             val text = stream?.let { input -> BufferedReader(InputStreamReader(input, Charsets.UTF_8)).use { it.readText() } }.orEmpty()
-            if (text.isBlank()) throw IllegalStateException("Firebase trả về phản hồi rỗng (HTTP $status). Kiểm tra Anonymous Auth và Database Rules.")
+            if (text.isBlank()) throw IllegalStateException("Dịch vụ xác minh trả về phản hồi rỗng (HTTP $status). Hãy thử lại sau.")
             val json = if (text.trim() == "null") JSONObject() else JSONObject(text)
             if (status !in 200..299) {
                 val errorMessage = json.optJSONObject("error")?.optString("message").orEmpty()
                 throw IllegalStateException(when {
-                    errorMessage.contains("PERMISSION_DENIED", true) -> "Firebase từ chối quyền đọc key. Kiểm tra Realtime Database Rules."
-                    errorMessage.contains("OPERATION_NOT_ALLOWED", true) -> "Chưa bật đăng nhập ẩn danh trong Firebase Authentication."
-                    else -> "Firebase trả HTTP $status: ${errorMessage.ifBlank { "yêu cầu thất bại" }}"
+                    errorMessage.contains("PERMISSION_DENIED", true) -> "Dịch vụ xác minh từ chối yêu cầu. Hãy kiểm tra mã truy cập hoặc thử lại sau."
+                    errorMessage.contains("OPERATION_NOT_ALLOWED", true) -> "Dịch vụ xác minh chưa sẵn sàng. Hãy thử lại sau."
+                    else -> "Dịch vụ xác minh trả HTTP $status: ${errorMessage.ifBlank { "yêu cầu thất bại" }}"
                 })
             }
             return json

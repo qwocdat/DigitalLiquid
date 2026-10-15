@@ -18,7 +18,7 @@ object RecentAppSwitcher {
         if (!hasUsageAccess(context)) {
             val recentsOpened = HyperIslandVisibilityService.requestRecents()
             if (!recentsOpened) HyperIslandVisibilityService.requestHome()
-            Toast.makeText(
+            LiquidNotice.makeText(
                 context,
                 "Để chuyển app gần đây tự động, hãy cấp quyền Truy cập mức sử dụng ứng dụng trong DigitalLiquid → Cài đặt.",
                 Toast.LENGTH_LONG
