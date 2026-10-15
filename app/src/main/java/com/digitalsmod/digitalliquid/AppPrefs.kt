@@ -23,6 +23,18 @@ object AppPrefs {
     const val RECORDING_STOP_CONTROL = "recording_stop_control" // Kept for settings migration; now controls the Recording label.
     const val AUTO_START = "auto_start_after_boot"
     const val LAST_ANNOUNCEMENT_ID = "last_remote_announcement_id"
+    const val AUTO_HIDE_SYSTEM_ISLAND = "auto_hide_system_island"
+    const val HIDE_WHEN_MEDIA_PLAYING = "hide_when_media_playing"
+    const val HIDE_WHEN_NATIVE_ACTIVITY = "hide_when_native_activity"
+    const val HIDE_WHEN_RINGER_UI = "hide_when_ringer_ui"
+    const val DOUBLE_TAP_ASSISTANT = "double_tap_assistant"
+    const val ISLAND_APP_SWITCH_GESTURE = "island_app_switch_gesture"
+    const val CUSTOM_APP_NOTICES = "custom_app_notices"
+    const val AI_MODEL = "openrouter_model"
+    const val AI_ENDPOINT = "openrouter_endpoint"
+    const val LIGHT_MODE = "light_mode_enabled"
+    const val LIVE_PREVIEW_INTERACTIVE = "live_preview_interactive"
+    const val APP_SWITCH_LAST_PACKAGE = "app_switch_last_package"
     const val DISMISSED_UPDATE_CODE = "dismissed_update_code"
 
     fun get(context: Context): SharedPreferences =
