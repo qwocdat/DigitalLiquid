@@ -143,6 +143,8 @@ class IslandService : Service() {
     private var isAudioRecordingActive = false
     
     private var nativeActivityActive = false
+    private var mediaPlaybackActive = false
+    private var ringerUiActive = false
     private var cameraActive = false
     private var hyperIslandVisibilityOverride: Boolean? = null
     private var idleDot: View? = null
@@ -160,9 +162,22 @@ class IslandService : Service() {
     private var recordingStartedAtElapsed: Long = 0L
     private var recordingTimerTask: Runnable? = null
     private var recordingExpanded = false
+    private var customNoticeOverlay: View? = null
+    private var customNoticeDismissTask: Runnable? = null
     private var downX = 0f
     private var downY = 0f
     private var longPressTriggered = false
+    private var lastTapAt = 0L
+    private var tapBurstCount = 0
+    private val singleTapRunnable = Runnable {
+        val prefs = AppPrefs.get(this)
+        when {
+            panelOpen -> closeCustomizationPanel()
+            prefs.getBoolean(AppPrefs.DOUBLE_TAP_ASSISTANT, false) && tapBurstCount == 2 -> openDefaultAssistant()
+            else -> wobblePill()
+        }
+        tapBurstCount = 0
+    }
     private val touchSlop by lazy { ViewConfiguration.get(this).scaledTouchSlop }
 
     private val displayListener = object : DisplayManager.DisplayListener {
@@ -280,6 +295,8 @@ class IslandService : Service() {
         notificationScreenRecording = lastNotificationScreenRecording
         accessibilityScreenRecording = lastAccessibilityScreenRecording
         nativeActivityActive = lastNativeActivityActive
+        mediaPlaybackActive = lastMediaPlaybackActive
+        ringerUiActive = lastRingerUiActive
         cameraActive = lastCameraActivityActive
         
         checkVirtualDisplayState()
@@ -752,6 +769,7 @@ class IslandService : Service() {
                 downY = event.rawY
                 longPressTriggered = false
                 handler.removeCallbacks(longPressRunnable)
+                handler.removeCallbacks(singleTapRunnable)
                 handler.postDelayed(longPressRunnable, LONG_PRESS_MS)
                 return true
             }
@@ -763,21 +781,46 @@ class IslandService : Service() {
             }
             MotionEvent.ACTION_UP -> {
                 handler.removeCallbacks(longPressRunnable)
-                if (!longPressTriggered && abs(event.rawX - downX) <= touchSlop * 1.5f && abs(event.rawY - downY) <= touchSlop * 1.5f) {
+                val isTap = abs(event.rawX - downX) <= touchSlop * 1.5f &&
+                    abs(event.rawY - downY) <= touchSlop * 1.5f
+                if (!longPressTriggered && isTap) {
                     view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-                    if (panelOpen) closeCustomizationPanel() else wobblePill()
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    if (now - lastTapAt <= APP_SWITCH_SEQUENCE_GAP_MS) tapBurstCount++ else tapBurstCount = 1
+                    lastTapAt = now
+                    val prefs = AppPrefs.get(this)
+                    if (prefs.getBoolean(AppPrefs.ISLAND_APP_SWITCH_GESTURE, false) && tapBurstCount >= APP_SWITCH_START_TAPS) {
+                        handler.removeCallbacks(singleTapRunnable)
+                        val sequenceCount = tapBurstCount
+                        RecentAppSwitcher.switch(this, sequenceCount - APP_SWITCH_START_TAPS)
+                    } else {
+                        // Wait briefly so a second tap can be distinguished from a single tap.
+                        handler.removeCallbacks(singleTapRunnable)
+                        handler.postDelayed(singleTapRunnable, DOUBLE_TAP_WINDOW_MS)
+                    }
                 }
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
                 handler.removeCallbacks(longPressRunnable)
+                handler.removeCallbacks(singleTapRunnable)
+                tapBurstCount = 0
                 return true
             }
         }
         return true
     }
 
+    private fun openDefaultAssistant() {
+        try {
+            startActivity(Intent(Intent.ACTION_ASSIST).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (_: Exception) {
+            Toast.makeText(this, "Hãy đặt DigitalLiquid làm trợ lý mặc định trong Cài đặt.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private val longPressRunnable = Runnable {
+        handler.removeCallbacks(singleTapRunnable)
         if (faceUnlocking || isFaceUnlockShrinking) return@Runnable
         longPressTriggered = true
         islandRoot?.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
@@ -1021,8 +1064,9 @@ class IslandService : Service() {
             if (cutout != null) {
                 // Return the pill's left edge, not the host's left edge. windowX()
                 // subtracts the transparent trail inset when it creates the window.
-                return if (cutout.centerX() < displayWidthPx() / 2) 0
-                else (displayWidthPx() - windowWidth).coerceAtLeast(0)
+                val edgeInset = dp(12)
+                return if (cutout.centerX() < displayWidthPx() / 2) edgeInset
+                else (displayWidthPx() - windowWidth - edgeInset).coerceAtLeast(edgeInset)
             }
         }
         if (isPortraitWithTopCutout()) {
@@ -1159,7 +1203,12 @@ class IslandService : Service() {
         val root = islandRoot ?: return
         val host = overlayHost ?: return
         val lp = params ?: return
-        val nativeIslandVisible = hyperIslandVisibilityOverride == true || nativeActivityActive
+        val prefs = AppPrefs.get(this)
+        val hideForSystemIsland = prefs.getBoolean(AppPrefs.AUTO_HIDE_SYSTEM_ISLAND, true) && hyperIslandVisibilityOverride == true
+        val hideForOtherActivity = prefs.getBoolean(AppPrefs.HIDE_WHEN_NATIVE_ACTIVITY, true) && nativeActivityActive
+        val hideForMusic = prefs.getBoolean(AppPrefs.HIDE_WHEN_MEDIA_PLAYING, true) && mediaPlaybackActive
+        val hideForRingerUi = prefs.getBoolean(AppPrefs.HIDE_WHEN_RINGER_UI, true) && ringerUiActive
+        val nativeIslandVisible = hideForSystemIsland || hideForOtherActivity || hideForMusic || hideForRingerUi
         val suppress = !screenRecording && !cameraActive && nativeIslandVisible && !faceUnlocking && !isFaceUnlockShrinking
         val wantedVisibility = if (suppress) View.GONE else View.VISIBLE
         val hasNotTouchable = (lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) != 0
@@ -1718,6 +1767,120 @@ class IslandService : Service() {
     @Suppress("DEPRECATION")
     private fun legacyVersionCode(info: android.content.pm.PackageInfo): Int = info.versionCode
 
+    private fun showCustomAppNotice(title: String, message: String, url: String): Boolean {
+        val host = overlayHost ?: return false
+        if (!usingAccessibilityOverlay || !AppPrefs.get(this).getBoolean(AppPrefs.CUSTOM_APP_NOTICES, true)) return false
+        dismissCustomAppNotice(animate = false)
+
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(17), dp(15), dp(17), dp(15))
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TL_BR,
+                intArrayOf(0xF51B1D28.toInt(), 0xF20A0C13.toInt())
+            ).apply {
+                cornerRadius = dp(25).toFloat()
+                setStroke(dp(1), 0x55FFFFFF)
+            }
+            alpha = 0f
+            translationY = -dp(10).toFloat()
+            elevation = dp(16).toFloat()
+            isClickable = true
+            isFocusable = false
+        }
+        val eyebrow = TextView(this).apply {
+            text = "DIGITALLIQUID · THÔNG BÁO"
+            textSize = 9.5f
+            letterSpacing = 0.08f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(0xFFB9AEFF.toInt())
+        }
+        card.addView(eyebrow)
+        card.addView(TextView(this).apply {
+            text = title.ifBlank { "Thông báo DigitalLiquid" }
+            textSize = 16f
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
+            setTextColor(Color.WHITE)
+            maxLines = 2
+        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(7) })
+        card.addView(TextView(this).apply {
+            text = message
+            textSize = 13f
+            setTextColor(0xFFD2D4DF.toInt())
+            setLineSpacing(dp(2).toFloat(), 1.08f)
+            maxLines = 5
+        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(5) })
+        val bottom = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        bottom.addView(TextView(this).apply {
+            text = if (url.startsWith("https://") || url.startsWith("http://")) "MỞ LIÊN KẾT ↗" else "ĐÃ NHẬN"
+            textSize = 10f
+            letterSpacing = 0.03f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(0xFFE2DCFF.toInt())
+        }, LinearLayout.LayoutParams(0, dp(28), 1f))
+        bottom.addView(TextView(this).apply {
+            text = "×"
+            textSize = 22f
+            gravity = Gravity.CENTER
+            setTextColor(0xFFB8BBC9.toInt())
+            setPadding(dp(8), 0, dp(3), 0)
+            setOnClickListener { dismissCustomAppNotice() }
+        }, LinearLayout.LayoutParams(dp(32), dp(30)))
+        card.addView(bottom, LinearLayout.LayoutParams(-1, dp(31)).apply { topMargin = dp(8) })
+
+        card.setOnClickListener {
+            dismissCustomAppNotice()
+            val target = url.trim()
+            try {
+                val intent = if (target.startsWith("https://") || target.startsWith("http://")) {
+                    Intent(Intent.ACTION_VIEW, Uri.parse(target))
+                } else Intent(this, MainActivity::class.java)
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                startActivity(intent)
+            } catch (_: Exception) { }
+        }
+        val lp = WindowManager.LayoutParams(
+            minOf(dp(360), (displayWidthPx() - dp(20)).coerceAtLeast(dp(240))),
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            overlayWindowType(),
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            x = 0
+            y = if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE && isLandscapeWithSideCutout()) {
+                (positionY() + targetHeight() + dp(12)).coerceAtMost((displayHeightPx() - dp(140)).coerceAtLeast(0))
+            } else statusBarHeightPx() + dp(10)
+        }
+        return try {
+            windowManager.addView(card, lp)
+            customNoticeOverlay = card
+            card.animate().alpha(1f).translationY(0f).setDuration(260L).start()
+            val task = Runnable { dismissCustomAppNotice() }
+            customNoticeDismissTask = task
+            handler.postDelayed(task, CUSTOM_NOTICE_DURATION_MS)
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun dismissCustomAppNotice(animate: Boolean = true) {
+        customNoticeDismissTask?.let { handler.removeCallbacks(it) }
+        customNoticeDismissTask = null
+        val current = customNoticeOverlay ?: return
+        customNoticeOverlay = null
+        if (animate) {
+            current.animate().alpha(0f).translationY(-dp(8).toFloat()).setDuration(150L).withEndAction {
+                try { windowManager.removeView(current) } catch (_: Exception) { }
+            }.start()
+        } else {
+            try { windowManager.removeView(current) } catch (_: Exception) { }
+        }
+    }
+
     private fun remoteNotificationsManager(): NotificationManager? {
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return null
         if (Build.VERSION.SDK_INT >= 26 && manager.getNotificationChannel(REMOTE_NOTICE_CHANNEL) == null) {
@@ -1732,6 +1895,10 @@ class IslandService : Service() {
         val noticeId = control.announcementId.ifBlank { control.announcementTitle + "|" + control.announcementMessage }
         val noticePrefs = getSharedPreferences(REMOTE_NOTICE_PREFS, MODE_PRIVATE)
         if (noticePrefs.getString(REMOTE_NOTICE_LAST_ID, "") == noticeId) return
+        if (showCustomAppNotice(control.announcementTitle, control.announcementMessage, control.announcementUrl)) {
+            noticePrefs.edit().putString(REMOTE_NOTICE_LAST_ID, noticeId).apply()
+            return
+        }
         val openIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
@@ -1830,6 +1997,7 @@ class IslandService : Service() {
         recordingTimerTask?.let { handler.removeCallbacks(it) }
         faceView?.release()
         faceView = null
+        dismissCustomAppNotice(animate = false)
         stopPanelMedia()
         try { unregisterReceiver(configReceiver) } catch (_: Exception) { }
         try { unregisterReceiver(orientationReceiver) } catch (_: Exception) { }
@@ -1854,7 +2022,11 @@ class IslandService : Service() {
         private const val REMOTE_NOTICE_LAST_ID = "last_announcement_id"
         private const val REMOTE_ANNOUNCEMENT_NOTIFICATION_ID = 43
         private const val REMOTE_POLICY_NOTIFICATION_ID = 44
+        private const val CUSTOM_NOTICE_DURATION_MS = 6500L
         private const val LONG_PRESS_MS = 430L
+        private const val DOUBLE_TAP_WINDOW_MS = 310L
+        private const val APP_SWITCH_SEQUENCE_GAP_MS = 720L
+        private const val APP_SWITCH_START_TAPS = 6
         private const val TRAIL_EXTENT_DP = 38
 
         private const val FACE_SIZE_DP = 150
@@ -1882,6 +2054,8 @@ class IslandService : Service() {
         @Volatile private var lastNotificationScreenRecording = false
         @Volatile private var lastAccessibilityScreenRecording = false
         @Volatile private var lastNativeActivityActive = false
+        @Volatile private var lastMediaPlaybackActive = false
+        @Volatile private var lastRingerUiActive = false
         @Volatile private var lastCameraActivityActive = false
 
         fun setCameraActivityActive(active: Boolean) {
@@ -1910,6 +2084,26 @@ class IslandService : Service() {
             service.handler.post {
                 service.accessibilityScreenRecording = active
                 service.evaluateRecordingState()
+            }
+        }
+
+        fun setRingerUiActive(active: Boolean) {
+            lastRingerUiActive = active
+            val service = instance ?: return
+            service.handler.post {
+                if (service.ringerUiActive == active) return@post
+                service.ringerUiActive = active
+                service.applyNativeActivityVisibility()
+            }
+        }
+
+        fun setMediaPlaybackActive(active: Boolean) {
+            lastMediaPlaybackActive = active
+            val service = instance ?: return
+            service.handler.post {
+                if (service.mediaPlaybackActive == active) return@post
+                service.mediaPlaybackActive = active
+                service.applyNativeActivityVisibility()
             }
         }
 
