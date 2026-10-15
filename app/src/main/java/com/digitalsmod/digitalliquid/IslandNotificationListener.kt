@@ -5,12 +5,25 @@ import android.media.session.MediaController
 import android.media.session.MediaSession
 import android.media.session.PlaybackState
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
 class IslandNotificationListener : NotificationListenerService() {
+    private data class MediaWatch(val controller: MediaController, val callback: MediaController.Callback)
+    private val mediaHandler = Handler(Looper.getMainLooper())
+    private val mediaWatches = linkedMapOf<String, MediaWatch>()
+    private val mediaRefreshTask = Runnable { refreshMediaControllersNow() }
+    private val mediaStatePollTask = object : Runnable {
+        override fun run() {
+            if (listenerInstance !== this@IslandNotificationListener) return
+            refreshMediaControllersNow()
+            mediaHandler.postDelayed(this, 1000L)
+        }
+    }
     override fun onCreate() {
         super.onCreate()
         listenerInstance = this
@@ -20,20 +33,28 @@ class IslandNotificationListener : NotificationListenerService() {
         if (listenerInstance === this) listenerInstance = null
         recordingKeys.clear()
         nativeActivityKeys.clear()
+        mediaHandler.removeCallbacksAndMessages(null)
+        mediaWatches.values.forEach { watch ->
+            try { watch.controller.unregisterCallback(watch.callback) } catch (_: Exception) { }
+        }
+        mediaWatches.clear()
         IslandService.setScreenRecordingActive(false)
         IslandService.setNativeIslandActivityActive(false)
+        IslandService.setMediaPlaybackActive(false)
         super.onDestroy()
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         if (sbn.packageName == packageName) return
         updateKey(sbn)
+        scheduleMediaRefresh()
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
         recordingKeys.remove(sbn.key)
         nativeActivityKeys.remove(sbn.key)
         notifyStates()
+        scheduleMediaRefresh()
     }
 
     private fun updateKey(sbn: StatusBarNotification) {
@@ -43,7 +64,7 @@ class IslandNotificationListener : NotificationListenerService() {
             nativeActivityKeys.remove(sbn.key)
         } else {
             recordingKeys.remove(sbn.key)
-            if (isHyperOsHandledActivity(sbn)) nativeActivityKeys.add(sbn.key)
+            if (!hasMediaSession(sbn) && isHyperOsHandledActivity(sbn)) nativeActivityKeys.add(sbn.key)
             else nativeActivityKeys.remove(sbn.key)
         }
         notifyStates()
@@ -156,6 +177,84 @@ class IslandNotificationListener : NotificationListenerService() {
             packageName.contains("screenrecord") || packageName.contains("screen_record") ||
             packageName == "com.android.screenrecord" || packageName == "com.miui.screenrecorder"
 
+    private fun hasMediaSession(sbn: StatusBarNotification): Boolean {
+        val extras = sbn.notification.extras
+        val template = extras?.getString(Notification.EXTRA_TEMPLATE).orEmpty()
+        return extras?.containsKey(Notification.EXTRA_MEDIA_SESSION) == true ||
+            sbn.notification.category == Notification.CATEGORY_TRANSPORT ||
+            template.contains("MediaStyle", ignoreCase = true)
+    }
+
+    private fun mediaSessionToken(sbn: StatusBarNotification): MediaSession.Token? {
+        val extras = sbn.notification.extras ?: return null
+        return try {
+            if (Build.VERSION.SDK_INT >= 33) {
+                extras.getParcelable(Notification.EXTRA_MEDIA_SESSION, MediaSession.Token::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                extras.getParcelable(Notification.EXTRA_MEDIA_SESSION) as? MediaSession.Token
+            }
+        } catch (_: Exception) { null }
+    }
+
+    private fun scheduleMediaRefresh() {
+        mediaHandler.removeCallbacks(mediaRefreshTask)
+        mediaHandler.postDelayed(mediaRefreshTask, 180L)
+    }
+
+    private fun refreshMediaControllersNow() {
+        if (listenerInstance !== this) return
+        val active = try { activeNotifications?.toList().orEmpty() } catch (_: Exception) { emptyList() }
+        val tokens = active.mapNotNull { sbn ->
+            if (sbn.packageName == packageName || !hasMediaSession(sbn)) null
+            else mediaSessionToken(sbn)?.let { it.toString() to it }
+        }.toMap()
+
+        val removed = mediaWatches.keys.filter { it !in tokens.keys }
+        removed.forEach { key ->
+            mediaWatches.remove(key)?.let { watch ->
+                try { watch.controller.unregisterCallback(watch.callback) } catch (_: Exception) { }
+            }
+        }
+
+        tokens.forEach { (key, token) ->
+            if (key !in mediaWatches) {
+                try {
+                    val controller = MediaController(this, token)
+                    val callback = object : MediaController.Callback() {
+                        override fun onPlaybackStateChanged(state: PlaybackState?) {
+                            publishMediaPlaybackState()
+                        }
+                        override fun onSessionDestroyed() {
+                            // Drop the dead controller before refreshing. Otherwise the old
+                            // controller could remain registered while the notification token
+                            // is still present and report a stale playback state.
+                            mediaWatches.remove(key)?.let { old ->
+                                try { old.controller.unregisterCallback(old.callback) } catch (_: Exception) { }
+                            }
+                            scheduleMediaRefresh()
+                        }
+                    }
+                    controller.registerCallback(callback, mediaHandler)
+                    mediaWatches[key] = MediaWatch(controller, callback)
+                } catch (_: Exception) { }
+            }
+        }
+        publishMediaPlaybackState()
+    }
+
+    private fun publishMediaPlaybackState() {
+        // Trust the session's actual playback state. Media notifications can remain visible
+        // after pause/stop and keep text such as "Now Playing"; using that text as a fallback
+        // can leave DigitalLiquid hidden forever. If a player exposes no readable state, prefer
+        // showing DigitalLiquid over hiding it based on stale notification copy.
+        val playingFromController = mediaWatches.values.any { watch ->
+            val state = try { watch.controller.playbackState?.state } catch (_: Exception) { null }
+            state == PlaybackState.STATE_PLAYING || state == PlaybackState.STATE_BUFFERING
+        }
+        IslandService.setMediaPlaybackActive(playingFromController)
+    }
+
     private fun readMediaPlaybackState(sbn: StatusBarNotification): Int? {
         val extras = sbn.notification.extras ?: return null
         val token = try {
@@ -184,13 +283,9 @@ class IslandNotificationListener : NotificationListenerService() {
             (n.flags and Notification.FLAG_ONGOING_EVENT) != 0 ||
             (n.flags and Notification.FLAG_NO_CLEAR) != 0
 
-        val hasMediaSession = n.extras?.containsKey(Notification.EXTRA_MEDIA_SESSION) == true ||
-            n.category == Notification.CATEGORY_TRANSPORT
-        if (hasMediaSession && ongoing) {
-            val playbackState = readMediaPlaybackState(sbn)
-            if (playbackState != null) return playbackState == PlaybackState.STATE_PLAYING
-            return true
-        }
+        // Media playback is tracked independently by MediaController callbacks. Do not
+        // leave the pill hidden from a stale ongoing MediaStyle notification after music ends.
+        if (hasMediaSession(sbn)) return false
 
         val clockPackage = pkg.contains("deskclock") || pkg.contains("miui.clock") ||
             pkg.contains("google.android.deskclock") || pkg.endsWith(".clock")
@@ -233,6 +328,8 @@ class IslandNotificationListener : NotificationListenerService() {
     override fun onListenerConnected() {
         super.onListenerConnected()
         refreshActiveNotifications()
+        mediaHandler.removeCallbacks(mediaStatePollTask)
+        mediaHandler.postDelayed(mediaStatePollTask, 1000L)
     }
 
     private fun refreshActiveNotifications() {
@@ -243,6 +340,7 @@ class IslandNotificationListener : NotificationListenerService() {
                 if (sbn.packageName != packageName) updateKey(sbn)
             }
             notifyStates()
+            scheduleMediaRefresh()
         } catch (_: Exception) { }
     }
 
