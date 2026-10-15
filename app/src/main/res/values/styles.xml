@@ -1,16 +1,33 @@
+
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="DigitalLiquidTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
+
+    <!-- Main DigitalLiquid application theme -->
+    <style name="DigitalLiquidTheme"
+        parent="@android:style/Theme.Material.Light.NoActionBar">
+
+        <!-- Typography -->
         <item name="android:fontFamily">sans</item>
-        <item name="android:colorAccent">#8072E5</item>
-        <item name="android:colorControlActivated">#8072E5</item>
-        <item name="android:colorControlHighlight">#247F72E5</item>
-        <item name="android:statusBarColor">#F3F5FA</item>
-        <item name="android:navigationBarColor">#F3F5FA</item>
-        <item name="android:windowLightStatusBar">true</item>
-        <item name="android:windowBackground">#F3F5FA</item>
-        <item name="android:windowActionModeOverlay">true</item>
-        <item name="android:windowLightNavigationBar">true</item>
+
+        <!-- Champagne accent -->
+        <item name="android:colorAccent">#D6A463</item>
+        <item name="android:colorControlActivated">#D6A463</item>
+        <item name="android:colorControlHighlight">#24D6A463</item>
+
+        <!-- Spatial Glass appearance -->
+        <item name="android:windowBackground">#050609</item>
+        <item name="android:statusBarColor">#050609</item>
+        <item name="android:navigationBarColor">#050609</item>
+
+        <!-- System bars -->
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+
+        <!-- Window configuration -->
         <item name="android:windowNoTitle">true</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowBackgroundFallback">#050609</item>
+
     </style>
+
 </resources>
