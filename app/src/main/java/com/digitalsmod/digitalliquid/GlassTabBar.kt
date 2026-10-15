@@ -45,7 +45,7 @@ class GlassTabBar(
             intArrayOf(0xFF72E5CA.toInt(), 0xFF36AFAE.toInt())
         ).apply {
             cornerRadius = dp(23).toFloat()
-            setStroke(dp(1), 0x80FFFFFF)
+            setStroke(dp(1), 0x80FFFFFF.toInt())
         }
         indicator.alpha = 0.95f
         addView(indicator, LayoutParams(0, -1, Gravity.START or Gravity.TOP))

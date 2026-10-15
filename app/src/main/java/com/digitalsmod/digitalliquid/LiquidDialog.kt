@@ -122,7 +122,7 @@ object LiquidDialog {
                 setTextColor(bodyColor)
                 setLineSpacing(dp(3).toFloat(), 1.06f)
                 includeFontPadding = false
-                textIsSelectable = true
+                setTextIsSelectable(true)
             }, LinearLayout.LayoutParams(-1, -2))
         }
         if (content != null) {
