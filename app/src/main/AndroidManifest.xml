@@ -42,6 +42,14 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".AssistantFallbackActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTop"
+            android:screenOrientation="unspecified"
+            android:theme="@style/DigitalLiquidAssistantTheme" />
+
         <service
             android:name=".IslandService"
             android:exported="false"
@@ -83,6 +91,12 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
+
+        <!-- Same-app bridge between the island gesture and the active voice interaction session. -->
+        <receiver
+            android:name=".DigitalLiquidAssistantCommandReceiver"
+            android:enabled="true"
+            android:exported="false" />
 
         <!-- Voice assistant entry points for the Siri-style panel -->
         <service
