@@ -143,7 +143,7 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
             isFillViewport = true
             clipToPadding = false
             setPadding(0, dp(2), 0, dp(2))
-            addView(conversationText, ScrollView.LayoutParams(-1, -2))
+            addView(conversationText, android.widget.FrameLayout.LayoutParams(-1, -2))
         }
         content.addView(chatScroll, LinearLayout.LayoutParams(-1, 0, 1f).apply { topMargin = dp(5) })
 
