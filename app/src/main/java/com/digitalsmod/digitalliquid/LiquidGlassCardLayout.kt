@@ -21,6 +21,7 @@ class LiquidGlassCardLayout(context: Context) : LinearLayout(context) {
         style = Paint.Style.STROKE
         strokeWidth = dp(0.8f)
     }
+    private val lightSurface = Paint(Paint.ANTI_ALIAS_FLAG)
     private val radius = dp(20f)
 
     init {
@@ -36,24 +37,37 @@ class LiquidGlassCardLayout(context: Context) : LinearLayout(context) {
     override fun dispatchDraw(canvas: Canvas) {
         if (width > 0 && height > 0) {
             val p = AppPrefs.get(context)
-            glass.configure(
-                p.getInt(AppPrefs.GLASS_STRENGTH, 72),
-                p.getString(AppPrefs.TINT, "midnight") ?: "midnight",
-                expandedNow = true
-            )
-            glass.layout(0, 0, width, height)
+            val lightMode = p.getBoolean(AppPrefs.LIGHT_MODE, false)
             bounds.set(0f, 0f, width.toFloat(), height.toFloat())
             shape.reset()
             shape.addRoundRect(bounds, radius, radius, Path.Direction.CW)
             val save = canvas.save()
             canvas.clipPath(shape)
-            glass.draw(canvas)
+            if (lightMode) {
+                // A real light palette, not white text placed on the dark glass shader.
+                lightSurface.shader = LinearGradient(
+                    0f, 0f, width.toFloat(), height.toFloat(),
+                    intArrayOf(0xF6FFFFFF.toInt(), 0xE8F0F2FA.toInt(), 0xF1F9FAFF.toInt()),
+                    floatArrayOf(0f, 0.55f, 1f), Shader.TileMode.CLAMP
+                )
+                canvas.drawRoundRect(bounds, radius, radius, lightSurface)
+                lightSurface.shader = null
+            } else {
+                glass.configure(
+                    p.getInt(AppPrefs.GLASS_STRENGTH, 72),
+                    p.getString(AppPrefs.TINT, "midnight") ?: "midnight",
+                    expandedNow = true
+                )
+                glass.layout(0, 0, width, height)
+                glass.draw(canvas)
+            }
             super.dispatchDraw(canvas)
             canvas.restoreToCount(save)
 
             rim.shader = LinearGradient(
                 0f, 0f, width.toFloat(), height.toFloat(),
-                intArrayOf(0x3FFFFFFF, 0x12FFFFFF, 0x36D9D6FF, 0x16FFFFFF),
+                if (lightMode) intArrayOf(0x75FFFFFF, 0x207B8FB8, 0x558CA1C6, 0x55FFFFFF)
+                else intArrayOf(0x3FFFFFFF, 0x12FFFFFF, 0x36D9D6FF, 0x16FFFFFF),
                 floatArrayOf(0f, 0.35f, 0.72f, 1f), Shader.TileMode.CLAMP
             )
             canvas.drawRoundRect(bounds, radius, radius, rim)
