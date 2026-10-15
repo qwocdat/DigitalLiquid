@@ -90,7 +90,7 @@ object LiquidModelPicker {
             }, LinearLayout.LayoutParams(dp(28), dp(34)))
             options.addView(row, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(7) })
         }
-        scroll.addView(options, ScrollView.LayoutParams(-1, -2))
+        scroll.addView(options, LinearLayout.LayoutParams(-1, -2))
         panel.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f).apply { topMargin = dp(2) })
         panel.addView(IOSButton(context).apply {
             style("Đóng", false)
