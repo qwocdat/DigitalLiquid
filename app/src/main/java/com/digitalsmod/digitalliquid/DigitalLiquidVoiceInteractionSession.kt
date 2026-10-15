@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -295,6 +296,16 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
 
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
+        Log.i("DigitalLiquidSiri", "VoiceInteractionSession onShow flags=$showFlags")
+        val requestId = args?.getString(DigitalLiquidAssistantCommandReceiver.EXTRA_REQUEST_ID)
+        if (!requestId.isNullOrBlank()) {
+            runCatching {
+                uiContext.sendBroadcast(Intent(uiContext, DigitalLiquidAssistantCommandReceiver::class.java).apply {
+                    action = DigitalLiquidAssistantCommandReceiver.ACTION_SESSION_SHOWN
+                    putExtra(DigitalLiquidAssistantCommandReceiver.EXTRA_REQUEST_ID, requestId)
+                })
+            }.onFailure { Log.w("DigitalLiquidSiri", "Could not acknowledge visible session", it) }
+        }
         // The visual assistant must always open. Authentication gates AI requests, not the Siri animation.
         applyWindowStyleAndPosition()
         panel?.visibility = View.VISIBLE
@@ -317,11 +328,21 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
     }
 
     override fun onHide() {
+        Log.i("DigitalLiquidSiri", "VoiceInteractionSession onHide")
         panel?.visibility = View.GONE
         try { recognizer?.stopListening() } catch (_: Exception) { }
         try { recognizer?.destroy() } catch (_: Exception) { }
         recognizer = null
         super.onHide()
+    }
+
+    override fun onDestroy() {
+        try { recognizer?.cancel() } catch (_: Exception) { }
+        try { recognizer?.destroy() } catch (_: Exception) { }
+        recognizer = null
+        main.removeCallbacksAndMessages(null)
+        panel = null
+        super.onDestroy()
     }
 
     override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent): Boolean {
