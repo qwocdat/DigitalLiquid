@@ -20,47 +20,39 @@ jobs:
           python3 - << 'EOF'
           import glob, re
 
-          # 1. Fix tất cả các file XML (styles.xml, themes.xml, AndroidManifest.xml...)
-          # Xóa khoảng trắng/dòng trống đầu file và xóa các thẻ <?xml ...?> bị lặp ở dòng 2+
-          xml_files = glob.glob('app/src/main/**/*.xml', recursive=True)
+          # 1. Sửa toàn bộ file XML trong dự án
+          xml_files = glob.glob('app/src/main/res/**/*.xml', recursive=True)
           for path in xml_files:
               with open(path, 'r', encoding='utf-8', errors='ignore') as f:
                   content = f.read()
-              # Xóa mọi khai báo <?xml ...?> hiện có
-              content_no_pi = re.sub(r'<\?xml[^>]*\?>\s*', '', content, flags=re.IGNORECASE).lstrip()
-              # Gắn lại duy nhất 1 khai báo chuẩn ở dòng 1, cột 1
-              fixed_content = '<?xml version="1.0" encoding="utf-8"?>\n' + content_no_pi
+              
+              # Xóa các thẻ <?xml> bị lặp hoặc sai dòng
+              content = re.sub(r'<\?xml[^>]*\?>\s*', '', content, flags=re.IGNORECASE).lstrip()
+              
+              # Sửa lỗi: name="android:attr/..." thành name="android:..."
+              content = re.sub(r'name="android:attr/([^"]+)"', r'name="android:\1"', content)
+              
+              # Đặt lại duy nhất 1 thẻ <?xml> chuẩn ở dòng 1
+              fixed_content = '<?xml version="1.0" encoding="utf-8"?>\n' + content
               with open(path, 'w', encoding='utf-8') as f:
                   f.write(fixed_content)
-              print(f"Fixed XML: {path}")
 
-          # 2. Fix cảnh báo debug isMinifyEnabled = true trong app/build.gradle.kts
+          # 2. Sửa file app/build.gradle.kts (Vô hiệu hóa Minify cho Debug)
           gradle_path = 'app/build.gradle.kts'
-          with open(gradle_path, 'r', encoding='utf-8') as f:
-              g_content = f.read()
-
-          # Tắt isMinifyEnabled và isShrinkResources trong block debug nếu đang bật
-          def fix_debug_block(match):
-              block = match.group(0)
-              block = re.sub(r'isMinifyEnabled\s*=\s*true', 'isMinifyEnabled = false', block)
-              block = re.sub(r'isShrinkResources\s*=\s*true', 'isShrinkResources = false', block)
-              return block
-
-          g_content = re.sub(r'debug\s*\{[^}]*\}', fix_debug_block, g_content, flags=re.DOTALL)
-          with open(gradle_path, 'w', encoding='utf-8') as f:
-              f.write(g_content)
-          print("Fixed app/build.gradle.kts")
+          try:
+              with open(gradle_path, 'r', encoding='utf-8') as f:
+                  g_content = f.read()
+              def fix_debug_block(match):
+                  block = match.group(0)
+                  block = re.sub(r'isMinifyEnabled\s*=\s*true', 'isMinifyEnabled = false', block)
+                  block = re.sub(r'isShrinkResources\s*=\s*true', 'isShrinkResources = false', block)
+                  return block
+              g_content = re.sub(r'debug\s*\{[^}]*\}', fix_debug_block, g_content, flags=re.DOTALL)
+              with open(gradle_path, 'w', encoding='utf-8') as f:
+                  f.write(g_content)
+          except FileNotFoundError:
+              pass
           EOF
-
-      - name: Package Fixed Source Code to ZIP
-        run: |
-          zip -r DigitalLiquid-Fixed-Source.zip . -x "*.git*" "build/*" "app/build/*" ".gradle/*"
-
-      - name: Upload Fixed Source ZIP
-        uses: actions/upload-artifact@v4
-        with:
-          name: DigitalLiquid-Fixed-Source-ZIP
-          path: DigitalLiquid-Fixed-Source.zip
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
