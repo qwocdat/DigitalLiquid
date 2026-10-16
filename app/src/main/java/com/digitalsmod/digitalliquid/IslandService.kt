@@ -964,6 +964,9 @@ class IslandService : Service() {
             gravity = Gravity.TOP or Gravity.LEFT
             x = 0
             y = 0
+            if (Build.VERSION.SDK_INT >= 28) {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+            }
         }
         try {
             windowManager.addView(view, glowParams)
@@ -1418,17 +1421,6 @@ class IslandService : Service() {
 
         val lp = params
         if (lp != null) {
-            // Khi Siri mở, kích hoạt làm mờ nền màn hình bằng SurfaceFlinger (Android 12+) để icon bên dưới có chiều sâu
-            if (Build.VERSION.SDK_INT >= 31) {
-                if (siriActive) {
-                    lp.flags = lp.flags or WindowManager.LayoutParams.FLAG_BLUR_BEHIND
-                    try { lp.blurBehindRadius = dp(18) } catch (_: Exception) { }
-                } else {
-                    lp.flags = lp.flags and WindowManager.LayoutParams.FLAG_BLUR_BEHIND.inv()
-                    try { lp.blurBehindRadius = 0 } catch (_: Exception) { }
-                }
-            }
-
             if (animateSize) animateToTargetSize()
             else {
                 lp.width = targetWindowWidth()
@@ -2314,7 +2306,7 @@ class IslandService : Service() {
         try { unregisterReceiver(orientationReceiver) } catch (_: Exception) { }
         try { unregisterReceiver(unlockReceiver) } catch (_: Exception) { }
         try { unregisterReceiver(miuiScreenRecorderReceiver) } catch (_: Exception) { }
-        try { unregisterReceiver(soundNotificationTransitionReceiver) } catch (_: Exception) { }
+        try { soundNotificationTransitionReceiver.let { unregisterReceiver(it) } } catch (_: Exception) { }
         overlayHost?.let { try { windowManager.removeView(it) } catch (_: Exception) { } }
         overlayHost = null
         islandRoot = null
@@ -2344,9 +2336,9 @@ class IslandService : Service() {
         private const val TRAIL_EXTENT_DP = 38
 
         private const val SIRI_WIDTH_DP = 186
-        private const val SIRI_HEIGHT_DP = 130
-        private const val SIRI_CORNER_RADIUS_DP = 62f
-        private const val SIRI_EXPAND_MS = 400L
+        private const val SIRI_HEIGHT_DP = 138
+        private const val SIRI_CORNER_RADIUS_DP = 69f
+        private const val SIRI_EXPAND_MS = 420L
         private const val SIRI_SHRINK_MS = 380L
 
         private const val FACE_SIZE_DP = 150
