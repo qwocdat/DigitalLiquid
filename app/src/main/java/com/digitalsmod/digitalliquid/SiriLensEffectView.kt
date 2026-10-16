@@ -21,9 +21,11 @@ import kotlin.math.sin
 
 /**
  * Hiệu ứng kính quang học Siri Liquid Glass thực thụ cho DigitalLiquid.
- * Sử dụng AGSL RuntimeShader trên GPU để tính toán bề mặt cầu 3D,
- * làm méo và bẻ cong icon/chữ của ứng dụng bên dưới qua texture chụp màn hình,
- * kết hợp tán sắc quang phổ Chromatic Aberration và viền Fresnel siêu mỏng.
+ * Sử dụng AGSL RuntimeShader trên GPU:
+ * - Cập nhật liên tục dòng hình ảnh nền 30 FPS.
+ * - Khúc xạ bẻ cong quang học (Snell Refraction Displacement).
+ * - Sóng Siri hữu cơ đa lớp (Harmonic Organic Wave) biến thiên liên tục.
+ * - Phần đen kéo xuống qua đoạn giữa (y = 0.55), ám nhẹ ánh sắc quang phổ.
  */
 class SiriLensEffectView(context: Context) : View(context) {
     private val density = resources.displayMetrics.density
@@ -63,8 +65,8 @@ class SiriLensEffectView(context: Context) : View(context) {
         uniform float energy;
 
         float3 siriSpectrum(float t) {
-            float3 c0 = float3(0.04, 0.38, 1.00); // Blue
-            float3 c1 = float3(0.00, 0.88, 0.98); // Cyan
+            float3 c0 = float3(0.04, 0.40, 1.00); // Blue
+            float3 c1 = float3(0.00, 0.90, 0.98); // Cyan
             float3 c2 = float3(0.12, 0.98, 0.44); // Green
             float3 c3 = float3(1.00, 0.92, 0.16); // Yellow
             float3 c4 = float3(1.00, 0.46, 0.08); // Orange
@@ -95,38 +97,44 @@ class SiriLensEffectView(context: Context) : View(context) {
             float z = sqrt(max(0.0, 1.0 - distSq));
             float3 N = float3(p.x, p.y, z);
 
-            // 3. Dải sóng quang phổ nằm xuống qua đoạn giữa một tí (y = 0.55)
-            float arch = -sin(uv.x * 3.14159) * 0.042;
-            float wave = 0.007 * sin(uv.x * 6.28 - time * 1.8) + 0.003 * sin(uv.x * 12.56 + time * 1.1);
-            float beamCenterY = 0.55 + arch + wave;
+            // 3. Hiệu ứng sóng Siri đa lớp hữu cơ (Organic Fluid Harmonic Waves)
+            // Sóng 1: Vòm cong lớn biến thiên chậm
+            float wave1 = -sin(uv.x * 3.14159) * 0.044 + 0.007 * sin(uv.x * 6.28 - time * 2.0);
+            // Sóng 2: Giao thoa tần số cao tạo nhịp thở
+            float wave2 = 0.004 * sin(uv.x * 14.5 + time * 1.4) + 0.002 * cos(uv.x * 24.0 - time * 2.8);
+            // Sóng 3: Chuyển động năng lượng theo giọng nói
+            float wave3 = 0.003 * sin(uv.x * 9.0 + time * 3.2) * energy;
+
+            // Trục dải sóng nằm xuống qua đoạn giữa (y = 0.55)
+            float beamCenterY = 0.55 + wave1 + wave2 + wave3;
             float dy = abs(uv.y - beamCenterY);
 
-            float beamCore = exp(-dy * 130.0);
+            float beamCore = exp(-dy * 135.0);
             float beamBloom = exp(-dy * 26.0);
             float beamWide = exp(-dy * 7.5);
 
             float specPos = clamp((uv.x - 0.08) / 0.84, 0.0, 1.0);
             float3 spectrumColor = siriSpectrum(specPos);
 
-            // Điểm hội tụ quang học trắng rực ở lệch tâm bên trái
-            float focalSpot = exp(-pow((uv.x - 0.38) / 0.16, 2.0)) * beamCore * 1.85;
+            // Điểm hội tụ quang học trắng sáng ở lệch tâm bên trái
+            float focalSpot = exp(-pow((uv.x - 0.38) / 0.16, 2.0)) * beamCore * 1.9;
             float3 hotWhite = float3(1.0, 0.99, 0.96) * focalSpot;
 
-            // 4. Phần đen trên đỉnh kéo dài qua đoạn giữa một tí (xuống tới 0.55)
-            // Ám màu quang phổ nhẹ một tí vào phần đen
+            // 4. Phần đen trên đỉnh kéo dài qua đoạn giữa (xuống tới 0.55)
+            // Ám màu nhẹ từ quang phổ hòa quyện tự nhiên với Dynamic Island
             float blackDome = 1.0 - smoothstep(0.46, 0.55, uv.y);
             float3 darkTint = mix(float3(0.002, 0.003, 0.006), spectrumColor * 0.065, (1.0 - uv.y) * 0.55);
 
-            // 5. Khúc xạ thấu kính thật bẻ cong và làm méo các app đằng sau (nửa dưới uv.y > 0.48)
+            // 5. Khúc xạ thấu kính thật bẻ cong và làm méo các app đằng sau
             float inGlass = smoothstep(0.48, 0.62, uv.y);
             float lensCurvature = inGlass * (1.0 - z);
 
-            // Vector bẻ cong hướng tâm từ mép thấu kính
-            float2 refrVector = float2(p.x * 1.05, (p.y - 0.25) * 1.15);
-            float2 refrOffset = refrVector * (0.09 * lensCurvature);
+            // Vector khúc xạ gia tăng về phía mép kính
+            float2 refrVector = float2(p.x * 1.08, (p.y - 0.25) * 1.18);
+            float2 refrOffset = refrVector * (0.095 * lensCurvature);
 
             // Tán sắc RGB Chromatic Aberration
-            float disp = 0.022 * lensCurvature;
+            float disp = 0.024 * lensCurvature;
             float2 coordR = screenCoord + (refrOffset * (1.0 + disp)) * res;
             float2 coordG = screenCoord + refrOffset * res;
             float2 coordB = screenCoord + (refrOffset * (1.0 - disp)) * res;
@@ -180,17 +188,16 @@ class SiriLensEffectView(context: Context) : View(context) {
         }
     }
 
-    fun setBackgroundSource(bitmap: Bitmap?, screenX: Float, screenY: Float, sWidth: Float, sHeight: Float) {
+    /** Cập nhật khung hình nền liên tục từ luồng stream 30 FPS */
+    fun updateBackgroundFrame(bitmap: Bitmap, screenX: Float, screenY: Float, sWidth: Float, sHeight: Float) {
+        val oldBmp = bgBitmap
         bgBitmap = bitmap
         globalScreenX = screenX
         globalScreenY = screenY
         screenWidth = sWidth
         screenHeight = sHeight
-        if (bitmap != null && !bitmap.isRecycled) {
-            bgShader = BitmapShader(bitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
-        } else {
-            bgShader = null
-        }
+        bgShader = BitmapShader(bitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+        oldBmp?.recycle()
         invalidate()
     }
 
@@ -221,7 +228,7 @@ class SiriLensEffectView(context: Context) : View(context) {
         super.onAttachedToWindow()
         if (animator == null) {
             animator = ValueAnimator.ofFloat(0f, (Math.PI * 2.0).toFloat()).apply {
-                duration = 3600L
+                duration = 3200L
                 repeatCount = ValueAnimator.INFINITE
                 interpolator = LinearInterpolator()
                 addUpdateListener {
