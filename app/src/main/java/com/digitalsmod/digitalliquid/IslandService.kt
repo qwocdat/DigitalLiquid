@@ -49,6 +49,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.random.Random
@@ -2344,7 +2345,7 @@ class IslandService : Service() {
         stopPanelMedia()
         try { unregisterReceiver(configReceiver) } catch (_: Exception) { }
         try { unregisterReceiver(orientationReceiver) } catch (_: Exception) { }
-        try { unregisterReceiver(unlockReceiver) } catch (_: Exception) { }
+        try { unlockReceiver.let { unregisterReceiver(it) } } catch (_: Exception) { }
         try { miuiScreenRecorderReceiver.let { unregisterReceiver(it) } } catch (_: Exception) { }
         try { soundNotificationTransitionReceiver.let { unregisterReceiver(it) } } catch (_: Exception) { }
         overlayHost?.let { try { windowManager.removeView(it) } catch (_: Exception) { } }
