@@ -393,8 +393,8 @@ class HyperIslandVisibilityService : AccessibilityService() {
         fun instance(): HyperIslandVisibilityService? = connectedInstance
 
         /**
-         * Chụp một khung hình sạch sẽ của nền điện thoại ngay trước khi bung khối kính.
-         * Chỉ chụp 1 lần duy nhất, loại bỏ hoàn toàn việc chụp lặp vô hạn gây hiệu ứng đường hầm lặp hình.
+         * Chụp 1 khung hình sạch sẽ của nền launcher để shader tính toán khúc xạ quang học.
+         * Không chụp tuần hoàn liên tục, loại bỏ hoàn toàn việc lặp đè hình.
          */
         fun captureCleanScreen(callback: (Bitmap?) -> Unit) {
             val service = connectedInstance
