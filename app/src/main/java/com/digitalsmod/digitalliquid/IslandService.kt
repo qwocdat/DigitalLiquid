@@ -113,6 +113,15 @@ class IslandService : Service() {
     private var currentMorphProgress = 0f
     private var expandedRadiusDp = 30f
 
+    // ---- Unified Siri Lens state (nhấn 3 lần từ chính Dynamic Island) --------------
+    private var siriActive = false
+    private var isSiriShrinking = false
+    private var siriView: SiriLensEffectView? = null
+    private val siriShrinkSafety = Runnable {
+        resizeAnimator?.cancel()
+        finishSiriShrink()
+    }
+
     private val rootBackground = GradientDrawable().apply {
         shape = GradientDrawable.RECTANGLE
         setColor(Color.BLACK)
@@ -194,7 +203,7 @@ class IslandService : Service() {
         lastTapAt = 0L
     }
     private val geometryRefreshRunnable = Runnable {
-        if (isFaceUnlockShrinking || islandRoot == null) return@Runnable
+        if (isFaceUnlockShrinking || isSiriShrinking || islandRoot == null) return@Runnable
         val signature = "${displayWidthPx()}x${displayHeightPx()}:${resources.configuration.orientation}:${currentCameraCutoutBounds()}"
         if (signature == lastGeometrySignature) return@Runnable
         lastGeometrySignature = signature
@@ -207,6 +216,7 @@ class IslandService : Service() {
         val appSwitchSequenceInProgress = prefs.getBoolean(AppPrefs.ISLAND_APP_SWITCH_GESTURE, false) && appSwitchTapCount in 2 until APP_SWITCH_START_TAPS
         when {
             panelOpen -> closeCustomizationPanel()
+            tapBurstCount == 3 && !appSwitchSequenceInProgress -> toggleSiriFromIsland()
             prefs.getBoolean(AppPrefs.DOUBLE_TAP_ASSISTANT, false) && tapBurstCount == 2 && !appSwitchSequenceInProgress -> openDefaultAssistant()
             else -> wobblePill()
         }
@@ -277,7 +287,7 @@ class IslandService : Service() {
     private val configReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != ACTION_APPLY_CONFIG) return
-            if (isFaceUnlockShrinking) return
+            if (isFaceUnlockShrinking || isSiriShrinking) return
             applyPreferences()
             evaluateRecordingState()
             render(animateSize = false)
@@ -288,7 +298,7 @@ class IslandService : Service() {
     private val orientationReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != Intent.ACTION_CONFIGURATION_CHANGED) return
-            if (isFaceUnlockShrinking) return
+            if (isFaceUnlockShrinking || isSiriShrinking) return
             applyPreferences()
             // Orientation changes are geometry changes, not a user-requested morph.
             // One immediate layout pass avoids a resize animator fighting updatePosition().
@@ -300,7 +310,10 @@ class IslandService : Service() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
                 Intent.ACTION_SCREEN_ON -> wobblePill()
-                Intent.ACTION_SCREEN_OFF -> abortFaceUnlock()
+                Intent.ACTION_SCREEN_OFF -> {
+                    abortFaceUnlock()
+                    abortSiri()
+                }
                 Intent.ACTION_USER_PRESENT -> playFaceUnlockAnimation(failed = false)
                 ACTION_FACE_UNLOCK_FAILED -> playFaceUnlockAnimation(failed = true)
             }
@@ -386,9 +399,11 @@ class IslandService : Service() {
                 registerReceiver(configReceiver, IntentFilter(ACTION_APPLY_CONFIG))
                 @Suppress("DEPRECATION")
                 registerReceiver(orientationReceiver, IntentFilter(Intent.ACTION_CONFIGURATION_CHANGED))
+                @Suppress("DEPRECATION")
                 registerReceiver(unlockReceiver, filter)
                 @Suppress("DEPRECATION")
                 registerReceiver(miuiScreenRecorderReceiver, miuiFilter)
+                @Suppress("DEPRECATION")
                 registerReceiver(soundNotificationTransitionReceiver, modeTransitionFilter)
             }
         } catch (_: Exception) { }
@@ -468,7 +483,7 @@ class IslandService : Service() {
     }
 
     private fun scheduleGeometryRefresh(force: Boolean = false) {
-        if (isFaceUnlockShrinking) return
+        if (isFaceUnlockShrinking || isSiriShrinking) return
         if (force) lastGeometrySignature = ""
         handler.removeCallbacks(geometryRefreshRunnable)
         handler.postDelayed(geometryRefreshRunnable, 90L)
@@ -483,11 +498,11 @@ class IslandService : Service() {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        if (isFaceUnlockShrinking) return
+        if (isFaceUnlockShrinking || isSiriShrinking) return
         applyPreferences()
         // Apply after the new display metrics/cutout geometry has settled.
         handler.post {
-            if (isFaceUnlockShrinking || islandRoot == null) return@post
+            if (isFaceUnlockShrinking || isSiriShrinking || islandRoot == null) return@post
             render(animateSize = false)
             updatePosition()
         }
@@ -529,7 +544,7 @@ class IslandService : Service() {
 
     private fun isRecordingControlExpanded(): Boolean = panelOpen && screenRecording && recordingExpanded
 
-    private fun targetHostInsetPx(): Int = if (panelOpen || isRecordingControlExpanded() || faceUnlocking) 0 else dp(TRAIL_EXTENT_DP)
+    private fun targetHostInsetPx(): Int = if (panelOpen || isRecordingControlExpanded() || faceUnlocking || siriActive) 0 else dp(TRAIL_EXTENT_DP)
 
     private fun targetWindowWidth(): Int = if (isRecordingControlExpanded()) {
         (displayWidthPx() - dp(12)).coerceAtLeast(dp(180))
@@ -541,14 +556,14 @@ class IslandService : Service() {
         isRecordingControlExpanded() -> Gravity.TOP or Gravity.CENTER_HORIZONTAL
         // In landscape, a side punch-hole/cutout becomes the anchor. Keep the pill
         // horizontal and attach it to that same physical edge instead of centering it.
-        isLandscapeWithSideCutout() && !panelOpen -> Gravity.TOP or Gravity.LEFT
+        isLandscapeWithSideCutout() && !panelOpen && !siriActive -> Gravity.TOP or Gravity.LEFT
         else -> gravityForWindow()
     }
 
     private fun windowX(): Int {
         if (isRecordingControlExpanded()) return 0
         val inset = targetHostInsetPx()
-        val pillX = positionX(targetWidth(), panelOpen)
+        val pillX = positionX(targetWidth(), panelOpen || siriActive)
         val gravity = windowGravity()
         return when {
             (gravity and Gravity.HORIZONTAL_GRAVITY_MASK) == Gravity.LEFT -> pillX - inset
@@ -557,11 +572,13 @@ class IslandService : Service() {
         }
     }
 
-    private fun windowY(): Int = if (isRecordingControlExpanded()) 0 else positionY(targetHeight(), panelOpen)
+    private fun windowY(): Int = if (isRecordingControlExpanded()) 0 else positionY(targetHeight(), panelOpen || siriActive)
 
     private fun lerp(a: Float, b: Float, t: Float) = a + (b - a) * t
 
     private fun targetMorph(): Float = when {
+        siriActive -> 1f
+        isSiriShrinking -> 0f
         faceUnlocking -> 1f
         isFaceUnlockShrinking -> 0f
         panelOpen && !isRecordingControlExpanded() -> 1f
@@ -569,14 +586,21 @@ class IslandService : Service() {
     }
 
     private fun updateExpandedRadius() {
-        if (faceUnlocking) expandedRadiusDp = FACE_SQUIRCLE_RADIUS_DP
-        else if (panelOpen && !isRecordingControlExpanded()) expandedRadiusDp = 30f
+        when {
+            siriActive || isSiriShrinking -> expandedRadiusDp = SIRI_SPHERE_SIZE_DP / 2f
+            faceUnlocking -> expandedRadiusDp = FACE_SQUIRCLE_RADIUS_DP
+            panelOpen && !isRecordingControlExpanded() -> expandedRadiusDp = 30f
+        }
     }
 
     private fun applyRootCorner(pillW: Int = targetWidth(), pillH: Int = targetHeight()) {
         val root = islandRoot ?: return
         val r = lerp(pillH / 2f, dp(expandedRadiusDp), currentMorphProgress)
             .coerceIn(0f, minOf(pillW, pillH) / 2f)
+        // Khi bung ra Siri, hạ độ đục nền đen gốc của Island xuống trong suốt để lớp thủy tinh nửa dưới của SiriLensEffectView nhìn xuyên thấu nền màn hình như ảnh mẫu
+        val siriMix = if (siriActive || isSiriShrinking) currentMorphProgress.coerceIn(0f, 1f) else 0f
+        val bgAlpha = ((1f - siriMix) * 255f).roundToInt().coerceIn(0, 255)
+        rootBackground.setColor(Color.argb(bgAlpha, 0, 0, 0))
         rootBackground.cornerRadius = r
         cornerOutline.radiusPx = r
         root.invalidateOutline()
@@ -590,7 +614,7 @@ class IslandService : Service() {
         ghostLayers.forEach { ghost ->
             ghost.layoutParams = FrameLayout.LayoutParams(pillWidth, pillHeight, Gravity.CENTER)
             ghost.background = ghostCapsule(pillHeight / 2f)
-            ghost.visibility = if (wobbleAnimator != null && !panelOpen && !faceUnlocking && !isFaceUnlockShrinking) View.VISIBLE else View.INVISIBLE
+            ghost.visibility = if (wobbleAnimator != null && !panelOpen && !faceUnlocking && !isFaceUnlockShrinking && !siriActive && !isSiriShrinking) View.VISIBLE else View.INVISIBLE
         }
     }
 
@@ -812,6 +836,9 @@ class IslandService : Service() {
         stopPanelMedia()
         faceView?.release()
         faceView = null
+        siriView = null
+        siriActive = false
+        isSiriShrinking = false
         islandRoot = null
         overlayHost = null
         ghostLayers.clear()
@@ -831,6 +858,14 @@ class IslandService : Service() {
             return true
         }
         if (isFaceUnlockShrinking) return true
+        if (siriActive) {
+            if (event.actionMasked == MotionEvent.ACTION_UP) {
+                view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                beginSiriShrink()
+            }
+            return true
+        }
+        if (isSiriShrinking) return true
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 downX = event.rawX
@@ -908,6 +943,62 @@ class IslandService : Service() {
         return true
     }
 
+    private fun toggleSiriFromIsland() {
+        if (islandRoot == null || faceUnlocking || isFaceUnlockShrinking) return
+        if (siriActive) {
+            beginSiriShrink()
+            return
+        }
+        if (isSiriShrinking) return
+        if (panelOpen) {
+            panelOpen = false
+            closingPanelWithMedia = false
+        }
+        siriActive = true
+        isSiriShrinking = false
+        render(animateSize = true)
+    }
+
+    private fun beginSiriShrink() {
+        if (!siriActive || isSiriShrinking) return
+        isSiriShrinking = true
+        siriActive = false
+
+        glassView?.apply {
+            configure(glassStrength, tint, expandedNow = false)
+            alpha = 0f
+            visibility = View.VISIBLE
+        }
+        handler.removeCallbacks(siriShrinkSafety)
+        handler.postDelayed(siriShrinkSafety, FACE_SHRINK_SAFETY_MS)
+        animateToTargetSize { finishSiriShrink() }
+    }
+
+    private fun finishSiriShrink() {
+        handler.removeCallbacks(siriShrinkSafety)
+        if (!isSiriShrinking) return
+        isSiriShrinking = false
+        faceGhostsActive = false
+        siriView = null
+        currentMorphProgress = 0f
+        glassView?.alpha = 1f
+        applyPreferences()
+        render(animateSize = false)
+        updatePosition()
+    }
+
+    private fun abortSiri() {
+        if (!siriActive && !isSiriShrinking) return
+        handler.removeCallbacks(siriShrinkSafety)
+        resizeAnimator?.cancel()
+        siriView = null
+        siriActive = false
+        isSiriShrinking = false
+        faceGhostsActive = false
+        currentMorphProgress = 0f
+        render(animateSize = false)
+    }
+
     private fun openDefaultAssistant() {
         val roleHeld = if (Build.VERSION.SDK_INT >= 29) {
             try {
@@ -936,7 +1027,7 @@ class IslandService : Service() {
 
     private val longPressRunnable = Runnable {
         handler.removeCallbacks(singleTapRunnable)
-        if (faceUnlocking || isFaceUnlockShrinking) return@Runnable
+        if (faceUnlocking || isFaceUnlockShrinking || siriActive || isSiriShrinking) return@Runnable
         longPressTriggered = true
         islandRoot?.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
         if (screenRecording) {
@@ -949,7 +1040,7 @@ class IslandService : Service() {
 
     private fun wobblePill() {
         val root = islandRoot ?: return
-        if (panelOpen || faceUnlocking || isFaceUnlockShrinking) return
+        if (panelOpen || faceUnlocking || isFaceUnlockShrinking || siriActive || isSiriShrinking) return
         val motionPrefs = AppPrefs.get(this)
         if (motionPrefs.getBoolean(AppPrefs.REDUCE_MOTION, false) ||
             !motionPrefs.getBoolean(AppPrefs.TAP_WOBBLE, true)) {
@@ -1078,7 +1169,7 @@ class IslandService : Service() {
     }
 
     private fun openCustomizationPanel() {
-        if (panelOpen || faceUnlocking || isFaceUnlockShrinking) return
+        if (panelOpen || faceUnlocking || isFaceUnlockShrinking || siriActive || isSiriShrinking) return
         closingPanelWithMedia = false
         panelOpen = true
         playPanelIntro = true
@@ -1099,6 +1190,7 @@ class IslandService : Service() {
         val density = resources.displayMetrics.density.coerceAtLeast(1f)
         val screenWidthPx = displayWidthPx().coerceAtLeast(dp(180))
         val screenWidthDp = (screenWidthPx / density).toInt().coerceAtLeast(180)
+        if (siriActive) return dp(SIRI_SPHERE_SIZE_DP)
         if (faceUnlocking) return dp(FACE_SIZE_DP)
         if (isRecordingControlExpanded()) return (screenWidthPx - dp(12)).coerceAtLeast(dp(180))
         val desiredDp = when {
@@ -1112,6 +1204,7 @@ class IslandService : Service() {
     }
 
     private fun targetHeight(): Int = when {
+        siriActive -> dp(SIRI_SPHERE_SIZE_DP)
         faceUnlocking -> dp(FACE_SIZE_DP)
         isRecordingControlExpanded() -> maxOf(statusBarHeightPx() + dp(24), dp(50))
         panelOpen && screenRecording -> dp(66)
@@ -1179,7 +1272,7 @@ class IslandService : Service() {
 
     private fun positionX(windowWidth: Int = targetWidth(), expanded: Boolean = panelOpen): Int {
         if (isRecordingControlExpanded()) return 0
-        if (isLandscapeWithSideCutout() && !panelOpen) {
+        if (isLandscapeWithSideCutout() && !panelOpen && !siriActive) {
             val cutout = currentCameraCutoutBounds()
             if (cutout != null) {
                 // Return the pill's left edge, not the host's left edge. windowX()
@@ -1198,7 +1291,7 @@ class IslandService : Service() {
 
     private fun positionY(windowHeight: Int = targetHeight(), expanded: Boolean = panelOpen): Int {
         if (isRecordingControlExpanded()) return 0
-        if (isLandscapeWithSideCutout() && !panelOpen) {
+        if (isLandscapeWithSideCutout() && !panelOpen && !siriActive) {
             val cutout = currentCameraCutoutBounds()
             if (cutout != null) {
                 // Align the pill's vertical center with the physical camera cluster.
@@ -1212,7 +1305,7 @@ class IslandService : Service() {
     private fun updatePosition() {
         val root = islandRoot ?: return
         val lp = params ?: return
-        if (isFaceUnlockShrinking) return
+        if (isFaceUnlockShrinking || isSiriShrinking) return
         lp.width = targetWindowWidth()
         lp.height = targetHeight()
         lp.gravity = windowGravity()
@@ -1230,7 +1323,7 @@ class IslandService : Service() {
     private fun render(animateSize: Boolean = false) {
         val root = islandRoot ?: return
         val rootContent = content ?: return
-        if (isFaceUnlockShrinking && resizeAnimator?.isRunning == true) return
+        if ((isFaceUnlockShrinking || isSiriShrinking) && resizeAnimator?.isRunning == true) return
         val prefs = AppPrefs.get(this)
         resizeAnimator?.cancel()
         resetWobble()
@@ -1241,7 +1334,18 @@ class IslandService : Service() {
         glassView?.alpha = 1f
         rootContent.visibility = View.VISIBLE
 
-        if (faceUnlocking) {
+        if (siriActive) {
+            rootContent.setPadding(0, 0, 0, 0)
+            faceView?.release()
+            faceView = null
+            if (siriView?.parent !== rootContent) {
+                rootContent.removeAllViews()
+                val sv = SiriLensEffectView(this)
+                siriView = sv
+                rootContent.addView(sv, LinearLayout.LayoutParams(-1, -1))
+            }
+        } else if (faceUnlocking) {
+            siriView = null
             rootContent.setPadding(0, 0, 0, 0)
             if (faceView?.parent !== rootContent) {
                 rootContent.removeAllViews()
@@ -1253,6 +1357,7 @@ class IslandService : Service() {
             rootContent.removeAllViews()
             faceView?.release()
             faceView = null
+            siriView = null
             if (isRecordingControlExpanded()) {
                 rootContent.setPadding(dp(20), 0, dp(18), 0)
             } else {
@@ -1269,14 +1374,14 @@ class IslandService : Service() {
         root.clipToOutline = true
         root.clipChildren = true
         root.clipToPadding = true
-        glassView?.configure(glassStrength, tint, expandedNow = panelOpen || faceUnlocking)
-        glassView?.visibility = if (panelOpen || faceUnlocking) View.GONE else View.VISIBLE
+        glassView?.configure(glassStrength, tint, expandedNow = panelOpen || faceUnlocking || siriActive)
+        glassView?.visibility = if (panelOpen || faceUnlocking || siriActive) View.GONE else View.VISIBLE
         updatePrivacyDot()
 
         val customUri = prefs.getString(PANEL_BACKGROUND_URI, null)
-        val showMediaOnTop = !isRecordingControlExpanded() && !faceUnlocking && (panelOpen || closingPanelWithMedia) && !customUri.isNullOrBlank()
+        val showMediaOnTop = !isRecordingControlExpanded() && !faceUnlocking && !siriActive && (panelOpen || closingPanelWithMedia) && !customUri.isNullOrBlank()
 
-        if (!faceUnlocking) {
+        if (!faceUnlocking && !siriActive) {
             if (isRecordingControlExpanded()) {
                 renderRecordingControlPanel(rootContent)
             } else if (panelOpen) {
@@ -1315,7 +1420,7 @@ class IslandService : Service() {
         val color = if (cameraActive) 0xFF30D158.toInt() else 0xFFFFD36E.toInt()
         (dot.background as? GradientDrawable)?.setColor(color)
         dot.alpha = if (cameraActive) 1f else 0.95f
-        dot.visibility = if (!panelOpen && !screenRecording && !faceUnlocking && !isFaceUnlockShrinking) View.VISIBLE else View.GONE
+        dot.visibility = if (!panelOpen && !screenRecording && !faceUnlocking && !isFaceUnlockShrinking && !siriActive && !isSiriShrinking) View.VISIBLE else View.GONE
         dot.contentDescription = if (cameraActive) "Camera đang hoạt động" else "DigitalLiquid trạng thái chờ"
     }
 
@@ -1332,7 +1437,7 @@ class IslandService : Service() {
         val nativeIslandVisible = hideForSystemIsland || hideForOtherActivity || hideForMusic || hideForRingerUi
         // A short sound/DND/notification popup must hide our pill even while recording or camera state is active.
         // Other native activities keep the existing recording/camera priority behavior.
-        val suppress = !faceUnlocking && !isFaceUnlockShrinking && (
+        val suppress = !faceUnlocking && !isFaceUnlockShrinking && !siriActive && !isSiriShrinking && (
             ringerTransitionActive || (!screenRecording && !cameraActive && nativeIslandVisible)
         )
         val wantedVisibility = if (suppress) View.GONE else View.VISIBLE
@@ -1360,7 +1465,7 @@ class IslandService : Service() {
         if (!prefs.getBoolean(AppPrefs.FACE_UNLOCK_EFFECT, true) ||
             prefs.getBoolean(AppPrefs.REDUCE_MOTION, false)) return
         if (islandRoot == null) return
-        if (faceUnlocking || isFaceUnlockShrinking || panelOpen) return
+        if (faceUnlocking || isFaceUnlockShrinking || siriActive || isSiriShrinking || panelOpen) return
         faceFailed = failed
         faceUnlocking = true
         isFaceUnlockShrinking = false
@@ -1607,7 +1712,7 @@ class IslandService : Service() {
         val uriString = AppPrefs.get(this).getString(PANEL_BACKGROUND_URI, null)
         val recordingControlOwnsOverlay = isRecordingControlExpanded()
         if (recordingControlOwnsOverlay) closingPanelWithMedia = false
-        val shouldShow = !recordingControlOwnsOverlay && !faceUnlocking && !isFaceUnlockShrinking && (panelOpen || closingPanelWithMedia) && !uriString.isNullOrBlank()
+        val shouldShow = !recordingControlOwnsOverlay && !faceUnlocking && !isFaceUnlockShrinking && !siriActive && !isSiriShrinking && (panelOpen || closingPanelWithMedia) && !uriString.isNullOrBlank()
         if (!shouldShow) {
             stopPanelMedia()
             host.removeAllViews()
@@ -1777,9 +1882,9 @@ class IslandService : Service() {
         resizeAnimator?.cancel()
         updateExpandedRadius()
 
-        val faceShrink = isFaceUnlockShrinking
-        val faceExpand = faceUnlocking
-        val opening = panelOpen || faceUnlocking
+        val faceShrink = isFaceUnlockShrinking || isSiriShrinking
+        val faceExpand = faceUnlocking || siriActive
+        val opening = panelOpen || faceUnlocking || siriActive
         val startWindowWidth = lp.width.toFloat()
         val startHeight = lp.height.toFloat()
         val startX = lp.x.toFloat()
@@ -1806,6 +1911,7 @@ class IslandService : Service() {
             faceGhostsActive = false
             syncOverlayChildBounds(endPillWidth.roundToInt(), endHeight.roundToInt())
             applyRootCorner(endPillWidth.roundToInt(), endHeight.roundToInt())
+            siriView?.setMorphProgress(currentMorphProgress)
             root.scaleX = 1f
             root.scaleY = 1f
             updateOverlayWindow(lp)
@@ -1824,6 +1930,8 @@ class IslandService : Service() {
         var canceled = false
         resizeAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
             duration = when {
+                siriActive -> SIRI_EXPAND_MS
+                isSiriShrinking -> SIRI_SHRINK_MS
                 faceExpand -> FACE_EXPAND_MS
                 faceShrink -> FACE_SHRINK_MS
                 opening -> 420L
@@ -1846,6 +1954,7 @@ class IslandService : Service() {
 
                 syncOverlayChildBounds(pillW, pillH)
                 applyRootCorner(pillW, pillH)
+                siriView?.setMorphProgress(currentMorphProgress.coerceIn(0f, 1f))
                 // LayoutParams already animate both axes. A second, non-uniform scale
                 // makes the rounded outline and the actual window bounds disagree and
                 // can expose a square flash on close. Keep the root at identity scale.
@@ -1873,6 +1982,7 @@ class IslandService : Service() {
                     faceGhostsActive = false
                     syncOverlayChildBounds(endPillWidth.roundToInt(), endHeight.roundToInt())
                     applyRootCorner(endPillWidth.roundToInt(), endHeight.roundToInt())
+                    siriView?.setMorphProgress(currentMorphProgress.coerceIn(0f, 1f))
                     root.scaleX = 1f
                     root.scaleY = 1f
                     root.alpha = 1f
@@ -2150,6 +2260,7 @@ class IslandService : Service() {
         handler.removeCallbacks(keyAuthorizationWatchdog)
         handler.removeCallbacks(onlinePolicyWatchdog)
         handler.removeCallbacks(faceShrinkSafety)
+        handler.removeCallbacks(siriShrinkSafety)
         handler.removeCallbacks(appSwitchModeExitRunnable)
         handler.removeCallbacks(ringerTransitionHideReset)
         handler.removeCallbacks(geometryRefreshRunnable)
@@ -2171,6 +2282,7 @@ class IslandService : Service() {
         recordingTimerTask?.let { handler.removeCallbacks(it) }
         faceView?.release()
         faceView = null
+        siriView = null
         dismissCustomAppNotice(animate = false)
         stopPanelMedia()
         try { unregisterReceiver(configReceiver) } catch (_: Exception) { }
@@ -2205,6 +2317,10 @@ class IslandService : Service() {
         private const val APP_SWITCH_MODE_IDLE_MS = 1800L
         private const val RINGER_TRANSITION_HIDE_MS = 2100L
         private const val TRAIL_EXTENT_DP = 38
+
+        private const val SIRI_SPHERE_SIZE_DP = 152
+        private const val SIRI_EXPAND_MS = 380L
+        private const val SIRI_SHRINK_MS = 400L
 
         private const val FACE_SIZE_DP = 150
         private const val FACE_SQUIRCLE_RADIUS_DP = 38f
