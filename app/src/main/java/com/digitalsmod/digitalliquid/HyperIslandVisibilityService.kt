@@ -381,6 +381,7 @@ class HyperIslandVisibilityService : AccessibilityService() {
         IslandService.setCameraActivityActive(false)
         IslandService.setRingerUiActive(false)
         cameraForegroundActive = false
+        continuousStreamActive = false
         if (connectedInstance === this) connectedInstance = null
         IslandService.refreshOverlayWindowType()
         handler.removeCallbacksAndMessages(null)
@@ -389,15 +390,28 @@ class HyperIslandVisibilityService : AccessibilityService() {
 
     companion object {
         @Volatile private var connectedInstance: HyperIslandVisibilityService? = null
+        @Volatile private var continuousStreamActive = false
+        @Volatile private var isCaptureInFlight = false
 
         fun instance(): HyperIslandVisibilityService? = connectedInstance
 
-        fun captureScreen(callback: (Bitmap?) -> Unit) {
-            val service = connectedInstance
-            if (service == null || Build.VERSION.SDK_INT < 30) {
-                callback(null)
-                return
-            }
+        /** Bật stream lấy mẫu khung hình liên tục ~30 FPS cho hiệu ứng khúc xạ thấu kính thật */
+        fun startContinuousStream(onFrame: (Bitmap) -> Unit) {
+            continuousStreamActive = true
+            scheduleNextStreamFrame(onFrame)
+        }
+
+        fun stopContinuousStream() {
+            continuousStreamActive = false
+            isCaptureInFlight = false
+        }
+
+        private fun scheduleNextStreamFrame(onFrame: (Bitmap) -> Unit) {
+            val service = connectedInstance ?: return
+            if (!continuousStreamActive || isCaptureInFlight) return
+            if (Build.VERSION.SDK_INT < 30) return
+
+            isCaptureInFlight = true
             try {
                 service.takeScreenshot(
                     Display.DEFAULT_DISPLAY,
@@ -410,16 +424,27 @@ class HyperIslandVisibilityService : AccessibilityService() {
                                 Bitmap.wrapHardwareBuffer(buffer, colorSpace)?.copy(Bitmap.Config.ARGB_8888, false)
                             } else null
                             buffer?.close()
-                            service.handler.post { callback(bmp) }
+                            isCaptureInFlight = false
+
+                            if (bmp != null && continuousStreamActive) {
+                                onFrame(bmp)
+                                // Lập lịch cho khung hình kế tiếp ~33ms (khoảng 30 FPS)
+                                service.handler.postDelayed({ scheduleNextStreamFrame(onFrame) }, 33L)
+                            } else {
+                                if (continuousStreamActive) service.handler.postDelayed({ scheduleNextStreamFrame(onFrame) }, 40L)
+                            }
                         }
 
                         override fun onFailure(errorCode: Int) {
-                            service.handler.post { callback(null) }
+                            isCaptureInFlight = false
+                            if (continuousStreamActive) {
+                                service.handler.postDelayed({ scheduleNextStreamFrame(onFrame) }, 45L)
+                            }
                         }
                     }
                 )
             } catch (_: Exception) {
-                callback(null)
+                isCaptureInFlight = false
             }
         }
 
