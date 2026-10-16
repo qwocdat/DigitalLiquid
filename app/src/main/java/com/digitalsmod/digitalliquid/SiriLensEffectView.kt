@@ -14,7 +14,6 @@ import android.graphics.Shader
 import android.os.Build
 import android.view.View
 import android.view.animation.LinearInterpolator
-import android.view.animation.PathInterpolator
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
@@ -22,7 +21,7 @@ import kotlin.math.sin
 /**
  * Hiệu ứng kính quang học Siri 1:1 nguyên bản cho DigitalLiquid.
  * Sử dụng AGSL RuntimeShader trên GPU để tính toán bề mặt cầu thủy tinh 3D thật,
- * tán sắc quang phổ chân thực và đáy kính trong suốt quang học xuyên thấu nền máy.
+ * tán sắc quang phổ chân thực và đáy kính khúc xạ quang học méo hình trên bề mặt tiếp xúc.
  */
 class SiriLensEffectView(context: Context) : View(context) {
     private val density = resources.displayMetrics.density
@@ -75,11 +74,12 @@ class SiriLensEffectView(context: Context) : View(context) {
             float distSq = dot(p, p);
             float dist = sqrt(max(0.0, distSq));
 
-            // 1. Nửa đỉnh quả cầu giữ màu đen sâu tuyệt đối để hòa làm một với cụm camera / Dynamic Island
-            float blackDome = 1.0 - smoothstep(0.36, 0.49, uv.y);
+            // Tính toán vector pháp tuyến bề mặt cầu 3D
+            float z = sqrt(max(0.0, 1.0 - distSq));
+            float3 N = float3(p.x, p.y, z);
 
-            // 2. Dải sóng quang phổ nằm chính xác ở trục ngang trung tâm (y = 0.50)
-            float arch = -sin(uv.x * 3.14159) * 0.045;
+            // 1. Dải sóng quang phổ nằm chính xác ở trục ngang trung tâm (y = 0.50)
+            float arch = -sin(uv.x * 3.14159) * 0.046;
             float wave = 0.008 * sin(uv.x * 6.28 - time * 1.8) + 0.004 * sin(uv.x * 12.56 + time * 1.1);
             float beamCenterY = 0.50 + arch + wave;
             float dy = abs(uv.y - beamCenterY);
@@ -95,23 +95,40 @@ class SiriLensEffectView(context: Context) : View(context) {
             float focalSpot = exp(-pow((uv.x - 0.38) / 0.16, 2.0)) * beamCore * 1.85;
             float3 hotWhite = float3(1.0, 0.99, 0.96) * focalSpot;
 
-            // 3. Viền khúc xạ thủy tinh ngoài cùng siêu mảnh (Fresnel Rim)
-            float z = sqrt(max(0.0, 1.0 - distSq));
-            float fresnel = pow(clamp(1.0 - z, 0.0, 1.0), 3.5);
-            float rimHighlight = fresnel * smoothstep(0.92, 0.99, dist);
-            float3 rimColor = float3(0.92, 0.96, 1.0) * rimHighlight * smoothstep(0.20, 0.85, uv.y) * 1.5;
+            // 2. Phần màu đen ở đỉnh: Có ám một chút ánh màu huyền bí nhẹ từ dải phổ phía trên
+            float blackDome = 1.0 - smoothstep(0.36, 0.49, uv.y);
+            float3 darkTint = mix(float3(0.002, 0.003, 0.008), spectrumColor * 0.038, (1.0 - uv.y) * 0.45);
 
-            // Tổng hợp màu sắc (KHÔNG CÓ BẤT KỲ VỆT BÓNG TRẮNG GIẢ NÀO)
-            float3 color = float3(0.0);
+            // 3. Hiệu ứng khúc xạ quang học méo hình trên phần tiếp xúc bên dưới:
+            // Tính toán vector khúc xạ thấu kính cong (Refractive Lens Distortion Offset)
+            float2 refractDistort = N.xy * (0.12 * (1.0 - N.z));
+            float2 distortedCoord = uv + refractDistort;
+
+            // Vệt méo quang học cong theo thấu kính (Refraction Caustic Distortion Fringe)
+            float causticRadius = length(float2((distortedCoord.x - 0.50) * 1.18, (distortedCoord.y - 0.42) * 1.0));
+            float causticDistort = exp(-pow((causticRadius - 0.44) * 28.0, 2.0)) * smoothstep(0.48, 0.88, uv.y);
+            
+            // Tán sắc viền quang sai (Chromatic aberration on refraction)
+            float3 causticColor = mix(float3(0.15, 0.65, 1.0), float3(0.95, 0.98, 1.0), causticDistort * 0.8) * causticDistort * 0.75;
+
+            // Viền khúc xạ thủy tinh ngoài cùng siêu mảnh (Fresnel Rim)
+            float fresnel = pow(clamp(1.0 - z, 0.0, 1.0), 3.8);
+            float rimHighlight = fresnel * smoothstep(0.92, 0.99, dist);
+            float3 rimColor = float3(0.92, 0.96, 1.0) * rimHighlight * smoothstep(0.20, 0.85, uv.y) * 1.4;
+
+            // Tổng hợp màu sắc (không vẽ bất kỳ vệt bóng đục nào)
+            float3 color = darkTint * blackDome;
             color += spectrumColor * (beamBloom * 0.90 + beamWide * 0.35) * energy;
             color += (spectrumColor * 0.45 + float3(0.80, 0.90, 1.0) * 0.55) * beamCore * 1.35;
             color += hotWhite;
+            color += causticColor;
             color += rimColor;
 
-            // 4. Độ trong suốt: nửa dưới trong suốt tự nhiên để app phía sau nhìn rõ ràng
-            float glassBodyAlpha = mix(0.04, 0.12, smoothstep(0.40, 0.98, dist)) * smoothstep(0.46, 0.58, uv.y);
+            // 4. Độ trong suốt: Nửa dưới trong suốt tự nhiên, cho phép nhìn xuyên qua app bên dưới kèm hiệu ứng khúc xạ
+            float glassBodyAlpha = mix(0.03, 0.10, smoothstep(0.40, 0.98, dist)) * smoothstep(0.46, 0.58, uv.y);
             float finalAlpha = max(blackDome, glassBodyAlpha);
             finalAlpha = max(finalAlpha, (beamBloom * 0.72 + beamCore * 0.98) * energy);
+            finalAlpha = max(finalAlpha, causticDistort * 0.70);
             finalAlpha = max(finalAlpha, rimHighlight * 0.90);
             finalAlpha = clamp(finalAlpha * morph, 0.0, 1.0);
 
@@ -204,7 +221,7 @@ class SiriLensEffectView(context: Context) : View(context) {
     private fun drawFallback(canvas: Canvas, w: Float, h: Float) {
         fallbackPaint.shader = LinearGradient(
             0f, 0f, 0f, h * 0.48f,
-            intArrayOf(0xFF000000.toInt(), 0xEE000000.toInt(), 0x00000000),
+            intArrayOf(0xFF03040B.toInt(), 0xEE020306.toInt(), 0x00000000),
             floatArrayOf(0f, 0.75f, 1f),
             Shader.TileMode.CLAMP
         )
@@ -251,174 +268,5 @@ class SiriLensEffectView(context: Context) : View(context) {
         fallbackPaint.shader = null
         fallbackPaint.style = Paint.Style.FILL
         fallbackPaint.alpha = 255
-    }
-}
-
-/**
- * Hiệu ứng dải viền màn hình phát sáng chạy từ trên đỉnh xuống ôm sát mép viền cong của điện thoại (Apple Intelligence Screen Edge Glow).
- */
-class SiriEdgeGlowView(context: Context) : View(context) {
-    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private var shader: RuntimeShader? = null
-    private var phase = 0f
-    private var streamProgress = 0f
-    private var enterAnimator: ValueAnimator? = null
-    private var loopAnimator: ValueAnimator? = null
-
-    private val agsl = """
-        uniform float2 resolution;
-        uniform float time;
-        uniform float streamProgress;
-        uniform float cornerRadius;
-
-        float3 siriEdgeSpectrum(float t) {
-            float3 c0 = float3(0.04, 0.45, 1.00); // Blue
-            float3 c1 = float3(0.00, 0.92, 1.00); // Cyan
-            float3 c2 = float3(0.68, 0.22, 1.00); // Magenta/Purple
-            float3 c3 = float3(1.00, 0.38, 0.16); // Coral
-            float3 c4 = float3(1.00, 0.88, 0.12); // Amber
-            float x = fract(t);
-            float3 col = mix(c0, c1, smoothstep(0.00, 0.25, x));
-            col = mix(col, c2, smoothstep(0.25, 0.50, x));
-            col = mix(col, c3, smoothstep(0.50, 0.75, x));
-            col = mix(col, c4, smoothstep(0.75, 1.00, x));
-            return col;
-        }
-
-        // Tính khoảng cách chính xác đến viền màn hình bo cong (SDF Rounded Rectangle)
-        float sdRoundedBox(float2 p, float2 b, float r) {
-            float2 q = abs(p) - b + float2(r, r);
-            return min(max(q.x, q.y), 0.0) + length(max(q, float2(0.0, 0.0))) - r;
-        }
-
-        half4 main(float2 fragCoord) {
-            float2 res = max(resolution, float2(1.0, 1.0));
-            float2 halfRes = res * 0.5;
-            float2 p = fragCoord - halfRes;
-
-            float R = clamp(cornerRadius, 4.0, min(halfRes.x, halfRes.y) - 2.0);
-            float2 b = halfRes - float2(R, R);
-
-            // Khoảng cách từ pixel tới chu vi viền cong của điện thoại
-            float dist = abs(sdRoundedBox(p, b, R));
-
-            // Quầng sáng mềm mại tự nhiên (lõi neon mảnh + bloom nhẹ tỏa vào trong)
-            float core = exp(-dist / 3.2);
-            float bloom = exp(-dist / 14.0);
-            float glow = core * 1.5 + bloom * 0.7;
-
-            // Tính quãng đường chạy từ đỉnh giữa (Dynamic Island) tỏa sang 2 bên rồi chạy dọc xuống đáy
-            float normX = abs(p.x) / max(1.0, halfRes.x);
-            float normY = (p.y + halfRes.y) / max(1.0, res.y);
-
-            float pathProgress = 0.0;
-            if (normY < 0.05) {
-                pathProgress = normX * 0.22;
-            } else {
-                pathProgress = 0.22 + normY * 0.78;
-            }
-
-            // Đầu tia sáng dẫn đường chạy từ trên xuống
-            float cutoff = smoothstep(streamProgress, max(0.0, streamProgress - 0.14), pathProgress);
-            float headSpark = exp(-pow((pathProgress - streamProgress) / 0.045, 2.0)) * 1.8;
-
-            float colorCycle = pathProgress * 1.5 - time * 0.40;
-            float3 rgb = siriEdgeSpectrum(colorCycle) * (1.0 + headSpark * 0.6);
-
-            float alpha = glow * cutoff * clamp(streamProgress * 2.0, 0.0, 1.0);
-            alpha = clamp(alpha, 0.0, 0.95);
-
-            return half4(half3(rgb * alpha), half(alpha));
-        }
-    """.trimIndent()
-
-    init {
-        setLayerType(LAYER_TYPE_HARDWARE, null)
-        isClickable = false
-        isFocusable = false
-        if (Build.VERSION.SDK_INT >= 33) {
-            try {
-                shader = RuntimeShader(agsl)
-            } catch (_: Exception) {
-                shader = null
-            }
-        }
-    }
-
-    fun startEnterAnimation() {
-        alpha = 1f
-        enterAnimator?.cancel()
-        enterAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 540L
-            interpolator = PathInterpolator(0.18f, 1f, 0.28f, 1f)
-            addUpdateListener {
-                streamProgress = it.animatedValue as Float
-                invalidate()
-            }
-            start()
-        }
-
-        if (loopAnimator == null) {
-            loopAnimator = ValueAnimator.ofFloat(0f, (Math.PI * 2.0).toFloat()).apply {
-                duration = 3800L
-                repeatCount = ValueAnimator.INFINITE
-                interpolator = LinearInterpolator()
-                addUpdateListener {
-                    phase = it.animatedValue as Float
-                    invalidate()
-                }
-                start()
-            }
-        }
-    }
-
-    fun startExitAnimation(onEnd: () -> Unit) {
-        enterAnimator?.cancel()
-        animate().alpha(0f).setDuration(280L).withEndAction {
-            loopAnimator?.cancel()
-            loopAnimator = null
-            onEnd()
-        }.start()
-    }
-
-    override fun onDetachedFromWindow() {
-        enterAnimator?.cancel()
-        enterAnimator = null
-        loopAnimator?.cancel()
-        loopAnimator = null
-        super.onDetachedFromWindow()
-    }
-
-    override fun onDraw(canvas: Canvas) {
-        super.onDraw(canvas)
-        val w = width.toFloat()
-        val h = height.toFloat()
-        if (w <= 0f || h <= 0f) return
-
-        val activeShader = shader
-        if (activeShader != null && Build.VERSION.SDK_INT >= 33) {
-            val cornerDp = 38f * resources.displayMetrics.density
-            activeShader.setFloatUniform("resolution", w, h)
-            activeShader.setFloatUniform("time", phase)
-            activeShader.setFloatUniform("streamProgress", streamProgress)
-            activeShader.setFloatUniform("cornerRadius", cornerDp)
-            paint.shader = activeShader
-            canvas.drawRect(0f, 0f, w, h, paint)
-            paint.shader = null
-        } else {
-            val density = resources.displayMetrics.density
-            paint.style = Paint.Style.STROKE
-            paint.strokeWidth = 6f * density
-            paint.shader = LinearGradient(
-                0f, 0f, w, h,
-                intArrayOf(0xFF00D8FF.toInt(), 0xFF9B51E0.toInt(), 0xFFFF385C.toInt(), 0xFF00D8FF.toInt()),
-                null, Shader.TileMode.CLAMP
-            )
-            paint.alpha = (180 * streamProgress).toInt()
-            canvas.drawRoundRect(0f, 0f, w, h, 36f * density, 36f * density, paint)
-            paint.shader = null
-            paint.style = Paint.Style.FILL
-            paint.alpha = 255
-        }
     }
 }
