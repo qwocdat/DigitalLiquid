@@ -2,10 +2,13 @@ package com.digitalsmod.digitalliquid
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
-import android.graphics.Rect
 import android.content.res.Configuration
+import android.graphics.Bitmap
+import android.graphics.Rect
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.view.Display
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -275,7 +278,6 @@ class HyperIslandVisibilityService : AccessibilityService() {
                     hasSettingsUi = true
                 }
 
-                // LOẠI TRỪ ĐỒNG HỒ HỆ THỐNG (Clock / Time view)
                 val isClockNode = resourceId.contains("clock") || resourceId.contains("time") || resourceId.contains("date") || resourceId.contains("header")
                 val timerMatch = timerRegex.find(visibleLabel)?.value
                 if (!isClockNode && timerMatch != null && timerMatch != "00:00" && timerMatch != "0:00") {
@@ -321,10 +323,6 @@ class HyperIslandVisibilityService : AccessibilityService() {
                         height in (15 * density).toInt()..maxHeight && width in minWidth..maxWidth &&
                         abs(bounds.centerX() - centerX) <= centerTolerance && width < (screenWidth * 0.78f).toInt()
                 }
-                // Volume/ringer/notification controls are not consistently pill-shaped on
-                // HyperOS: portrait volume panels are vertical, and some quick-setting labels
-                // are outside the camera bounds. Detect these text-bearing system UI windows
-                // independently, but never scan application windows for these phrases.
                 val hasRingerOrNoticeSignal = allowIslandDetection && ringerUiWords.any(searchableLabel::contains)
                 val displayHeight = resources.displayMetrics.heightPixels
                 val nearCameraPopup = if (sideCutout && cutout != null) {
@@ -338,8 +336,6 @@ class HyperIslandVisibilityService : AccessibilityService() {
                 }
                 val plausiblePopup = width >= (18 * density).toInt() && height >= (10 * density).toInt() &&
                     width <= (screenWidth * 0.88f).toInt() && height <= (displayHeight * 0.55f).toInt()
-                // Do not hide for an entire notification shade/settings screen. Only text nodes
-                // belonging to a compact ringer/DND/notification chip near the camera anchor count.
                 if (hasRingerOrNoticeSignal && nearCameraPopup && plausiblePopup) {
                     result.ringerUiVisible = true
                 }
@@ -393,6 +389,39 @@ class HyperIslandVisibilityService : AccessibilityService() {
 
     companion object {
         @Volatile private var connectedInstance: HyperIslandVisibilityService? = null
+
+        fun instance(): HyperIslandVisibilityService? = connectedInstance
+
+        fun captureScreen(callback: (Bitmap?) -> Unit) {
+            val service = connectedInstance
+            if (service == null || Build.VERSION.SDK_INT < 30) {
+                callback(null)
+                return
+            }
+            try {
+                service.takeScreenshot(
+                    Display.DEFAULT_DISPLAY,
+                    { runnable -> service.handler.post(runnable) },
+                    object : AccessibilityService.TakeScreenshotCallback {
+                        override fun onSuccess(screenshot: AccessibilityService.ScreenshotResult) {
+                            val buffer = screenshot.hardwareBuffer
+                            val colorSpace = screenshot.colorSpace
+                            val bmp = if (buffer != null) {
+                                Bitmap.wrapHardwareBuffer(buffer, colorSpace)?.copy(Bitmap.Config.ARGB_8888, false)
+                            } else null
+                            buffer?.close()
+                            service.handler.post { callback(bmp) }
+                        }
+
+                        override fun onFailure(errorCode: Int) {
+                            service.handler.post { callback(null) }
+                        }
+                    }
+                )
+            } catch (_: Exception) {
+                callback(null)
+            }
+        }
 
         fun requestRecents(): Boolean {
             val service = connectedInstance ?: return false
