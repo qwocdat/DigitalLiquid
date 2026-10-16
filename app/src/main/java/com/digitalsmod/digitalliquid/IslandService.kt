@@ -967,6 +967,9 @@ class IslandService : Service() {
             if (Build.VERSION.SDK_INT >= 28) {
                 layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
             }
+            if (Build.VERSION.SDK_INT >= 30) {
+                try { fitInsetsTypes = 0 } catch (_: Exception) { }
+            }
         }
         try {
             windowManager.addView(view, glowParams)
@@ -979,7 +982,11 @@ class IslandService : Service() {
         val view = siriEdgeGlowView ?: return
         siriEdgeGlowView = null
         view.startExitAnimation {
-            try { windowManager.removeView(view) } catch (_: Exception) { }
+            try {
+                if (view.isAttachedToWindow) {
+                    windowManager.removeView(view)
+                }
+            } catch (_: Exception) { }
         }
     }
 
@@ -2298,7 +2305,13 @@ class IslandService : Service() {
         faceView?.release()
         faceView = null
         siriView = null
-        siriEdgeGlowView?.let { try { windowManager.removeView(it) } catch (_: Exception) { } }
+        siriEdgeGlowView?.let {
+            try {
+                if (it.isAttachedToWindow) {
+                    windowManager.removeView(it)
+                }
+            } catch (_: Exception) { }
+        }
         siriEdgeGlowView = null
         dismissCustomAppNotice(animate = false)
         stopPanelMedia()
