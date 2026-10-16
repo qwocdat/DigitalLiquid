@@ -117,7 +117,6 @@ class IslandService : Service() {
     private var siriActive = false
     private var isSiriShrinking = false
     private var siriView: SiriLensEffectView? = null
-    private var siriEdgeGlowView: SiriEdgeGlowView? = null
     private val siriShrinkSafety = Runnable {
         resizeAnimator?.cancel()
         finishSiriShrink()
@@ -825,7 +824,6 @@ class IslandService : Service() {
         if (shouldUseTrusted == usingAccessibilityOverlay) return
         try { windowManager.removeView(host) } catch (_: Exception) { }
         stopPanelMedia()
-        hideSiriEdgeGlow()
         faceView?.release()
         faceView = null
         siriView = null
@@ -944,57 +942,13 @@ class IslandService : Service() {
         }
         siriActive = true
         isSiriShrinking = false
-        showSiriEdgeGlow()
         render(animateSize = true)
-    }
-
-    private fun showSiriEdgeGlow() {
-        if (siriEdgeGlowView != null) return
-        val view = SiriEdgeGlowView(this)
-        val glowParams = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.MATCH_PARENT,
-            overlayWindowType(),
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.LEFT
-            x = 0
-            y = 0
-            if (Build.VERSION.SDK_INT >= 28) {
-                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
-            }
-            if (Build.VERSION.SDK_INT >= 30) {
-                try { fitInsetsTypes = 0 } catch (_: Exception) { }
-            }
-        }
-        try {
-            windowManager.addView(view, glowParams)
-            siriEdgeGlowView = view
-            view.startEnterAnimation()
-        } catch (_: Exception) { }
-    }
-
-    private fun hideSiriEdgeGlow() {
-        val view = siriEdgeGlowView ?: return
-        siriEdgeGlowView = null
-        view.startExitAnimation {
-            try {
-                if (view.isAttachedToWindow) {
-                    windowManager.removeView(view)
-                }
-            } catch (_: Exception) { }
-        }
     }
 
     private fun beginSiriShrink() {
         if (!siriActive || isSiriShrinking) return
         isSiriShrinking = true
         siriActive = false
-        hideSiriEdgeGlow()
 
         glassView?.apply {
             configure(glassStrength, tint, expandedNow = false)
@@ -1023,7 +977,6 @@ class IslandService : Service() {
         if (!siriActive && !isSiriShrinking) return
         handler.removeCallbacks(siriShrinkSafety)
         resizeAnimator?.cancel()
-        hideSiriEdgeGlow()
         siriView = null
         siriActive = false
         isSiriShrinking = false
@@ -2305,14 +2258,6 @@ class IslandService : Service() {
         faceView?.release()
         faceView = null
         siriView = null
-        siriEdgeGlowView?.let {
-            try {
-                if (it.isAttachedToWindow) {
-                    windowManager.removeView(it)
-                }
-            } catch (_: Exception) { }
-        }
-        siriEdgeGlowView = null
         dismissCustomAppNotice(animate = false)
         stopPanelMedia()
         try { unregisterReceiver(configReceiver) } catch (_: Exception) { }
