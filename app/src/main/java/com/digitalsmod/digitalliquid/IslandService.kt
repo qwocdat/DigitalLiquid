@@ -555,7 +555,6 @@ class IslandService : Service() {
         else -> targetWidth() + targetHostInsetPx() * 2
     }
 
-    // Luôn giữ ở vị trí TOP | CENTER_HORIZONTAL
     private fun windowGravity(): Int = Gravity.TOP or Gravity.CENTER_HORIZONTAL
 
     private fun windowX(): Int {
@@ -770,7 +769,6 @@ class IslandService : Service() {
         overlayHost = host
         hostInsetPx = targetHostInsetPx()
 
-        // Bật cờ FLAG_WATCH_OUTSIDE_TOUCH để tự động đóng khi chạm ra ngoài
         val initialParams = WindowManager.LayoutParams(
             targetWindowWidth(),
             targetHeight(),
@@ -856,7 +854,6 @@ class IslandService : Service() {
     }
 
     private fun handlePillTouch(view: View, event: MotionEvent): Boolean {
-        // Chạm ra ngoài màn hình -> Tự động đóng mượt mà về viên thuốc
         if (event.actionMasked == MotionEvent.ACTION_OUTSIDE) {
             if (siriActive) {
                 beginSiriShrink()
@@ -887,14 +884,12 @@ class IslandService : Service() {
                     val deltaX = abs(event.rawX - downX)
                     val isTap = deltaX <= touchSlop * 1.5f && abs(deltaY) <= touchSlop * 1.5f
 
-                    // Vuốt lên trên để đóng về Dynamic Island
                     if (deltaY > dp(20) && deltaY > deltaX) {
                         view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
                         beginSiriShrink()
                         return true
                     }
 
-                    // Chạm vào phần kính trong suốt (nửa dưới) -> Mở rộng để nhập văn bản
                     if (isTap) {
                         view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
                         if (!siriCardExpanded && event.y >= view.height * 0.40f) {
@@ -1007,7 +1002,6 @@ class IslandService : Service() {
         siriCardExpanded = true
         stopSiriDropletFloatAnimation()
 
-        // Bỏ cờ FLAG_NOT_FOCUSABLE để bàn phím ảo xuất hiện cho phép gõ chữ trực tiếp
         params?.let { lp ->
             lp.flags = lp.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
             updateOverlayWindow(lp)
@@ -1636,7 +1630,6 @@ class IslandService : Service() {
         dot.contentDescription = if (cameraActive) "Camera đang hoạt động" else "DigitalLiquid trạng thái chờ"
     }
 
-    // FIX LỖI XOAY NGANG: Khi xoay ngang màn hình (Configuration.ORIENTATION_LANDSCAPE), tự động ẩn Dynamic Island để không đè lên game
     private fun applyNativeActivityVisibility() {
         val root = islandRoot ?: return
         val host = overlayHost ?: return
@@ -1650,7 +1643,6 @@ class IslandService : Service() {
         val hideForRingerUi = prefs.getBoolean(AppPrefs.HIDE_WHEN_RINGER_UI, true) && ringerTransitionActive
         val nativeIslandVisible = hideForSystemIsland || hideForOtherActivity || hideForMusic || hideForRingerUi
         
-        // Tự động ẩn khi đang xoay ngang chơi game để không bị xoay dọc lệch góc
         val suppress = isLandscape || (!faceUnlocking && !isFaceUnlockShrinking && !siriActive && !isSiriShrinking && (
             ringerTransitionActive || (!screenRecording && !cameraActive && nativeIslandVisible)
         ))
@@ -1733,780 +1725,294 @@ class IslandService : Service() {
         render(animateSize = false)
     }
 
-    private fun renderRecordingControlPanel(target: LinearLayout) {
-        target.orientation = LinearLayout.HORIZONTAL
-        target.gravity = Gravity.CENTER_VERTICAL
-        target.setPadding(dp(22), 0, dp(24), 0)
-        target.background = null
-
-        val marker = View(this).apply {
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(0xFFFF3B50.toInt())
-            }
-            elevation = dp(2).toFloat()
-            contentDescription = "Đang quay màn hình"
-        }
-        target.addView(marker, LinearLayout.LayoutParams(dp(8), dp(8)).apply { marginEnd = dp(9) })
-
-        val showRecordingLabel = AppPrefs.get(this).getBoolean(AppPrefs.RECORDING_STOP_CONTROL, true)
-        if (showRecordingLabel) {
-            target.addView(TextView(this).apply {
-                text = "Recording"
-                textSize = 14f
-                letterSpacing = 0.015f
-                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-                setTextColor(Color.WHITE)
-                gravity = Gravity.CENTER_VERTICAL
-                contentDescription = "Recording"
-            }, LinearLayout.LayoutParams(0, -1, 1f))
-        } else {
-            target.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
-        }
-
-        val timer = TextView(this).apply {
-            text = "00:00"
-            textSize = 14f
-            letterSpacing = 0.025f
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setTextColor(0xFFE6E8EE.toInt())
-            gravity = Gravity.CENTER_VERTICAL or Gravity.END
-            contentDescription = "Thời gian quay màn hình"
-        }
-        target.addView(timer, LinearLayout.LayoutParams(dp(62), -1))
-
-        recordingTimerTask?.let { handler.removeCallbacks(it) }
-        val task = object : Runnable {
-            override fun run() {
-                if (!screenRecording || !isRecordingControlExpanded() || !timer.isAttachedToWindow) return
-                val start = recordingStartedAtElapsed.takeIf { it > 0L } ?: android.os.SystemClock.elapsedRealtime()
-                val elapsed = ((android.os.SystemClock.elapsedRealtime() - start) / 1000L).coerceAtLeast(0L)
-                timer.text = String.format(java.util.Locale.ROOT, "%02d:%02d", elapsed / 60L, elapsed % 60L)
-                handler.postDelayed(this, 250L)
-            }
-        }
-        recordingTimerTask = task
-        task.run()
-    }
-
-    private fun renderRecordingIndicator(target: LinearLayout) {
-        target.orientation = LinearLayout.VERTICAL
-        target.gravity = Gravity.CENTER_VERTICAL or Gravity.START
-        target.setPadding(dp(9), 0, dp(8), 0)
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL or Gravity.START
-            isClickable = false
-        }
-        val dotWrap = FrameLayout(this)
-        val halo = View(this).apply {
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(0x22FF354D)
-                setStroke(dp(1), 0x66FF5266)
-            }
-        }
-        val dot = View(this).apply {
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(0xFFFF304B.toInt())
-            }
-        }
-        dotWrap.addView(halo, FrameLayout.LayoutParams(dp(19), dp(19), Gravity.CENTER))
-        dotWrap.addView(dot, FrameLayout.LayoutParams(dp(7), dp(7), Gravity.CENTER))
-        row.addView(dotWrap, LinearLayout.LayoutParams(dp(23), dp(23)))
-        val recLabel = TextView(this).apply {
-            text = "REC"
-            textSize = 11f
-            letterSpacing = 0.10f
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setTextColor(0xFFFFE9EC.toInt())
-            gravity = Gravity.CENTER_VERTICAL or Gravity.START
-            setPadding(dp(2), 0, 0, 0)
-            setLayerType(View.LAYER_TYPE_HARDWARE, null)
-            if (Build.VERSION.SDK_INT >= 31) {
-                try { setRenderEffect(RenderEffect.createBlurEffect(0.18f, 0f, Shader.TileMode.CLAMP)) } catch (_: Exception) { }
-            }
-        }
-        row.addView(recLabel, LinearLayout.LayoutParams(-2, dp(23)))
-        target.addView(row, LinearLayout.LayoutParams(-1, -1))
-
-        recordingPulse?.cancel()
-        recordingPulse = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 760L
-            repeatCount = ValueAnimator.INFINITE
-            interpolator = LinearInterpolator()
-            addUpdateListener { animator ->
-                val phase = animator.animatedValue as Float
-                val wave = (sin(phase * Math.PI * 2.0).toFloat() + 1f) * 0.5f
-                dot.scaleX = 0.90f + wave * 0.10f
-                dot.scaleY = 0.90f + wave * 0.10f
-                dot.alpha = 0.72f + wave * 0.28f
-                halo.scaleX = 0.78f + phase * 0.48f
-                halo.scaleY = 0.78f + phase * 0.48f
-                halo.alpha = 0.60f * (1f - phase)
-                recLabel.alpha = 0.82f + wave * 0.18f
-            }
-            start()
-        }
-    }
-
-    private fun renderCustomizationPanel(target: LinearLayout, animateIntro: Boolean) {
-        target.orientation = LinearLayout.VERTICAL
-        target.gravity = Gravity.CENTER
-        target.setPadding(dp(18), dp(15), dp(18), dp(14))
-        val brand = TextView(this).apply {
-            text = if (animateIntro) "" else "DigitalLiquid"
-            textSize = 23f
-            letterSpacing = -0.025f
-            typeface = Typeface.create("sans-serif", Typeface.BOLD)
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-            isClickable = false
-        }
-        target.addView(brand, LinearLayout.LayoutParams(-1, dp(54)))
-        val customize = TextView(this).apply {
-            text = if (animateIntro) "" else "Tùy chỉnh"
-            textSize = 14f
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setTextColor(0xFFC6C6D0.toInt())
-            gravity = Gravity.CENTER
-            isClickable = false
-        }
-        target.addView(customize, LinearLayout.LayoutParams(-1, dp(34)))
-        panelBrandTitle = brand
-        if (animateIntro) startPanelTypewriter(brand, customize)
-    }
-
-    private fun startPanelTypewriter(brand: TextView, customize: TextView) {
-        panelTypewriter?.let { handler.removeCallbacks(it) }
-        val first = "DigitalLiquid"
-        val second = "Tùy chỉnh"
-        var index = 0
-        var deleting = false
-        var row = 0
-        val task = object : Runnable {
-            override fun run() {
-                if (!panelOpen || panelBrandTitle !== brand || content?.visibility != View.VISIBLE) return
-                val label = if (row == 0) first else second
-                val view = if (row == 0) brand else customize
-                index = if (deleting) (index - 1).coerceAtLeast(0) else (index + 1).coerceAtMost(label.length)
-                view.text = label.substring(0, index)
-                if (Build.VERSION.SDK_INT >= 31) {
-                    val blur = if (deleting) 0.65f else 0.35f
-                    try { view.setRenderEffect(RenderEffect.createBlurEffect(blur, 0f, Shader.TileMode.CLAMP)) } catch (_: Exception) { }
-                }
-                view.alpha = 0.76f + 0.24f * (index.toFloat() / label.length.coerceAtLeast(1))
-                view.translationX = if (deleting) dp(1).toFloat() else -dp(1).toFloat()
-                if (!deleting && index >= label.length) {
-                    deleting = true
-                    handler.postDelayed(this, 720L)
-                    return
-                }
-                if (deleting && index <= 0) {
-                    view.setRenderEffectCompatClear()
-                    view.translationX = 0f
-                    view.alpha = 1f
-                    deleting = false
-                    row = (row + 1) % 2
-                    handler.postDelayed(this, 180L)
-                    return
-                }
-                if (index in 0..label.length) {
-                    if (index == 0) view.setRenderEffectCompatClear()
-                    handler.postDelayed(this, if (deleting) 34L else 46L)
-                }
-            }
-        }
-        panelTypewriter = task
-        handler.postDelayed(task, 50L)
-    }
-
-    private fun syncPanelBackground() {
-        val host = backgroundHost ?: return
-        val scrim = backgroundScrim ?: return
-        val rootContent = content ?: return
-        val uriString = AppPrefs.get(this).getString(PANEL_BACKGROUND_URI, null)
-        val recordingControlOwnsOverlay = isRecordingControlExpanded()
-        if (recordingControlOwnsOverlay) closingPanelWithMedia = false
-        val shouldShow = !recordingControlOwnsOverlay && !faceUnlocking && !isFaceUnlockShrinking && !siriActive && !isSiriShrinking && (panelOpen || closingPanelWithMedia) && !uriString.isNullOrBlank()
-        if (!shouldShow) {
-            stopPanelMedia()
-            host.removeAllViews()
-            lastBackgroundUri = null
-            host.visibility = View.GONE
-            scrim.visibility = View.GONE
-            rootContent.visibility = View.VISIBLE
-            return
-        }
-
-        host.visibility = View.VISIBLE
-        scrim.visibility = View.GONE
-        host.elevation = dp(8).toFloat()
-        host.background = roundedBackground(30f, Color.BLACK)
-        host.clipToOutline = true
-        host.clipChildren = true
-        host.clipToPadding = true
-        rootContent.visibility = View.GONE
-        if (lastBackgroundUri == uriString && host.childCount > 0) {
-            host.bringToFront()
-            return
-        }
-        stopPanelMedia()
-        host.removeAllViews()
-        lastBackgroundUri = uriString
-        val uri = Uri.parse(uriString)
-        val savedKind = AppPrefs.get(this).getString(AppPrefs.PANEL_BACKGROUND_KIND, null)
-        val kind = savedKind ?: PanelBackgroundMedia.kind(this, uri)
-        if (kind == "video") {
-            val texture = TextureView(this)
-            panelTextureView = texture
-            texture.isOpaque = false
-            texture.isClickable = false
-            texture.isFocusable = false
-            texture.background = roundedBackground(30f, Color.BLACK)
-            texture.clipToOutline = true
-            texture.outlineProvider = ViewOutlineProvider.BACKGROUND
-            texture.elevation = dp(8).toFloat()
-            val generation = panelMediaGeneration
-            var localPlayer: MediaPlayer? = null
-            var localSurface: Surface? = null
-            texture.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                override fun onSurfaceTextureAvailable(surfaceTexture: android.graphics.SurfaceTexture, width: Int, height: Int) {
-                    if (generation != panelMediaGeneration || panelTextureView !== texture) return
-                    try {
-                        val surface = Surface(surfaceTexture)
-                        val player = MediaPlayer()
-                        localSurface = surface
-                        localPlayer = player
-                        panelVideoSurface = surface
-                        panelMediaPlayer = player
-                        player.setOnErrorListener { failed, _, _ ->
-                            if (generation == panelMediaGeneration && panelMediaPlayer === failed) {
-                                stopPanelMedia()
-                            } else {
-                                releaseDetachedPanelMedia(localPlayer, localSurface)
-                            }
-                            true
-                        }
-                        player.setOnVideoSizeChangedListener { _, videoWidth, videoHeight ->
-                            if (generation == panelMediaGeneration && panelTextureView === texture) {
-                                applyVideoCenterCrop(texture, videoWidth, videoHeight)
-                            }
-                        }
-                        player.setOnPreparedListener { prepared ->
-                            if (generation != panelMediaGeneration || panelTextureView !== texture || panelMediaPlayer !== prepared) {
-                                releaseDetachedPanelMedia(localPlayer, localSurface)
-                                return@setOnPreparedListener
-                            }
-                            try {
-                                applyVideoCenterCrop(texture, prepared.videoWidth, prepared.videoHeight)
-                                prepared.start()
-                            } catch (_: Exception) {
-                                stopPanelMedia()
-                            }
-                        }
-                        player.setDataSource(this@IslandService, uri)
-                        player.setSurface(surface)
-                        player.isLooping = true
-                        player.setVolume(0f, 0f)
-                        player.prepareAsync()
-                    } catch (_: Exception) {
-                        if (generation == panelMediaGeneration) stopPanelMedia()
-                        else releaseDetachedPanelMedia(localPlayer, localSurface)
-                    }
-                }
-                override fun onSurfaceTextureSizeChanged(surfaceTexture: android.graphics.SurfaceTexture, width: Int, height: Int) {
-                    if (generation != panelMediaGeneration || panelTextureView !== texture) return
-                    val player = localPlayer ?: return
-                    try { applyVideoCenterCrop(texture, player.videoWidth, player.videoHeight) } catch (_: Exception) { }
-                }
-                override fun onSurfaceTextureDestroyed(surfaceTexture: android.graphics.SurfaceTexture): Boolean {
-                    if (generation == panelMediaGeneration && panelTextureView === texture) stopPanelMedia()
-                    else releaseDetachedPanelMedia(localPlayer, localSurface)
-                    return true
-                }
-                override fun onSurfaceTextureUpdated(surfaceTexture: android.graphics.SurfaceTexture) = Unit
-            }
-            host.addView(texture, FrameLayout.LayoutParams(-1, -1))
-        } else {
-            val image = ImageView(this).apply {
-                scaleType = ImageView.ScaleType.CENTER_CROP
-                setBackgroundColor(Color.BLACK)
-                contentDescription = ""
-                isClickable = false
-                isFocusable = false
-                try { setImageURI(uri) } catch (_: Exception) { }
-            }
-            host.addView(image, FrameLayout.LayoutParams(-1, -1))
-        }
-        host.bringToFront()
-    }
-
-    private fun applyVideoCenterCrop(texture: TextureView, videoWidth: Int, videoHeight: Int) {
-        if (videoWidth <= 0 || videoHeight <= 0 || texture.width <= 0 || texture.height <= 0) return
-        val viewWidth = texture.width.toFloat()
-        val viewHeight = texture.height.toFloat()
-        val videoAspect = videoWidth.toFloat() / videoHeight.toFloat()
-        val viewAspect = viewWidth / viewHeight
-        val scaleX = if (videoAspect > viewAspect) videoAspect / viewAspect else 1f
-        val scaleY = if (videoAspect < viewAspect) viewAspect / videoAspect else 1f
-        val matrix = Matrix()
-        matrix.setScale(scaleX, scaleY, viewWidth / 2f, viewHeight / 2f)
-        texture.setTransform(matrix)
-    }
-
-    private fun releaseDetachedPanelMedia(player: MediaPlayer?, surface: Surface?) {
-        if (player != null && player !== panelMediaPlayer) {
-            try { player.setOnPreparedListener(null) } catch (_: Exception) { }
-            try { player.setOnVideoSizeChangedListener(null) } catch (_: Exception) { }
-            try { player.setOnErrorListener(null) } catch (_: Exception) { }
-            try { player.stop() } catch (_: Exception) { }
-            try { player.reset() } catch (_: Exception) { }
-            try { player.release() } catch (_: Exception) { }
-        }
-        if (surface != null && surface !== panelVideoSurface) try { surface.release() } catch (_: Exception) { }
-    }
-
-    private fun stopPanelMedia() {
-        panelMediaGeneration++
-        try { panelMediaPlayer?.setOnPreparedListener(null) } catch (_: Exception) { }
-        try { panelMediaPlayer?.setOnVideoSizeChangedListener(null) } catch (_: Exception) { }
-        try { panelMediaPlayer?.setOnErrorListener(null) } catch (_: Exception) { }
-        try { panelMediaPlayer?.stop() } catch (_: Exception) { }
-        try { panelMediaPlayer?.reset() } catch (_: Exception) { }
-        try { panelMediaPlayer?.release() } catch (_: Exception) { }
-        panelMediaPlayer = null
-        try { panelVideoSurface?.release() } catch (_: Exception) { }
-        panelVideoSurface = null
-        panelTextureView = null
-    }
-
-    private fun TextView.setRenderEffectCompatClear() {
-        if (Build.VERSION.SDK_INT >= 31) {
-            try { setRenderEffect(null) } catch (_: Exception) { }
-        }
-    }
-
-    private fun animateToTargetSize(onEnd: (() -> Unit)? = null) {
-        val root = islandRoot
-        val host = overlayHost
-        val lp = params
-        if (root == null || host == null || lp == null) {
-            onEnd?.invoke()
-            return
-        }
-        resizeAnimator?.cancel()
-        updateExpandedRadius()
-
-        val ghostActive = isFaceUnlockShrinking || isSiriShrinking || siriActive
-        val opening = panelOpen || faceUnlocking || siriActive
-        val startWindowWidth = lp.width.toFloat()
-        val startHeight = lp.height.toFloat()
-        val startX = lp.x.toFloat()
-        val startY = lp.y.toFloat()
-        val startPillWidth = (root.width.takeIf { it > 0 } ?: (lp.width - 2 * hostInsetPx)).toFloat()
-        val endPillWidth = targetWidth().toFloat()
-        val endWidth = targetWindowWidth().toFloat()
-        val endHeight = targetHeight().toFloat()
-        val endX = windowX().toFloat()
-        val endY = windowY().toFloat()
-        val startInset = hostInsetPx.toFloat()
-        val endInset = targetHostInsetPx().toFloat()
-        val startMorph = currentMorphProgress
-        val targetMorph = targetMorph()
-        lp.gravity = windowGravity()
-
-        if (AppPrefs.get(this).getBoolean(AppPrefs.REDUCE_MOTION, false)) {
-            currentMorphProgress = targetMorph
-            lp.width = endWidth.roundToInt()
-            lp.height = endHeight.roundToInt()
-            lp.x = endX.roundToInt()
-            lp.y = endY.roundToInt()
-            hostInsetPx = endInset.roundToInt()
-            faceGhostsActive = false
-            syncOverlayChildBounds(endPillWidth.roundToInt(), endHeight.roundToInt())
-            applyRootCorner(endPillWidth.roundToInt(), endHeight.roundToInt())
-            siriView?.setMorphProgress(currentMorphProgress)
-            root.scaleX = 1f
-            root.scaleY = 1f
-            updateOverlayWindow(lp)
-            if (closingPanelWithMedia) {
-                closingPanelWithMedia = false
-                syncPanelBackground()
-            }
-            applyNativeActivityVisibility()
-            onEnd?.invoke()
-            return
-        }
-
-        root.alpha = 0.985f
-        faceGhostsActive = ghostActive
-
-        var canceled = false
-        val sWidth = displayWidthPx().toFloat()
-        resizeAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = when {
-                siriCardExpanded -> 440L
-                siriActive -> SIRI_EXPAND_MS
-                isSiriShrinking -> SIRI_SHRINK_MS
-                faceUnlocking -> FACE_EXPAND_MS
-                isFaceUnlockShrinking -> FACE_SHRINK_MS
-                opening -> 420L
-                else -> 460L
-            }
-            interpolator = PathInterpolator(0.22f, 1.18f, 0.34f, 1f)
-            addUpdateListener { animator ->
-                val t = animator.animatedValue as Float
-                val tc = t.coerceIn(0f, 1f)
-                currentMorphProgress = lerp(startMorph, targetMorph, t)
-
-                lp.width = (startWindowWidth + (endWidth - startWindowWidth) * t).roundToInt().coerceAtLeast(1)
-                lp.height = (startHeight + (endHeight - startHeight) * t).roundToInt().coerceAtLeast(1)
-                lp.x = (startX + (endX - startX) * t).roundToInt()
-                lp.y = (startY + (endY - startY) * t).roundToInt()
-                hostInsetPx = (startInset + (endInset - startInset) * tc).roundToInt()
-
-                val pillW = (startPillWidth + (endPillWidth - startPillWidth) * t).roundToInt().coerceAtLeast(1)
-                val pillH = (startHeight + (endHeight - startHeight) * t).roundToInt().coerceAtLeast(1)
-
-                syncOverlayChildBounds(pillW, pillH)
-                applyRootCorner(pillW, pillH)
-                siriView?.setMorphProgress(currentMorphProgress.coerceIn(0f, 1f))
-                siriView?.updateWindowPosition(((sWidth - pillW) / 2f).coerceAtLeast(0f), lp.y.toFloat())
-                root.scaleX = 1f
-                root.scaleY = 1f
-
-                if (ghostActive) {
-                    updateGhostTrail(tc, startPillWidth, endPillWidth, startHeight, endHeight, startMorph, targetMorph)
-                }
-                updateOverlayWindow(lp)
-            }
-            addListener(object : AnimatorListenerAdapter() {
-                override fun onAnimationCancel(animation: Animator) {
-                    canceled = true
-                }
-
-                override fun onAnimationEnd(animation: Animator) {
-                    if (canceled) return
-                    currentMorphProgress = targetMorph
-                    hostInsetPx = endInset.roundToInt()
-                    faceGhostsActive = false
-                    syncOverlayChildBounds(endPillWidth.roundToInt(), endHeight.roundToInt())
-                    applyRootCorner(endPillWidth.roundToInt(), endHeight.roundToInt())
-                    siriView?.setMorphProgress(currentMorphProgress.coerceIn(0f, 1f))
-                    siriView?.updateWindowPosition(((sWidth - endPillWidth) / 2f).coerceAtLeast(0f), endY)
-                    root.scaleX = 1f
-                    root.scaleY = 1f
-                    root.alpha = 1f
-                    ghostLayers.forEach { it.visibility = View.INVISIBLE }
-                    if (closingPanelWithMedia) {
-                        closingPanelWithMedia = false
-                        syncPanelBackground()
-                    }
-                    applyNativeActivityVisibility()
-                    onEnd?.invoke()
-                }
-            })
-            start()
-        }
-    }
-
-    private fun updateGhostTrail(
-        t: Float, startW: Float, endW: Float, startH: Float, endH: Float,
-        startMorph: Float, endMorph: Float
-    ) {
-        val envelope = sin(Math.PI * t).toFloat()
-        ghostLayers.forEachIndexed { i, ghost ->
-            val tl = (t - FACE_GHOST_LAG * (i + 1)).coerceIn(0f, 1f)
-            val gw = lerp(startW, endW, tl).roundToInt().coerceAtLeast(1)
-            val gh = lerp(startH, endH, tl).roundToInt().coerceAtLeast(1)
-            val gm = lerp(startMorph, endMorph, tl)
-            val gr = lerp(gh / 2f, dp(expandedRadiusDp), gm).coerceIn(0f, min(gw, gh) / 2f)
-            ghost.layoutParams = FrameLayout.LayoutParams(gw, gh, Gravity.CENTER)
-            val bg = ghost.background as? GradientDrawable
-            if (bg != null) bg.cornerRadius = gr else ghost.background = ghostCapsule(gr)
-            ghost.translationX = 0f
-            ghost.translationY = 0f
-            ghost.alpha = FACE_GHOST_ALPHA[i.coerceAtMost(FACE_GHOST_ALPHA.lastIndex)] * envelope
-            ghost.visibility = View.VISIBLE
-        }
-    }
-
-    private fun roundedBackground(radiusDp: Float, color: Int) = GradientDrawable().apply {
-        shape = GradientDrawable.RECTANGLE
-        setColor(color)
-        cornerRadius = dp(radiusDp.roundToInt()).toFloat()
-    }
-
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).roundToInt()
-    private fun dp(value: Float): Float = value * resources.displayMetrics.density
-    override fun onBind(intent: Intent?): IBinder? = null
-
-    private fun installedVersionCode(): Int = runCatching {
-        val info = packageManager.getPackageInfo(packageName, 0)
-        if (Build.VERSION.SDK_INT >= 28) info.longVersionCode.toInt() else legacyVersionCode(info)
-    }.getOrDefault(0)
-
-    @Suppress("DEPRECATION")
-    private fun legacyVersionCode(info: android.content.pm.PackageInfo): Int = info.versionCode
-
-    private fun showTransientServiceNotice(message: String) {
-        if (!showCustomAppNotice("Trạng thái DigitalLiquid", message, "", force = true)) {
-            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
-        }
-    }
-
-    private fun showCustomAppNotice(title: String, message: String, url: String, force: Boolean = false): Boolean {
-        val host = overlayHost ?: return false
-        if (!usingAccessibilityOverlay || (!force && !AppPrefs.get(this).getBoolean(AppPrefs.CUSTOM_APP_NOTICES, true))) return false
-        dismissCustomAppNotice(animate = false)
-
-        val card = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(17), dp(15), dp(17), dp(15))
-            background = GradientDrawable(
-                GradientDrawable.Orientation.TL_BR,
-                intArrayOf(0xF51B1D28.toInt(), 0xF20A0C13.toInt())
-            ).apply {
-                cornerRadius = dp(25).toFloat()
-                setStroke(dp(1), 0x55FFFFFF)
-            }
-            alpha = 0f
-            translationY = -dp(10).toFloat()
-            elevation = dp(16).toFloat()
-            isClickable = true
-            isFocusable = false
-        }
-        val eyebrow = TextView(this).apply {
-            text = "DIGITALLIQUID · THÔNG BÁO"
-            textSize = 9.5f
-            letterSpacing = 0.08f
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setTextColor(0xFFB9AEFF.toInt())
-        }
-        card.addView(eyebrow)
-        card.addView(TextView(this).apply {
-            text = title.ifBlank { "Thông báo DigitalLiquid" }
-            textSize = 16f
-            typeface = Typeface.create("sans-serif", Typeface.BOLD)
-            setTextColor(Color.WHITE)
-            maxLines = 2
-        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(7) })
-        card.addView(TextView(this).apply {
-            text = message
-            textSize = 13f
-            setTextColor(0xFFD2D4DF.toInt())
-            setLineSpacing(dp(2).toFloat(), 1.08f)
-            maxLines = 5
-        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(5) })
-        val bottom = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        bottom.addView(TextView(this).apply {
-            text = if (url.startsWith("https://") || url.startsWith("http://")) "MỞ LIÊN KẾT ↗" else "ĐÃ NHẬN"
-            textSize = 10f
-            letterSpacing = 0.03f
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setTextColor(0xFFE2DCFF.toInt())
-        }, LinearLayout.LayoutParams(0, dp(28), 1f))
-        bottom.addView(TextView(this).apply {
-            text = "×"
-            textSize = 22f
-            gravity = Gravity.CENTER
-            setTextColor(0xFFB8BBC9.toInt())
-            setPadding(dp(8), 0, dp(3), 0)
-            setOnClickListener { dismissCustomAppNotice() }
-        }, LinearLayout.LayoutParams(dp(32), dp(30)))
-        card.addView(bottom, LinearLayout.LayoutParams(-1, dp(31)).apply { topMargin = dp(8) })
-
-        card.setOnClickListener {
-            dismissCustomAppNotice()
-            val target = url.trim()
-            try {
-                val intent = if (target.startsWith("https://") || target.startsWith("http://")) {
-                    Intent(Intent.ACTION_VIEW, Uri.parse(target))
-                } else Intent(this, MainActivity::class.java)
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                startActivity(intent)
-            } catch (_: Exception) { }
-        }
-        val lp = WindowManager.LayoutParams(
-            minOf(dp(360), (displayWidthPx() - dp(20)).coerceAtLeast(dp(240))),
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            overlayWindowType(),
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            x = 0
-            y = statusBarHeightPx() + dp(10)
-        }
-        return try {
-            windowManager.addView(card, lp)
-            customNoticeOverlay = card
-            card.animate().alpha(1f).translationY(0f).setDuration(260L).start()
-            val task = Runnable { dismissCustomAppNotice() }
-            customNoticeDismissTask = task
-            handler.postDelayed(task, CUSTOM_NOTICE_DURATION_MS)
-            true
-        } catch (_: Exception) {
-            false
-        }
-    }
-
-    private fun dismissCustomAppNotice(animate: Boolean = true) {
-        customNoticeDismissTask?.let { handler.removeCallbacks(it) }
-        customNoticeDismissTask = null
-        val current = customNoticeOverlay ?: return
-        customNoticeOverlay = null
-        if (animate) {
-            current.animate().alpha(0f).translationY(-dp(8).toFloat()).setDuration(150L).withEndAction {
-                try { windowManager.removeView(current) } catch (_: Exception) { }
-            }.start()
-        } else {
-            try { windowManager.removeView(current) } catch (_: Exception) { }
-        }
-    }
-
-    private fun remoteNotificationsManager(): NotificationManager? {
-        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return null
-        if (Build.VERSION.SDK_INT >= 26 && manager.getNotificationChannel(REMOTE_NOTICE_CHANNEL) == null) {
-            manager.createNotificationChannel(NotificationChannel(REMOTE_NOTICE_CHANNEL, "DigitalLiquid Admin", NotificationManager.IMPORTANCE_HIGH).apply {
-                description = "Thông báo, bảo trì và cập nhật từ quản trị viên DigitalLiquid"
-            })
-        }
-        return manager
-    }
-
-    private fun postRemoteAnnouncement(control: OnlineControlManager.RemoteControl) {
-        val noticeId = control.announcementId.ifBlank { control.announcementTitle + "|" + control.announcementMessage }
-        val noticePrefs = getSharedPreferences(REMOTE_NOTICE_PREFS, MODE_PRIVATE)
-        if (noticePrefs.getString(REMOTE_NOTICE_LAST_ID, "") == noticeId) return
-        if (showCustomAppNotice(control.announcementTitle, control.announcementMessage, control.announcementUrl)) {
-            noticePrefs.edit().putString(REMOTE_NOTICE_LAST_ID, noticeId).apply()
-            return
-        }
-        val openIntent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-        }
-        val pending = PendingIntent.getActivity(
-            this, REMOTE_ANNOUNCEMENT_NOTIFICATION_ID, openIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        val notification = Notification.Builder(this, REMOTE_NOTICE_CHANNEL)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle(control.announcementTitle.ifBlank { "Thông báo DigitalLiquid" })
-            .setContentText(control.announcementMessage)
-            .setStyle(Notification.BigTextStyle().bigText(control.announcementMessage))
-            .setContentIntent(pending)
-            .setAutoCancel(true)
-            .setOnlyAlertOnce(true)
-            .build()
-        try {
-            remoteNotificationsManager()?.notify(REMOTE_ANNOUNCEMENT_NOTIFICATION_ID, notification)
-            noticePrefs.edit().putString(REMOTE_NOTICE_LAST_ID, noticeId).apply()
-        } catch (_: Exception) { }
-    }
-
-    private fun postRemotePolicyNotice(control: OnlineControlManager.RemoteControl, localVersion: Int) {
-        val title: String
-        val message: String
-        val targetUrl: String
-        when {
-            !control.signerMatches -> {
-                title = "Bản dựng không được xác minh"
-                message = "Chữ ký APK không khớp với chứng thư được quản trị viên cho phép. Hãy cài bản chính thức."
-                targetUrl = control.downloadUrl
-            }
-            !control.appEnabled -> {
-                title = "DigitalLiquid đã bị vô hiệu hóa"
-                message = "Quản trị viên đã tắt quyền sử dụng phiên bản này."
-                targetUrl = ""
-            }
-            control.maintenanceEnabled -> {
-                title = "DigitalLiquid đang bảo trì"
-                message = control.maintenanceMessage
-                targetUrl = ""
-            }
-            control.minVersionCode > localVersion && control.downloadUrl.isNotBlank() -> {
-                title = "Cần cập nhật DigitalLiquid"
-                message = "Phiên bản này đã ngừng hỗ trợ. Mở liên kết để tải bản cập nhật mới."
-                targetUrl = control.downloadUrl
-            }
-            else -> return
-        }
-        val openIntent = try {
-            (if (targetUrl.startsWith("https://") || targetUrl.startsWith("http://")) {
-                Intent(Intent.ACTION_VIEW, Uri.parse(targetUrl))
-            } else {
-                Intent(this, MainActivity::class.java)
-            }).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            }
-        } catch (_: Exception) {
-            Intent(this, MainActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            }
-        }
-        val pending = PendingIntent.getActivity(
-            this, REMOTE_POLICY_NOTIFICATION_ID, openIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        val notification = Notification.Builder(this, REMOTE_NOTICE_CHANNEL)
-            .setSmallIcon(android.R.drawable.ic_dialog_alert)
-            .setContentTitle(title)
-            .setContentText(message)
-            .setStyle(Notification.BigTextStyle().bigText(message))
-            .setContentIntent(pending)
-            .setAutoCancel(true)
-            .setOnlyAlertOnce(true)
-            .build()
-        try { remoteNotificationsManager()?.notify(REMOTE_POLICY_NOTIFICATION_ID, notification) } catch (_: Exception) { }
-    }
-
-    override fun onDestroy() {
-        handler.removeCallbacks(keyAuthorizationWatchdog)
-        handler.removeCallbacks(onlinePolicyWatchdog)
-        handler.removeCallbacks(faceShrinkSafety)
+    private fun abortSiri() {
+        if (!siriActive && !isSiriShrinking) return
         handler.removeCallbacks(siriShrinkSafety)
-        handler.removeCallbacks(appSwitchModeExitRunnable)
-        handler.removeCallbacks(ringerTransitionHideReset)
-        handler.removeCallbacks(geometryRefreshRunnable)
-        handler.removeCallbacks(singleTapRunnable)
-        handler.removeCallbacks(longPressRunnable)
-        
-        try { displayManager.unregisterDisplayListener(displayListener) } catch (_: Exception) { }
-        if (Build.VERSION.SDK_INT >= 24 && audioRecordingCallback != null) {
-            try { audioManager.unregisterAudioRecordingCallback(audioRecordingCallback) } catch (_: Exception) { }
-        }
-
-        stopSiriDropletFloatAnimation()
-        instance = null
-        AppPrefs.get(this).edit().putBoolean(AppPrefs.SERVICE_ENABLED, false).apply()
         resizeAnimator?.cancel()
-        wobbleAnimator?.cancel()
-        recordingPulse?.cancel()
-        panelTypewriter?.let { handler.removeCallbacks(it) }
-        recordingTextTypewriter?.let { handler.removeCallbacks(it) }
-        recordingTimerTask?.let { handler.removeCallbacks(it) }
-        faceView?.release()
-        faceView = null
+        stopSiriDropletFloatAnimation()
         siriView = null
         siriUiContainer = null
-        dismissCustomAppNotice(animate = false)
-        stopPanelMedia()
-        try { unregisterReceiver(configReceiver) } catch (_: Exception) { }
-        try { unregisterReceiver(orientationReceiver) } catch (_: Exception) { }
-        try { unlockReceiver.let { unregisterReceiver(it) } } catch (_: Exception) { }
-        try { miuiScreenRecorderReceiver.let { unregisterReceiver(it) } } catch (_: Exception) { }
-        try { soundNotificationTransitionReceiver.let { unregisterReceiver(it) } } catch (_: Exception) { }
-        overlayHost?.let { try { windowManager.removeView(it) } catch (_: Exception) { } }
-        overlayHost = null
-        islandRoot = null
-        ghostLayers.clear()
-        handler.removeCallbacksAndMessages(null)
-        super.onDestroy()
+        siriActive = false
+        siriCardExpanded = false
+        isSiriShrinking = false
+        faceGhostsActive = false
+        currentMorphProgress = 0f
+        render(animateSize = false)
+    }
+
+    private fun openDefaultAssistant() {
+        val roleHeld = if (Build.VERSION.SDK_INT >= 29) {
+            try {
+                val manager = getSystemService(android.app.role.RoleManager::class.java)
+                manager != null && manager.isRoleAvailable(android.app.role.RoleManager.ROLE_ASSISTANT) &&
+                    manager.isRoleHeld(android.app.role.RoleManager.ROLE_ASSISTANT)
+            } catch (_: Exception) { false }
+        } else {
+            try {
+                val selected = android.provider.Settings.Secure.getString(contentResolver, "voice_interaction_service").orEmpty()
+                selected.contains("DigitalLiquidVoiceInteractionService", ignoreCase = true)
+            } catch (_: Exception) { false }
+        }
+        val launch = if (roleHeld) {
+            Intent(Intent.ACTION_ASSIST).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        } else {
+            Intent(this, AssistantFallbackActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        try {
+            startActivity(launch)
+        } catch (_: Exception) {
+            try { startActivity(Intent(this, AssistantFallbackActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+            catch (_: Exception) { showTransientServiceNotice("Không thể mở giao diện trợ lý trên thiết bị này.") }
+        }
+    }
+
+    private val longPressRunnable = Runnable {
+        handler.removeCallbacks(singleTapRunnable)
+        if (faceUnlocking || isFaceUnlockShrinking || siriActive || isSiriShrinking) return@Runnable
+        longPressTriggered = true
+        islandRoot?.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        if (screenRecording) {
+            recordingExpanded = !recordingExpanded
+            panelOpen = recordingExpanded
+            playPanelIntro = false
+            render(animateSize = true)
+        } else if (panelOpen) closeCustomizationPanel() else openCustomizationPanel()
+    }
+
+    private fun wobblePill() {
+        val root = islandRoot ?: return
+        if (panelOpen || faceUnlocking || isFaceUnlockShrinking || siriActive || isSiriShrinking) return
+        val motionPrefs = AppPrefs.get(this)
+        if (motionPrefs.getBoolean(AppPrefs.REDUCE_MOTION, false) ||
+            !motionPrefs.getBoolean(AppPrefs.TAP_WOBBLE, true)) {
+            root.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+            return
+        }
+
+        val previous = wobbleAnimator
+        val wasRunning = previous?.isRunning == true
+        val startOffset = if (wasRunning) root.translationX else 0f
+        val startOffsetY = if (wasRunning) root.translationY else 0f
+        val startGhostX = ghostLayers.map { if (wasRunning) it.translationX else 0f }
+        val startGhostY = ghostLayers.map { if (wasRunning) it.translationY else 0f }
+        val baseAlphas = floatArrayOf(0.35f, 0.28f, 0.20f, 0.14f, 0.09f, 0.05f, 0.03f)
+        val startGhostAlpha = ghostLayers.mapIndexed { i, ghost ->
+            if (wasRunning) ghost.alpha else baseAlphas[i]
+        }
+        if (previous != null) {
+            previous.removeAllUpdateListeners()
+            previous.removeAllListeners()
+            previous.cancel()
+        }
+        wobbleAnimator = null
+        if (!wasRunning) {
+            root.translationX = 0f
+            root.translationY = 0f
+        }
+
+        val distance = dp(5.5f + Random.nextFloat() * 2f)
+        val swingDirection = if (Random.nextBoolean()) -1f else 1f
+        val lags = floatArrayOf(0.012f, 0.024f, 0.036f, 0.048f, 0.060f, 0.072f, 0.084f)
+        val ghostAlphaOrder = baseAlphas
+        ghostLayers.forEachIndexed { index, ghost ->
+            if (!wasRunning) {
+                ghost.translationX = 0f
+                ghost.translationY = 0f
+                ghost.alpha = ghostAlphaOrder[index]
+            }
+            ghost.visibility = View.VISIBLE
+        }
+        glassView?.setMotionBlur(0f, swingDirection)
+
+        fun smooth(progress: Float): Float {
+            val t = progress.coerceIn(0f, 1f)
+            return t * t * (3f - 2f * t)
+        }
+        fun waveAt(progress: Float): Float {
+            val t = progress.coerceIn(0f, 1f)
+            val settle = if (t < 0.66f) 1f else {
+                val u = ((t - 0.66f) / 0.34f).coerceIn(0f, 1f)
+                1f - u * u * (3f - 2f * u)
+            }
+            val envelope = kotlin.math.exp(-1.0f * t) * settle
+            val phase = t * Math.PI.toFloat() * 4f
+            return swingDirection * distance * envelope * sin(phase)
+        }
+        fun offsetAt(progress: Float): Float {
+            val t = progress.coerceIn(0f, 1f)
+            return startOffset * (1f - smooth(t)) + waveAt(t)
+        }
+
+        var lastOffset = startOffset
+        val animator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 460L
+            interpolator = LinearInterpolator()
+            addUpdateListener { frame ->
+                val t = frame.animatedValue as Float
+                val offset = offsetAt(t)
+                root.translationX = offset
+                root.translationY = startOffsetY * (1f - smooth(t)) +
+                    (abs(waveAt(t)) / distance.coerceAtLeast(1f)) * dp(0.3f) * sin(t * Math.PI.toFloat() * 2f)
+                ghostLayers.forEachIndexed { index, ghost ->
+                    val delayed = waveAt((t - lags[index]).coerceAtLeast(0f))
+                    ghost.translationX = startGhostX[index] * (1f - smooth(t)) + delayed
+                    ghost.translationY = startGhostY[index] * (1f - smooth(t)) +
+                        (index + 1) * dp(0.08f) * (1f - smooth(t))
+                    val tailFade = if (t < 0.62f) 1f else (1f - (t - 0.62f) / 0.38f).coerceIn(0f, 1f)
+                    ghost.alpha = startGhostAlpha[index] * (1f - smooth(t)) +
+                        ghostAlphaOrder[index] * tailFade * smooth(t)
+                }
+                val travel = abs(offset - lastOffset)
+                val direction = if (offset < lastOffset) -1f else 1f
+                val normalizedVelocity = (travel / dp(3.5f).coerceAtLeast(1f)).coerceIn(0f, 1f)
+                val blurAllowed = AppPrefs.get(this@IslandService).getBoolean(AppPrefs.MOTION_BLUR, true)
+                glassView?.setMotionBlur(if (blurAllowed) normalizedVelocity * 0.55f else 0f, direction)
+                lastOffset = offset
+            }
+        }
+        wobbleAnimator = animator
+        animator.addListener(object : AnimatorListenerAdapter() {
+            override fun onAnimationEnd(animation: Animator) {
+                if (wobbleAnimator !== animator) return
+                root.translationX = 0f
+                root.translationY = 0f
+                root.scaleX = 1f
+                root.scaleY = 1f
+                ghostLayers.forEach { ghost ->
+                    ghost.translationX = 0f
+                    ghost.translationY = 0f
+                    ghost.alpha = 0f
+                    ghost.visibility = View.INVISIBLE
+                }
+                glassView?.setMotionBlur(0f, 1f)
+                wobbleAnimator = null
+            }
+        })
+        animator.start()
+    }
+
+    private fun resetWobble() {
+        val animator = wobbleAnimator
+        wobbleAnimator = null
+        if (animator != null) {
+            animator.removeAllUpdateListeners()
+            animator.removeAllListeners()
+            animator.cancel()
+        }
+        islandRoot?.let { it.translationX = 0f; it.translationY = 0f; it.scaleX = 1f; it.scaleY = 1f }
+        ghostLayers.forEach { ghost ->
+            ghost.translationX = 0f
+            ghost.translationY = 0f
+            ghost.alpha = 0f
+            ghost.visibility = View.INVISIBLE
+        }
+        glassView?.setMotionBlur(0f, 1f)
+    }
+
+    private fun openCustomizationPanel() {
+        if (panelOpen || faceUnlocking || isFaceUnlockShrinking || siriActive || isSiriShrinking) return
+        closingPanelWithMedia = false
+        panelOpen = true
+        playPanelIntro = true
+        render(animateSize = true)
+    }
+
+    private fun closeCustomizationPanel() {
+        if (!panelOpen) return
+        closingPanelWithMedia = !AppPrefs.get(this).getString(PANEL_BACKGROUND_URI, null).isNullOrBlank()
+        panelTypewriter?.let { handler.removeCallbacks(it) }
+        panelOpen = false
+        panelTypewriter = null
+        panelBrandTitle = null
+        render(animateSize = true)
+    }
+
+    private fun targetWidth(): Int {
+        val density = resources.displayMetrics.density.coerceAtLeast(1f)
+        val screenWidthPx = displayWidthPx().coerceAtLeast(dp(180))
+        val screenWidthDp = (screenWidthPx / density).toInt().coerceAtLeast(180)
+        if (siriCardExpanded) return min(dp(348), (screenWidthPx - dp(20)).coerceAtLeast(dp(220)))
+        if (siriActive) return dp(SIRI_ORB_WIDTH_DP)
+        if (faceUnlocking) return dp(FACE_SIZE_DP)
+        if (isRecordingControlExpanded()) return (screenWidthPx - dp(12)).coerceAtLeast(dp(180))
+        val desiredDp = when {
+            panelOpen && screenRecording -> 238
+            panelOpen -> screenWidthDp - 24
+            screenRecording -> maxOf(widthDp, 178)
+            else -> widthDp
+        }
+        val maxWidthPx = (screenWidthPx - dp(12)).coerceAtLeast(dp(36))
+        return dp(desiredDp).coerceIn(dp(72).coerceAtMost(maxWidthPx), maxWidthPx)
+    }
+
+    private fun targetHeight(): Int = when {
+        siriCardExpanded -> dp(SIRI_CARD_HEIGHT_DP)
+        siriActive -> dp(SIRI_ORB_HEIGHT_DP)
+        faceUnlocking -> dp(FACE_SIZE_DP)
+        isRecordingControlExpanded() -> maxOf(statusBarHeightPx() + dp(24), dp(50))
+        panelOpen && screenRecording -> dp(66)
+        panelOpen -> dp(252)
+        screenRecording -> maxOf(heightDp, 42)
+        else -> dp(heightDp)
+    }
+
+    private fun gravityForAlignment(): Int = when (alignment) {
+        "left" -> Gravity.TOP or Gravity.LEFT
+        "right" -> Gravity.TOP or Gravity.RIGHT
+        else -> Gravity.TOP or Gravity.CENTER_HORIZONTAL
+    }
+
+    private fun horizontalOffset(): Int = 0
+
+    private fun displayWidthPx(): Int = if (Build.VERSION.SDK_INT >= 30) {
+        try { windowManager.currentWindowMetrics.bounds.width() } catch (_: Exception) { resources.displayMetrics.widthPixels }
+    } else resources.displayMetrics.widthPixels
+
+    private fun displayHeightPx(): Int = if (Build.VERSION.SDK_INT >= 30) {
+        try { windowManager.currentWindowMetrics.bounds.height() } catch (_: Exception) { resources.displayMetrics.heightPixels }
+    } else resources.displayMetrics.heightPixels
+
+    private fun currentCameraCutoutBounds(): Rect? {
+        fun largest(rects: List<Rect>?): Rect? = rects
+            ?.asSequence()
+            ?.filterNot { it.isEmpty }
+            ?.maxByOrNull { it.width().toLong() * it.height().toLong() }
+            ?.let { Rect(it) }
+
+        if (Build.VERSION.SDK_INT >= 30) {
+            val metricsCutout = try {
+                largest(windowManager.currentWindowMetrics.windowInsets.displayCutout?.boundingRects)
+            } catch (_: Exception) { null }
+            if (metricsCutout != null) return metricsCutout
+        }
+        if (Build.VERSION.SDK_INT >= 28) {
+            val viewCutout = try {
+                largest(overlayHost?.rootWindowInsets?.displayCutout?.boundingRects)
+                    ?: largest(islandRoot?.rootWindowInsets?.displayCutout?.boundingRects)
+            } catch (_: Exception) { null }
+            if (viewCutout != null) return viewCutout
+        }
+        return null
+    }
+
+    private fun isPortraitWithTopCutout(): Boolean {
+        if (resources.configuration.orientation != Configuration.ORIENTATION_PORTRAIT) return false
+        val rect = currentCameraCutoutBounds() ?: return false
+        return rect.top <= dp(18) && rect.centerY() <= dp(90)
+    }
+
+    private fun positionX(windowWidth: Int = targetWidth(), expanded: Boolean = panelOpen): Int {
+        if (isRecordingControlExpanded() || siriCardExpanded) return 0
+        if (isPortraitWithTopCutout()) {
+            val cutout = currentCameraCutoutBounds()
+            if (cutout != null) return cutout.centerX() - displayWidthPx() / 2
+        }
+        return horizontalOffset()
+    }
+
+    private fun positionY(windowHeight: Int = targetHeight(), expanded: Boolean = panelOpen): Int {
+        if (isRecordingControlExpanded()) return 0
+        return overlayTopY()
     }
 
     companion object {
