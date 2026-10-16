@@ -2,6 +2,8 @@ package com.digitalsmod.digitalliquid
 
 import android.animation.ValueAnimator
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
@@ -21,9 +23,9 @@ import kotlin.math.sin
 /**
  * Thấu kính quang học Siri Liquid Glass chuẩn 1:1:
  * - Chia chuẩn 1/2: Nửa trên đen liền khối với Dynamic Island, nửa dưới là chất liệu kính xám khói trong suốt.
- * - Viền mép dưới màu xám khói ánh bạc phản chiếu (Smoked Silver Rim), không bị trong suốt rỗng ruột.
- * - Cho phép nhìn rõ lớp kính thủy tinh lướt trên các icon ứng dụng.
- * - Dải sóng cầu vồng laser đa tần số nhấp nhô hữu cơ ở ranh giới 1/2.
+ * - Viền mép dưới màu xám khói ánh bạc phản chiếu (Smoked Silver Rim), nhìn rõ lớp kính phủ trên icon app.
+ * - Dải sóng laser Apple đa tần số nhấp nhô hữu cơ ở ranh giới 1/2.
+ * - Tương thích 100% với các dịch vụ gọi hàm setListening trong hệ thống.
  */
 class SiriLensEffectView(context: Context) : View(context) {
     private val density = resources.displayMetrics.density
@@ -33,6 +35,9 @@ class SiriLensEffectView(context: Context) : View(context) {
     private val clipPath = Path()
     private val viewBounds = RectF()
     private var shader: RuntimeShader? = null
+    private var bgShader: BitmapShader? = null
+    private var bgBitmap: Bitmap? = null
+    private val dummyShader = LinearGradient(0f, 0f, 1f, 1f, Color.TRANSPARENT, Color.TRANSPARENT, Shader.TileMode.CLAMP)
 
     private var phase = 0f
     private var morphProgress = 1f
@@ -43,12 +48,21 @@ class SiriLensEffectView(context: Context) : View(context) {
     private var intensityAnimator: ValueAnimator? = null
     private var cardModeAnimator: ValueAnimator? = null
 
+    private var globalScreenX = 0f
+    private var globalScreenY = 0f
+    private var screenWidth = resources.displayMetrics.widthPixels.toFloat()
+    private var screenHeight = resources.displayMetrics.heightPixels.toFloat()
+
     // Fallback cho Android < 13
     private val fallbackPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val flarePath = Path()
 
     private val agsl = """
+        uniform shader backgroundTexture;
+        uniform float hasBackground;
         uniform float2 resolution;
+        uniform float2 screenResolution;
+        uniform float2 windowOffset;
         uniform float time;
         uniform float morph;
         uniform float cardMode;
@@ -79,10 +93,9 @@ class SiriLensEffectView(context: Context) : View(context) {
             float2 p = (uv - float2(0.5, 0.5)) * 2.0;
             float r2 = clamp(dot(p, p), 0.0, 1.0);
             float r = sqrt(r2);
-            float z = sqrt(max(0.0, 1.0 - r2));
 
-            // 1. RANH GIỚI CHUẨN ĐÚNG 1/2 (y = 0.50)
-            float baseHorizon = 0.50;
+            // 1. RANH GIỚI: Ở trạng thái thường là chuẩn 1/2 (0.50), khi mở rộng thu nhỏ lên 0.28
+            float baseHorizon = mix(0.50, 0.28, cardMode);
             float taper = sin(clamp(uv.x, 0.0, 1.0) * 3.14159265);
             float taperSharp = pow(max(0.0, taper), 1.35);
 
@@ -95,7 +108,7 @@ class SiriLensEffectView(context: Context) : View(context) {
             float dy = uv.y - horizonY;
             float absDy = abs(dy);
 
-            // Dải tia laser cầu vồng siêu mỏng và sắc nét ở ranh giới 1/2
+            // Dải tia laser cầu vồng siêu mỏng và sắc nét
             float coreLine = exp(-absDy * 150.0) * taperSharp;
             float midFlare = exp(-absDy * 32.0) * taperSharp;
             float softBloom = exp(-absDy * 9.0) * pow(max(0.0, taper), 0.7);
@@ -109,12 +122,11 @@ class SiriLensEffectView(context: Context) : View(context) {
                               + mix(rainbow, float3(1.0, 1.0, 1.0), 0.75) * coreLine * 1.35
                               + float3(1.0, 0.99, 0.96) * centerHotspot;
 
-            // 2. NỬA TRÊN ĐEN HOÀN TOÀN (1/2 phía trên)
+            // 2. NỬA TRÊN ĐEN HOÀN TOÀN
             float blackMask = 1.0 - smoothstep(horizonY - 0.04, horizonY + 0.015, uv.y);
             float3 topBlack = float3(0.0, 0.0, 0.0) + rainbow * (softBloom * 0.05 * blackMask);
 
             // 3. NỬA DƯỚI: CHẤT LIỆU KÍNH XÁM KHÓI TRONG SUỐT (Smoked Frosted Liquid Glass)
-            // Lớp kính xám khói giúp nhìn thấy rõ một bề mặt kính thủy tinh đang phủ trên icon app
             float3 smokedGlassColor = float3(0.12, 0.14, 0.18);
             float glassBodyAlpha = smoothstep(horizonY - 0.02, horizonY + 0.08, uv.y) * 0.22;
 
@@ -128,9 +140,7 @@ class SiriLensEffectView(context: Context) : View(context) {
                             + flareLight
                             + smokedSilverRim;
 
-            // ĐỘ TRONG SUỐT (ALPHA):
-            // Nửa trên đen: Alpha = 1.0
-            // Nửa dưới kính: Alpha = 0.22 (độ mờ khói vừa vặn nhìn xuyên icon bên dưới + viền phản chiếu ánh xám bạc)
+            // ĐỘ TRONG SUỐT (ALPHA)
             float outAlpha = max(blackMask, glassBodyAlpha + rimFresnel * 0.85);
             outAlpha = max(outAlpha, (midFlare * 0.75 + coreLine * 0.95) * energy);
             outAlpha = clamp(outAlpha * morph, 0.0, 1.0);
@@ -164,6 +174,34 @@ class SiriLensEffectView(context: Context) : View(context) {
             }
             start()
         }
+    }
+
+    fun setBackgroundSource(bitmap: Bitmap?, screenX: Float, screenY: Float, sWidth: Float, sHeight: Float) {
+        val old = bgBitmap
+        bgBitmap = bitmap
+        globalScreenX = screenX
+        globalScreenY = screenY
+        screenWidth = sWidth
+        screenHeight = sHeight
+        bgShader = if (bitmap != null && !bitmap.isRecycled) {
+            BitmapShader(bitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+        } else null
+        if (old != null && old !== bitmap) {
+            old.recycle()
+        }
+        invalidate()
+    }
+
+    fun updateWindowPosition(screenX: Float, screenY: Float) {
+        globalScreenX = screenX
+        globalScreenY = screenY
+        invalidate()
+    }
+
+    fun releaseBackground() {
+        bgBitmap?.recycle()
+        bgBitmap = null
+        bgShader = null
     }
 
     fun setMorphProgress(progress: Float) {
@@ -208,6 +246,7 @@ class SiriLensEffectView(context: Context) : View(context) {
         intensityAnimator = null
         cardModeAnimator?.cancel()
         cardModeAnimator = null
+        releaseBackground()
         super.onDetachedFromWindow()
     }
 
@@ -226,7 +265,17 @@ class SiriLensEffectView(context: Context) : View(context) {
 
         val activeShader = shader
         if (activeShader != null && Build.VERSION.SDK_INT >= 33) {
+            val currentBg = bgShader
+            if (currentBg != null) {
+                activeShader.setInputShader("backgroundTexture", currentBg)
+                activeShader.setFloatUniform("hasBackground", 1f)
+            } else {
+                activeShader.setInputShader("backgroundTexture", dummyShader)
+                activeShader.setFloatUniform("hasBackground", 0f)
+            }
             activeShader.setFloatUniform("resolution", w, h)
+            activeShader.setFloatUniform("screenResolution", screenWidth, screenHeight)
+            activeShader.setFloatUniform("windowOffset", globalScreenX, globalScreenY)
             activeShader.setFloatUniform("time", phase)
             activeShader.setFloatUniform("morph", morphProgress)
             activeShader.setFloatUniform("cardMode", cardExpandProgress)
