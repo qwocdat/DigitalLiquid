@@ -19,11 +19,11 @@ import kotlin.math.min
 import kotlin.math.sin
 
 /**
- * Thấu kính quang học Siri Liquid Glass tinh khiết:
- * - Nửa dưới trong suốt hoàn toàn (nhìn trực tiếp các icon app bên dưới, không dùng nền giả).
- * - Viền mép thấu kính có quầng sáng phản quang mờ nhẹ (Frosted Rim Glow).
- * - Khi phóng to (cardMode = 1f): phần đen thu nhỏ lại lên đỉnh để nhường chỗ cho văn bản và khung chat.
- * - Dải sóng laser Apple nhấp nhô hữu cơ theo năng lượng.
+ * Thấu kính quang học Siri Liquid Glass chuẩn 1:1:
+ * - Chia chuẩn 1/2: Nửa trên đen liền khối với Dynamic Island, nửa dưới là chất liệu kính xám khói trong suốt.
+ * - Viền mép dưới màu xám khói ánh bạc phản chiếu (Smoked Silver Rim), không bị trong suốt rỗng ruột.
+ * - Cho phép nhìn rõ lớp kính thủy tinh lướt trên các icon ứng dụng.
+ * - Dải sóng cầu vồng laser đa tần số nhấp nhô hữu cơ ở ranh giới 1/2.
  */
 class SiriLensEffectView(context: Context) : View(context) {
     private val density = resources.displayMetrics.density
@@ -75,20 +75,19 @@ class SiriLensEffectView(context: Context) : View(context) {
             float2 res = max(resolution, float2(1.0, 1.0));
             float2 uv = fragCoord / res;
 
-            // Hệ tọa độ thấu kính chuẩn hóa [-1, 1]
+            // Hệ tọa độ thấu kính chuẩn hóa [-1, 1] từ tâm
             float2 p = (uv - float2(0.5, 0.5)) * 2.0;
             float r2 = clamp(dot(p, p), 0.0, 1.0);
             float r = sqrt(r2);
+            float z = sqrt(max(0.0, 1.0 - r2));
 
-            // 1. VỊ TRÍ RANH GIỚI:
-            // Khi ở dạng giọt nước nhỏ: ranh giới ở y = 0.52
-            // Khi phóng to ra (cardMode = 1): PHẦN ĐEN THU NHỎ LẠI ở đỉnh (chỉ chiếm đến y = 0.28)
-            float baseHorizon = mix(0.52, 0.28, cardMode);
+            // 1. RANH GIỚI CHUẨN ĐÚNG 1/2 (y = 0.50)
+            float baseHorizon = 0.50;
             float taper = sin(clamp(uv.x, 0.0, 1.0) * 3.14159265);
             float taperSharp = pow(max(0.0, taper), 1.35);
 
-            // Chuyển động sóng Siri hữu cơ
-            float waveFluid = -taper * mix(0.032, 0.010, cardMode)
+            // Chuyển động sóng chất lỏng Apple nhấp nhô hữu cơ
+            float waveFluid = -taper * 0.024
                             + 0.006 * sin(uv.x * 6.28 - time * 2.2)
                             + 0.003 * sin(uv.x * 14.0 + time * 1.5) * energy;
             float horizonY = baseHorizon + waveFluid;
@@ -96,45 +95,53 @@ class SiriLensEffectView(context: Context) : View(context) {
             float dy = uv.y - horizonY;
             float absDy = abs(dy);
 
-            // Dải tia sáng laser mảnh sắc ở ranh giới
-            float coreLine = exp(-absDy * mix(145.0, 175.0, cardMode)) * taperSharp;
+            // Dải tia laser cầu vồng siêu mỏng và sắc nét ở ranh giới 1/2
+            float coreLine = exp(-absDy * 150.0) * taperSharp;
             float midFlare = exp(-absDy * 32.0) * taperSharp;
             float softBloom = exp(-absDy * 9.0) * pow(max(0.0, taper), 0.7);
 
             float colorShift = clamp((uv.x - 0.06) / 0.88 + 0.03 * sin(time * 1.2), 0.0, 1.0);
             float3 rainbow = appleSpectrum(colorShift);
 
-            float centerHotspot = exp(-pow((uv.x - 0.42) / mix(0.20, 0.35, cardMode), 2.0)) * coreLine * 1.8;
+            // Điểm hội tụ kim cương trắng rực ở giữa-trái
+            float centerHotspot = exp(-pow((uv.x - 0.42) / 0.22, 2.0)) * coreLine * 1.85;
             float3 flareLight = rainbow * (midFlare * 1.1 + softBloom * 0.45) * energy
                               + mix(rainbow, float3(1.0, 1.0, 1.0), 0.75) * coreLine * 1.35
                               + float3(1.0, 0.99, 0.96) * centerHotspot;
 
-            // 2. PHẦN ĐEN PHÍA TRÊN
-            float blackMask = 1.0 - smoothstep(horizonY - 0.05, horizonY + 0.015, uv.y);
+            // 2. NỬA TRÊN ĐEN HOÀN TOÀN (1/2 phía trên)
+            float blackMask = 1.0 - smoothstep(horizonY - 0.04, horizonY + 0.015, uv.y);
             float3 topBlack = float3(0.0, 0.0, 0.0) + rainbow * (softBloom * 0.05 * blackMask);
 
-            // 3. VIỀN SÁNG MỜ Ở MÉP TRONG SUỐT (Frosted Rim Glow)
-            // Lõi viền sắc nét ở ngoài rìa thấu kính + quầng mờ lan nhẹ
-            float rimCore = exp(-pow((r - 0.98) * 36.0, 2.0));
-            float rimSoft = exp(-pow((r - 0.95) * 12.0, 2.0));
-            float rimIntensity = (rimCore * 1.2 + rimSoft * 0.35) * smoothstep(horizonY - 0.05, horizonY + 0.30, uv.y);
-            float3 rimColor = mix(float3(0.85, 0.92, 1.0), rainbow, 0.35) * rimIntensity;
+            // 3. NỬA DƯỚI: CHẤT LIỆU KÍNH XÁM KHÓI TRONG SUỐT (Smoked Frosted Liquid Glass)
+            // Lớp kính xám khói giúp nhìn thấy rõ một bề mặt kính thủy tinh đang phủ trên icon app
+            float3 smokedGlassColor = float3(0.12, 0.14, 0.18);
+            float glassBodyAlpha = smoothstep(horizonY - 0.02, horizonY + 0.08, uv.y) * 0.22;
 
-            // 4. MÀU SẮC TỔNG HỢP (NỬA DƯỚI HOÀN TOÀN TRONG SUỐT, KHÔNG VẼ BÓNG NHỰA)
-            float3 rgb = topBlack * blackMask + flareLight + rimColor;
+            // 4. VIỀN MÉP DƯỚI MÀU XÁM KHÓI ÁNH BẠC PHẢN CHIẾU (Smoked Silver Rim)
+            float rimFresnel = exp(-pow((r - 0.975) * 36.0, 2.0)) * smoothstep(horizonY - 0.05, horizonY + 0.35, uv.y);
+            float3 smokedSilverRim = float3(0.78, 0.82, 0.88) * rimFresnel * 1.25;
 
-            // 5. ĐỘ TRONG SUỐT (ALPHA)
-            // Phần đen trên đỉnh: alpha = 1.0
-            // Nửa dưới: chỉ có dải sáng và viền sáng mờ là có alpha, còn bên trong hoàn toàn trong suốt (alpha = 0)
-            float glassAlpha = clamp(rimIntensity * 0.85 + (midFlare * 0.75 + coreLine * 0.95) * energy, 0.0, 1.0);
-            float finalAlpha = max(blackMask, glassAlpha) * morph;
+            // 5. TỔNG HỢP MÀU SẮC
+            float3 finalRGB = topBlack * blackMask
+                            + smokedGlassColor * (1.0 - blackMask)
+                            + flareLight
+                            + smokedSilverRim;
 
-            return half4(half3(clamp(rgb, 0.0, 1.0) * finalAlpha), half(finalAlpha));
+            // ĐỘ TRONG SUỐT (ALPHA):
+            // Nửa trên đen: Alpha = 1.0
+            // Nửa dưới kính: Alpha = 0.22 (độ mờ khói vừa vặn nhìn xuyên icon bên dưới + viền phản chiếu ánh xám bạc)
+            float outAlpha = max(blackMask, glassBodyAlpha + rimFresnel * 0.85);
+            outAlpha = max(outAlpha, (midFlare * 0.75 + coreLine * 0.95) * energy);
+            outAlpha = clamp(outAlpha * morph, 0.0, 1.0);
+
+            return half4(half3(clamp(finalRGB, 0.0, 1.0) * outAlpha), half(outAlpha));
         }
     """.trimIndent()
 
     init {
         setLayerType(LAYER_TYPE_HARDWARE, null)
+        contentDescription = "Hiệu ứng kính Siri nhiều màu của DigitalLiquid"
         if (Build.VERSION.SDK_INT >= 33) {
             try {
                 shader = RuntimeShader(agsl)
@@ -236,7 +243,7 @@ class SiriLensEffectView(context: Context) : View(context) {
     }
 
     private fun drawFallback(canvas: Canvas, w: Float, h: Float) {
-        val horizonY = if (cardExpandProgress > 0.5f) h * 0.28f else h * 0.52f
+        val horizonY = h * 0.50f
         fallbackPaint.shader = LinearGradient(
             0f, 0f, 0f, horizonY,
             intArrayOf(0xFF000000.toInt(), 0xFF000000.toInt(), 0x00000000),
@@ -267,10 +274,10 @@ class SiriLensEffectView(context: Context) : View(context) {
         fallbackPaint.alpha = (255 * morphProgress).toInt()
         canvas.drawPath(flarePath, fallbackPaint)
 
-        // Viền sáng mờ ở nửa dưới
+        // Viền mép dưới màu xám khói ánh bạc
         fallbackPaint.shader = LinearGradient(
             0f, horizonY, 0f, h,
-            intArrayOf(0x00FFFFFF, 0x44B5D6FF, 0xA0FFFFFF.toInt()),
+            intArrayOf(0x00FFFFFF, 0x55B5C4D4, 0xCCB5C4D4.toInt()),
             floatArrayOf(0f, 0.5f, 1f),
             Shader.TileMode.CLAMP
         )
