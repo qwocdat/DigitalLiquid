@@ -113,7 +113,7 @@ class IslandService : Service() {
     private var currentMorphProgress = 0f
     private var expandedRadiusDp = 30f
 
-    // ---- Unified Siri Lens state (nhấn 3 lần từ chính Dynamic Island) --------------
+    // ---- Unified Siri Lens state (nhấn 3 lần trực tiếp từ Dynamic Island) ----------
     private var siriActive = false
     private var isSiriShrinking = false
     private var siriView: SiriLensEffectView? = null
@@ -300,8 +300,6 @@ class IslandService : Service() {
             if (intent?.action != Intent.ACTION_CONFIGURATION_CHANGED) return
             if (isFaceUnlockShrinking || isSiriShrinking) return
             applyPreferences()
-            // Orientation changes are geometry changes, not a user-requested morph.
-            // One immediate layout pass avoids a resize animator fighting updatePosition().
             scheduleGeometryRefresh(force = true)
         }
     }
@@ -399,11 +397,9 @@ class IslandService : Service() {
                 registerReceiver(configReceiver, IntentFilter(ACTION_APPLY_CONFIG))
                 @Suppress("DEPRECATION")
                 registerReceiver(orientationReceiver, IntentFilter(Intent.ACTION_CONFIGURATION_CHANGED))
-                @Suppress("DEPRECATION")
                 registerReceiver(unlockReceiver, filter)
                 @Suppress("DEPRECATION")
                 registerReceiver(miuiScreenRecorderReceiver, miuiFilter)
-                @Suppress("DEPRECATION")
                 registerReceiver(soundNotificationTransitionReceiver, modeTransitionFilter)
             }
         } catch (_: Exception) { }
@@ -438,8 +434,6 @@ class IslandService : Service() {
 
     private fun evaluateRecordingState() {
         val enabledInPrefs = AppPrefs.get(this).getBoolean(AppPrefs.SCREEN_RECORDING_EFFECT, true)
-        
-        // Kích hoạt REC khi: Thu âm hệ thống (REMOTE_SUBMIX) HOẶC VirtualDisplay HOẶC Trợ năng phát hiện quay thật
         val active = enabledInPrefs && (isVirtualDisplayActive || isAudioRecordingActive || accessibilityScreenRecording)
 
         if (screenRecording != active) {
@@ -500,7 +494,6 @@ class IslandService : Service() {
         super.onConfigurationChanged(newConfig)
         if (isFaceUnlockShrinking || isSiriShrinking) return
         applyPreferences()
-        // Apply after the new display metrics/cutout geometry has settled.
         handler.post {
             if (isFaceUnlockShrinking || isSiriShrinking || islandRoot == null) return@post
             render(animateSize = false)
@@ -554,8 +547,6 @@ class IslandService : Service() {
 
     private fun windowGravity(): Int = when {
         isRecordingControlExpanded() -> Gravity.TOP or Gravity.CENTER_HORIZONTAL
-        // In landscape, a side punch-hole/cutout becomes the anchor. Keep the pill
-        // horizontal and attach it to that same physical edge instead of centering it.
         isLandscapeWithSideCutout() && !panelOpen && !siriActive -> Gravity.TOP or Gravity.LEFT
         else -> gravityForWindow()
     }
@@ -587,7 +578,7 @@ class IslandService : Service() {
 
     private fun updateExpandedRadius() {
         when {
-            siriActive || isSiriShrinking -> expandedRadiusDp = SIRI_SPHERE_SIZE_DP / 2f
+            siriActive || isSiriShrinking -> expandedRadiusDp = SIRI_CORNER_RADIUS_DP
             faceUnlocking -> expandedRadiusDp = FACE_SQUIRCLE_RADIUS_DP
             panelOpen && !isRecordingControlExpanded() -> expandedRadiusDp = 30f
         }
@@ -597,7 +588,6 @@ class IslandService : Service() {
         val root = islandRoot ?: return
         val r = lerp(pillH / 2f, dp(expandedRadiusDp), currentMorphProgress)
             .coerceIn(0f, minOf(pillW, pillH) / 2f)
-        // Khi bung ra Siri, hạ độ đục nền đen gốc của Island xuống trong suốt để lớp thủy tinh nửa dưới của SiriLensEffectView nhìn xuyên thấu nền màn hình như ảnh mẫu
         val siriMix = if (siriActive || isSiriShrinking) currentMorphProgress.coerceIn(0f, 1f) else 0f
         val bgAlpha = ((1f - siriMix) * 255f).roundToInt().coerceIn(0, 255)
         rootBackground.setColor(Color.argb(bgAlpha, 0, 0, 0))
@@ -892,9 +882,6 @@ class IslandService : Service() {
                     val prefs = AppPrefs.get(this)
                     val appSwitchEnabled = prefs.getBoolean(AppPrefs.ISLAND_APP_SWITCH_GESTURE, false)
 
-                    // After the six-tap arm sequence, subsequent taps switch immediately. The
-                    // mode stays armed only while the user continues tapping; no package scan is
-                    // performed on the touch/UI thread.
                     if (appSwitchEnabled && appSwitchModeActive) {
                         handler.removeCallbacks(singleTapRunnable)
                         RecentAppSwitcher.switchNext(this)
@@ -908,7 +895,6 @@ class IslandService : Service() {
                     if (appSwitchEnabled) {
                         appSwitchTapCount = if (now - lastAppSwitchTapAt <= APP_SWITCH_SEQUENCE_GAP_MS) appSwitchTapCount + 1 else 1
                         lastAppSwitchTapAt = now
-                        // Prepare the usage-order cache by tap five so the first switch has no scan delay.
                         if (appSwitchTapCount >= APP_SWITCH_START_TAPS - 1) RecentAppSwitcher.warmUp(this)
                         if (appSwitchTapCount >= APP_SWITCH_START_TAPS) {
                             appSwitchTapCount = 0
@@ -1190,7 +1176,7 @@ class IslandService : Service() {
         val density = resources.displayMetrics.density.coerceAtLeast(1f)
         val screenWidthPx = displayWidthPx().coerceAtLeast(dp(180))
         val screenWidthDp = (screenWidthPx / density).toInt().coerceAtLeast(180)
-        if (siriActive) return dp(SIRI_SPHERE_SIZE_DP)
+        if (siriActive) return dp(SIRI_WIDTH_DP)
         if (faceUnlocking) return dp(FACE_SIZE_DP)
         if (isRecordingControlExpanded()) return (screenWidthPx - dp(12)).coerceAtLeast(dp(180))
         val desiredDp = when {
@@ -1204,7 +1190,7 @@ class IslandService : Service() {
     }
 
     private fun targetHeight(): Int = when {
-        siriActive -> dp(SIRI_SPHERE_SIZE_DP)
+        siriActive -> dp(SIRI_HEIGHT_DP)
         faceUnlocking -> dp(FACE_SIZE_DP)
         isRecordingControlExpanded() -> maxOf(statusBarHeightPx() + dp(24), dp(50))
         panelOpen && screenRecording -> dp(66)
@@ -1244,8 +1230,6 @@ class IslandService : Service() {
             } catch (_: Exception) { null }
             if (metricsCutout != null) return metricsCutout
         }
-        // Some HyperOS builds return no cutout through WindowMetrics for accessibility overlays.
-        // Fall back to the attached view's insets instead of returning null immediately.
         if (Build.VERSION.SDK_INT >= 28) {
             val viewCutout = try {
                 largest(overlayHost?.rootWindowInsets?.displayCutout?.boundingRects)
@@ -1275,8 +1259,6 @@ class IslandService : Service() {
         if (isLandscapeWithSideCutout() && !panelOpen && !siriActive) {
             val cutout = currentCameraCutoutBounds()
             if (cutout != null) {
-                // Return the pill's left edge, not the host's left edge. windowX()
-                // subtracts the transparent trail inset when it creates the window.
                 val edgeInset = dp(12)
                 return if (cutout.centerX() < displayWidthPx() / 2) edgeInset
                 else (displayWidthPx() - windowWidth - edgeInset).coerceAtLeast(edgeInset)
@@ -1294,7 +1276,6 @@ class IslandService : Service() {
         if (isLandscapeWithSideCutout() && !panelOpen && !siriActive) {
             val cutout = currentCameraCutoutBounds()
             if (cutout != null) {
-                // Align the pill's vertical center with the physical camera cluster.
                 return (cutout.centerY() - windowHeight / 2)
                     .coerceIn(0, (displayHeightPx() - windowHeight).coerceAtLeast(0))
             }
@@ -1435,8 +1416,6 @@ class IslandService : Service() {
         val ringerTransitionActive = android.os.SystemClock.elapsedRealtime() < ringerTransitionHideUntil
         val hideForRingerUi = prefs.getBoolean(AppPrefs.HIDE_WHEN_RINGER_UI, true) && ringerTransitionActive
         val nativeIslandVisible = hideForSystemIsland || hideForOtherActivity || hideForMusic || hideForRingerUi
-        // A short sound/DND/notification popup must hide our pill even while recording or camera state is active.
-        // Other native activities keep the existing recording/camera priority behavior.
         val suppress = !faceUnlocking && !isFaceUnlockShrinking && !siriActive && !isSiriShrinking && (
             ringerTransitionActive || (!screenRecording && !cameraActive && nativeIslandVisible)
         )
@@ -1955,9 +1934,6 @@ class IslandService : Service() {
                 syncOverlayChildBounds(pillW, pillH)
                 applyRootCorner(pillW, pillH)
                 siriView?.setMorphProgress(currentMorphProgress.coerceIn(0f, 1f))
-                // LayoutParams already animate both axes. A second, non-uniform scale
-                // makes the rounded outline and the actual window bounds disagree and
-                // can expose a square flash on close. Keep the root at identity scale.
                 root.scaleX = 1f
                 root.scaleY = 1f
                 if (Build.VERSION.SDK_INT >= 31) {
@@ -2041,7 +2017,6 @@ class IslandService : Service() {
 
     private fun showTransientServiceNotice(message: String) {
         if (!showCustomAppNotice("Trạng thái DigitalLiquid", message, "", force = true)) {
-            // A native toast is used only when an app-owned overlay cannot legally be attached.
             Toast.makeText(this, message, Toast.LENGTH_LONG).show()
         }
     }
@@ -2318,9 +2293,11 @@ class IslandService : Service() {
         private const val RINGER_TRANSITION_HIDE_MS = 2100L
         private const val TRAIL_EXTENT_DP = 38
 
-        private const val SIRI_SPHERE_SIZE_DP = 152
-        private const val SIRI_EXPAND_MS = 380L
-        private const val SIRI_SHRINK_MS = 400L
+        private const val SIRI_WIDTH_DP = 186
+        private const val SIRI_HEIGHT_DP = 130
+        private const val SIRI_CORNER_RADIUS_DP = 62f
+        private const val SIRI_EXPAND_MS = 400L
+        private const val SIRI_SHRINK_MS = 380L
 
         private const val FACE_SIZE_DP = 150
         private const val FACE_SQUIRCLE_RADIUS_DP = 38f
