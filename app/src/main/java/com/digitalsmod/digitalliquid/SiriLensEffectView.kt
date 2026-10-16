@@ -22,10 +22,10 @@ import kotlin.math.sin
 /**
  * Hiệu ứng kính quang học Siri Liquid Glass thực thụ cho DigitalLiquid.
  * Sử dụng AGSL RuntimeShader trên GPU:
- * - Cập nhật liên tục dòng hình ảnh nền 30 FPS.
- * - Khúc xạ bẻ cong quang học (Snell Refraction Displacement).
- * - Sóng Siri hữu cơ đa lớp (Harmonic Organic Wave) biến thiên liên tục.
+ * - Khúc xạ bẻ cong quang học (Snell Refraction Displacement) dựa trên hình ảnh thật của launcher.
+ * - Sóng Siri hữu cơ đa lớp (Harmonic Organic Wave) biến thiên liên tục, không bao giờ cứng đơ.
  * - Phần đen kéo xuống qua đoạn giữa (y = 0.55), ám nhẹ ánh sắc quang phổ.
+ * - Loại bỏ hoàn toàn các vệt vẽ bóng giả nhựa và vòng lặp vô tận.
  */
 class SiriLensEffectView(context: Context) : View(context) {
     private val density = resources.displayMetrics.density
@@ -90,20 +90,21 @@ class SiriLensEffectView(context: Context) : View(context) {
 
             // 2. Chuyển đổi sang hệ trục hình cầu trung tâm [-1, 1]
             float2 p = (uv - float2(0.5, 0.5)) * 2.0;
-            float distSq = dot(p, p);
-            float dist = sqrt(max(0.0, distSq));
+
+            // Tạo dao động chất lỏng đung đưa nhẹ quanh bề mặt giọt nước
+            float angle = atan2(p.y, p.x);
+            float fluidRipple = 0.012 * sin(angle * 3.0 + time * 2.2) * smoothstep(0.35, 1.0, length(p));
+            float dist = length(p) + fluidRipple;
+            float distSq = clamp(dist * dist, 0.0, 1.0);
 
             // Vector pháp tuyến bề mặt cầu 3D
             float z = sqrt(max(0.0, 1.0 - distSq));
             float3 N = float3(p.x, p.y, z);
 
             // 3. Hiệu ứng sóng Siri đa lớp hữu cơ (Organic Fluid Harmonic Waves)
-            // Sóng 1: Vòm cong lớn biến thiên chậm
-            float wave1 = -sin(uv.x * 3.14159) * 0.044 + 0.007 * sin(uv.x * 6.28 - time * 2.0);
-            // Sóng 2: Giao thoa tần số cao tạo nhịp thở
-            float wave2 = 0.004 * sin(uv.x * 14.5 + time * 1.4) + 0.002 * cos(uv.x * 24.0 - time * 2.8);
-            // Sóng 3: Chuyển động năng lượng theo giọng nói
-            float wave3 = 0.003 * sin(uv.x * 9.0 + time * 3.2) * energy;
+            float wave1 = -sin(uv.x * 3.14159) * 0.040 + 0.006 * sin(uv.x * 6.28 - time * 2.1);
+            float wave2 = 0.004 * sin(uv.x * 13.0 + time * 1.6) + 0.002 * cos(uv.x * 22.0 - time * 3.0);
+            float wave3 = 0.003 * sin(uv.x * 8.5 + time * 3.4) * energy;
 
             // Trục dải sóng nằm xuống qua đoạn giữa (y = 0.55)
             float beamCenterY = 0.55 + wave1 + wave2 + wave3;
@@ -117,7 +118,7 @@ class SiriLensEffectView(context: Context) : View(context) {
             float3 spectrumColor = siriSpectrum(specPos);
 
             // Điểm hội tụ quang học trắng sáng ở lệch tâm bên trái
-            float focalSpot = exp(-pow((uv.x - 0.38) / 0.16, 2.0)) * beamCore * 1.9;
+            float focalSpot = exp(-pow((uv.x - 0.38) / 0.16, 2.0)) * beamCore * 1.85;
             float3 hotWhite = float3(1.0, 0.99, 0.96) * focalSpot;
 
             // 4. Phần đen trên đỉnh kéo dài qua đoạn giữa (xuống tới 0.55)
@@ -125,16 +126,16 @@ class SiriLensEffectView(context: Context) : View(context) {
             float blackDome = 1.0 - smoothstep(0.46, 0.55, uv.y);
             float3 darkTint = mix(float3(0.002, 0.003, 0.006), spectrumColor * 0.065, (1.0 - uv.y) * 0.55);
 
-            // 5. Khúc xạ thấu kính thật bẻ cong và làm méo các app đằng sau
+            // 5. Khúc xạ thấu kính thật bẻ cong và làm méo các app đằng sau (không bị lặp hình)
             float inGlass = smoothstep(0.48, 0.62, uv.y);
             float lensCurvature = inGlass * (1.0 - z);
 
-            // Vector khúc xạ gia tăng về phía mép kính
-            float2 refrVector = float2(p.x * 1.08, (p.y - 0.25) * 1.18);
-            float2 refrOffset = refrVector * (0.095 * lensCurvature);
+            // Vector khúc xạ hướng tâm mềm mại
+            float2 refrVector = float2(p.x * 1.05, (p.y - 0.25) * 1.15);
+            float2 refrOffset = refrVector * (0.085 * lensCurvature);
 
             // Tán sắc RGB Chromatic Aberration
-            float disp = 0.024 * lensCurvature;
+            float disp = 0.020 * lensCurvature;
             float2 coordR = screenCoord + (refrOffset * (1.0 + disp)) * res;
             float2 coordG = screenCoord + refrOffset * res;
             float2 coordB = screenCoord + (refrOffset * (1.0 - disp)) * res;
@@ -149,7 +150,7 @@ class SiriLensEffectView(context: Context) : View(context) {
             float rimHighlight = fresnel * smoothstep(0.93, 0.99, dist);
             float3 rimColor = float3(0.94, 0.97, 1.0) * rimHighlight * smoothstep(0.35, 0.90, uv.y) * 1.35;
 
-            // 7. Hòa trộn quang học
+            // 7. Hòa trộn quang học sạch sẽ
             float3 finalColor = float3(0.0);
             if (hasBackground > 0.5) {
                 finalColor = mix(refractedBackground, darkTint, blackDome);
@@ -188,16 +189,22 @@ class SiriLensEffectView(context: Context) : View(context) {
         }
     }
 
-    /** Cập nhật khung hình nền liên tục từ luồng stream 30 FPS */
-    fun updateBackgroundFrame(bitmap: Bitmap, screenX: Float, screenY: Float, sWidth: Float, sHeight: Float) {
-        val oldBmp = bgBitmap
+    /** Thiết lập khung hình nền sạch để tính toán khúc xạ */
+    fun setBackgroundSource(bitmap: Bitmap?, screenX: Float, screenY: Float, sWidth: Float, sHeight: Float) {
+        val old = bgBitmap
         bgBitmap = bitmap
         globalScreenX = screenX
         globalScreenY = screenY
         screenWidth = sWidth
         screenHeight = sHeight
-        bgShader = BitmapShader(bitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
-        oldBmp?.recycle()
+        if (bitmap != null && !bitmap.isRecycled) {
+            bgShader = BitmapShader(bitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+        } else {
+            bgShader = null
+        }
+        if (old != null && old !== bitmap) {
+            old.recycle()
+        }
         invalidate()
     }
 
