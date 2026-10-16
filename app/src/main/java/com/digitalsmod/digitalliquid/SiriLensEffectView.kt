@@ -93,7 +93,7 @@ class SiriLensEffectView(context: Context) : View(context) {
 
             // Tạo dao động chất lỏng đung đưa nhẹ quanh bề mặt giọt nước
             float angle = atan2(p.y, p.x);
-            float fluidRipple = 0.012 * sin(angle * 3.0 + time * 2.2) * smoothstep(0.35, 1.0, length(p));
+            float fluidRipple = 0.010 * sin(angle * 3.0 + time * 2.0) * smoothstep(0.35, 1.0, length(p));
             float dist = length(p) + fluidRipple;
             float distSq = clamp(dist * dist, 0.0, 1.0);
 
@@ -102,7 +102,7 @@ class SiriLensEffectView(context: Context) : View(context) {
             float3 N = float3(p.x, p.y, z);
 
             // 3. Hiệu ứng sóng Siri đa lớp hữu cơ (Organic Fluid Harmonic Waves)
-            float wave1 = -sin(uv.x * 3.14159) * 0.040 + 0.006 * sin(uv.x * 6.28 - time * 2.1);
+            float wave1 = -sin(uv.x * 3.14159) * 0.038 + 0.006 * sin(uv.x * 6.28 - time * 2.1);
             float wave2 = 0.004 * sin(uv.x * 13.0 + time * 1.6) + 0.002 * cos(uv.x * 22.0 - time * 3.0);
             float wave3 = 0.003 * sin(uv.x * 8.5 + time * 3.4) * energy;
 
