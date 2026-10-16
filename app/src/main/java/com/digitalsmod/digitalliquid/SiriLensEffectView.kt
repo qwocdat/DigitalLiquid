@@ -1,7 +1,5 @@
 package com.digitalsmod.digitalliquid
 
-import android.animation.Animator
-import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Canvas
@@ -23,8 +21,8 @@ import kotlin.math.sin
 
 /**
  * Hiệu ứng kính quang học Siri 1:1 nguyên bản cho DigitalLiquid.
- * Sử dụng AGSL RuntimeShader trên GPU để tính toán khúc xạ thủy tinh 3D,
- * dải tán sắc quang phổ chân thực và độ trong suốt sâu nhìn xuyên thấu nền màn hình.
+ * Sử dụng AGSL RuntimeShader trên GPU để tính toán bề mặt cầu thủy tinh 3D thật,
+ * tán sắc quang phổ chân thực và đáy kính trong suốt quang học xuyên thấu nền máy.
  */
 class SiriLensEffectView(context: Context) : View(context) {
     private val density = resources.displayMetrics.density
@@ -41,7 +39,7 @@ class SiriLensEffectView(context: Context) : View(context) {
     private var animator: ValueAnimator? = null
     private var intensityAnimator: ValueAnimator? = null
 
-    // Fallback cho thiết bị Android < 13
+    // Fallback cho Android < 13
     private val fallbackPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val flarePath = Path()
 
@@ -71,80 +69,70 @@ class SiriLensEffectView(context: Context) : View(context) {
         half4 main(float2 fragCoord) {
             float2 res = max(resolution, float2(1.0, 1.0));
             float2 uv = fragCoord / res;
-            float x = uv.x;
-            float y = uv.y;
 
+            // Chuyển về tọa độ hình cầu trung tâm [-1, 1]
             float2 p = (uv - float2(0.5, 0.5)) * 2.0;
-            float dist = length(p);
+            float distSq = dot(p, p);
+            float dist = sqrt(max(0.0, distSq));
 
-            // 1. Đỉnh quả cầu giữ màu đen sâu tuyệt đối để hòa hợp làm một với cụm Dynamic Island và camera
-            float blackTop = 1.0 - smoothstep(0.38, 0.49, y);
+            // 1. Tính toán chiều sâu và vector pháp tuyến bề mặt cầu 3D (PBR Normal)
+            float z = sqrt(max(0.0, 1.0 - distSq));
+            float3 N = float3(p.x, p.y, z);
 
-            // 2. Dải sóng quang phổ nằm chính xác ở trục ngang trung tâm (y = 0.50)
-            float waveCenter = 0.50;
-            float arch = -sin(x * 3.14159) * 0.052; // Vòm cong nhẹ lên trên ở giữa
-            float wave = 0.009 * sin(x * 6.28 - time * 1.8) + 0.004 * sin(x * 12.56 + time * 1.1);
-            float flareLine = waveCenter + arch + wave;
-            float dy = y - flareLine;
+            // Phản xạ góc nghiêng Fresnel ở viền ngoài thấu kính (rực sáng siêu mỏng tinh tế, không viền vẽ thô)
+            float fresnel = pow(clamp(1.0 - N.z, 0.0, 1.0), 3.6);
+            float rimHighlight = fresnel * smoothstep(0.85, 0.985, dist);
 
-            float core = exp(-abs(dy) * 110.0);
-            float bloom = exp(-abs(dy) * 22.0);
-            float wideGlow = exp(-abs(dy) * 6.5);
+            // 2. Nửa đỉnh quả cầu giữ màu đen sâu nguyên bản để hòa làm một với cụm camera / Dynamic Island
+            float blackDome = 1.0 - smoothstep(0.36, 0.49, uv.y);
 
-            float specT = clamp((x - 0.10) / 0.80, 0.0, 1.0);
-            float3 specCol = siriSpectrum(specT);
+            // 3. Dải sóng quang phổ nằm chính xác ở trục ngang trung tâm (y = 0.50)
+            float arch = -sin(uv.x * 3.14159) * 0.048;
+            float wave = 0.008 * sin(uv.x * 6.28 - time * 1.8) + 0.004 * sin(uv.x * 12.56 + time * 1.1);
+            float beamCenterY = 0.50 + arch + wave;
+            float dy = abs(uv.y - beamCenterY);
 
-            // Điểm hội tụ ánh sáng trắng rực ở lệch tâm trái giống ảnh mẫu
-            float hotSpot = exp(-pow((x - 0.40) / 0.16, 2.0)) * core * 1.8;
-            float3 hotLight = float3(1.0, 0.99, 0.96) * hotSpot;
+            float beamCore = exp(-dy * 125.0);
+            float beamBloom = exp(-dy * 26.0);
+            float beamWide = exp(-dy * 7.5);
 
-            // 3. Khúc xạ thủy tinh thật: Thân kính trong suốt cho phép nhìn xuyên qua các app đằng sau
-            // Không dùng màu xám đục để tránh cảm giác nhựa
-            float glassAlpha = mix(0.04, 0.16, smoothstep(0.40, 0.95, dist)) * smoothstep(0.45, 0.55, y);
+            float specPos = clamp((uv.x - 0.08) / 0.84, 0.0, 1.0);
+            float3 spectrumColor = siriSpectrum(specPos);
 
-            // Tia tụ quang (Caustic focal rays) lan tỏa xuống đáy kính
-            float causticBeam = exp(-pow((x - 0.50) / (0.16 + (y - 0.48) * 0.42), 2.0)) * smoothstep(0.48, 0.75, y) * (1.0 - smoothstep(0.75, 0.96, y));
-            float3 causticBeamCol = float3(0.75, 0.90, 1.0) * causticBeam * 0.45;
+            // Điểm hội tụ quang học trắng rực ở lệch tâm bên trái như trong ảnh mẫu
+            float focalSpot = exp(-pow((uv.x - 0.38) / 0.16, 2.0)) * beamCore * 1.85;
+            float3 hotWhite = float3(1.0, 0.99, 0.96) * focalSpot;
 
-            // Vệt phản chiếu ngược lưỡi liềm (Inverted caustic reflection) đặc trưng của giọt kính Apple
-            float2 arcCenter = float2(0.50, 0.48);
-            float arcDist = length(float2((x - arcCenter.x) * 1.18, y - arcCenter.y));
-            float crescent = exp(-pow((arcDist - 0.44) * 32.0, 2.0)) * smoothstep(0.52, 0.86, y);
-            float3 crescentCol = float3(0.88, 0.95, 1.0) * crescent * 0.95;
+            // 4. Khúc xạ thủy tinh thật: Nửa dưới có độ trong suốt cao (alpha chỉ 0.05 - 0.18) để app đằng sau nhìn rõ
+            float glassBodyAlpha = mix(0.05, 0.18, smoothstep(0.40, 0.98, dist)) * smoothstep(0.46, 0.58, uv.y);
 
-            // Viền khúc xạ bạc sắc nét bao quanh đáy quả cầu (Fresnel rim reflection)
-            float rim = smoothstep(0.92, 0.985, dist) * (1.0 - smoothstep(0.99, 1.01, dist));
-            float rimFadeTop = smoothstep(0.25, 0.80, y);
-            float3 rimCol = float3(0.95, 0.98, 1.0) * rim * rimFadeTop * 1.9;
+            // Tụ quang đáy kính (Caustic Focus): ánh sáng uốn cong hội tụ bên trong đáy giọt thủy tinh
+            float2 causticCenter = float2(0.50, 0.42);
+            float causticR = length(float2((uv.x - causticCenter.x) * 1.15, uv.y - causticCenter.y));
+            float internalCaustic = exp(-pow((causticR - 0.44) * 36.0, 2.0)) * smoothstep(0.50, 0.86, uv.y);
+            float3 causticColor = float3(0.85, 0.94, 1.0) * internalCaustic * 0.85;
 
-            // Phản chiếu ánh sáng trắng ở đáy dưới cùng
-            float bottomLip = exp(-pow((y - 0.97) / 0.03, 2.0)) * exp(-pow((x - 0.50) / 0.32, 2.0));
-            float3 bottomLipCol = float3(1.0, 1.0, 1.0) * bottomLip * 1.4;
+            // Phản xạ đáy kính ngoài cùng
+            float bottomLip = exp(-pow((uv.y - 0.975) / 0.025, 2.0)) * exp(-pow((uv.x - 0.50) / 0.35, 2.0));
 
-            // Ánh phản chiếu nhẹ ở đỉnh
-            float topGlance = exp(-pow((x - 0.5) / 0.35, 2.0)) * exp(-pow((y - 0.05) / 0.04, 2.0)) * 0.20;
-            float3 topCol = float3(1.0) * topGlance;
+            // Tổng hợp màu sắc
+            float3 color = float3(0.0);
+            color += spectrumColor * (beamBloom * 0.90 + beamWide * 0.35) * energy;
+            color += (spectrumColor * 0.45 + float3(0.80, 0.90, 1.0) * 0.55) * beamCore * 1.35;
+            color += hotWhite;
+            color += causticColor;
+            color += float3(0.95, 0.98, 1.0) * rimHighlight * smoothstep(0.20, 0.85, uv.y) * 1.6;
+            color += float3(1.0) * bottomLip * 1.2;
 
-            // Tổng hợp các lớp quang học
-            float3 rgb = float3(0.0);
-            rgb += specCol * (bloom * 0.92 + wideGlow * 0.35) * energy;
-            rgb += (specCol * 0.45 + float3(0.75, 0.88, 1.0) * 0.55) * core * 1.35;
-            rgb += hotLight;
-            rgb += causticBeamCol;
-            rgb += crescentCol;
-            rgb += rimCol;
-            rgb += bottomLipCol;
-            rgb += topCol;
-
-            // Nửa trên màu đen sâu tuyệt đối, nửa dưới trong suốt khúc xạ ánh sáng
-            float finalAlpha = max(blackTop, glassAlpha);
-            finalAlpha = max(finalAlpha, (bloom * 0.75 + core * 0.98) * energy);
-            finalAlpha = max(finalAlpha, crescent * 0.85);
-            finalAlpha = max(finalAlpha, rim * rimFadeTop * 0.95);
-            finalAlpha = max(finalAlpha, bottomLip * 0.90);
+            // Alpha quang học: đỉnh đen tuyệt đối, đáy trong suốt cho nền và app xuyên qua
+            float finalAlpha = max(blackDome, glassBodyAlpha);
+            finalAlpha = max(finalAlpha, (beamBloom * 0.72 + beamCore * 0.98) * energy);
+            finalAlpha = max(finalAlpha, internalCaustic * 0.80);
+            finalAlpha = max(finalAlpha, rimHighlight * 0.90);
+            finalAlpha = max(finalAlpha, bottomLip * 0.85);
             finalAlpha = clamp(finalAlpha * morph, 0.0, 1.0);
 
-            return half4(half3(clamp(rgb, 0.0, 1.0) * finalAlpha), half(finalAlpha));
+            return half4(half3(clamp(color, 0.0, 1.0) * finalAlpha), half(finalAlpha));
         }
     """.trimIndent()
 
@@ -231,7 +219,6 @@ class SiriLensEffectView(context: Context) : View(context) {
     }
 
     private fun drawFallback(canvas: Canvas, w: Float, h: Float) {
-        // Nền đen trên đỉnh hòa vào Camera Cutout
         fallbackPaint.shader = LinearGradient(
             0f, 0f, 0f, h * 0.48f,
             intArrayOf(0xFF000000.toInt(), 0xEE000000.toInt(), 0x00000000),
@@ -240,7 +227,6 @@ class SiriLensEffectView(context: Context) : View(context) {
         )
         canvas.drawRect(0f, 0f, w, h * 0.48f, fallbackPaint)
 
-        // Cầu vồng uốn cong chính giữa
         val horizonY = h * 0.50f
         flarePath.reset()
         val steps = 60
@@ -268,21 +254,10 @@ class SiriLensEffectView(context: Context) : View(context) {
         fallbackPaint.alpha = (255 * morphProgress).toInt()
         canvas.drawPath(flarePath, fallbackPaint)
 
-        // Vệt lưỡi liềm phản quang dưới đáy kính
-        fallbackPaint.shader = LinearGradient(
-            w * 0.15f, 0f, w * 0.85f, 0f,
-            intArrayOf(0x00FFFFFF, 0x88DCEBFF.toInt(), 0x00FFFFFF),
-            null, Shader.TileMode.CLAMP
-        )
-        fallbackPaint.strokeWidth = dp(2.2f)
-        val crescentRect = RectF(w * 0.10f, h * 0.22f, w * 0.90f, h * 0.92f)
-        canvas.drawArc(crescentRect, 45f, 90f, false, fallbackPaint)
-
-        // Viền bạc khúc xạ ngoài mép kính
         fallbackPaint.shader = LinearGradient(
             0f, h * 0.4f, 0f, h,
-            intArrayOf(0x00FFFFFF, 0x55B5D6FF, 0xF0FFFFFF.toInt()),
-            floatArrayOf(0f, 0.45f, 1f),
+            intArrayOf(0x00FFFFFF, 0x44B5D6FF, 0xE8FFFFFF.toInt()),
+            floatArrayOf(0f, 0.5f, 1f),
             Shader.TileMode.CLAMP
         )
         fallbackPaint.strokeWidth = dp(1.6f)
@@ -297,26 +272,27 @@ class SiriLensEffectView(context: Context) : View(context) {
 }
 
 /**
- * Hiệu ứng dải viền màn hình phát sáng chạy từ trên xuống quanh mép màn hình (Apple Intelligence Edge Glow)
+ * Hiệu ứng dải viền màn hình phát sáng chạy từ trên đỉnh xuống ôm sát mép viền cong của điện thoại (Apple Intelligence Screen Edge Glow).
  */
 class SiriEdgeGlowView(context: Context) : View(context) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private var shader: RuntimeShader? = null
     private var phase = 0f
-    private var progress = 0f
+    private var streamProgress = 0f
     private var enterAnimator: ValueAnimator? = null
     private var loopAnimator: ValueAnimator? = null
 
     private val agsl = """
         uniform float2 resolution;
         uniform float time;
-        uniform float progress;
+        uniform float streamProgress;
+        uniform float cornerRadius;
 
         float3 siriEdgeSpectrum(float t) {
-            float3 c0 = float3(0.05, 0.42, 1.00); // Blue
+            float3 c0 = float3(0.04, 0.45, 1.00); // Blue
             float3 c1 = float3(0.00, 0.92, 1.00); // Cyan
-            float3 c2 = float3(0.68, 0.22, 1.00); // Purple / Magenta
-            float3 c3 = float3(1.00, 0.38, 0.16); // Coral / Orange
+            float3 c2 = float3(0.68, 0.22, 1.00); // Magenta/Purple
+            float3 c3 = float3(1.00, 0.38, 0.16); // Coral
             float3 c4 = float3(1.00, 0.88, 0.12); // Amber
             float x = fract(t);
             float3 col = mix(c0, c1, smoothstep(0.00, 0.25, x));
@@ -326,34 +302,47 @@ class SiriEdgeGlowView(context: Context) : View(context) {
             return col;
         }
 
+        // Tính khoảng cách chính xác đến viền màn hình bo cong (SDF Rounded Rectangle)
+        float sdRoundedBox(float2 p, float2 b, float r) {
+            float2 q = abs(p) - b + r;
+            return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;
+        }
+
         half4 main(float2 fragCoord) {
             float2 res = max(resolution, float2(1.0, 1.0));
-            float2 uv = fragCoord / res;
+            float2 halfRes = res * 0.5;
+            float2 p = fragCoord - halfRes;
 
-            // Khoảng cách tới 4 mép viền màn hình
-            float dX = min(fragCoord.x, res.x - fragCoord.x);
-            float dY = min(fragCoord.y, res.y - fragCoord.y);
-            float dist = min(dX, dY);
+            float R = max(1.0, cornerRadius);
+            float2 b = halfRes - float2(R, R);
 
-            // Độ dày vệt sáng viền và hào quang tỏa vào trong
-            float edgeCore = exp(-dist / 5.5);
-            float edgeBloom = exp(-dist / 22.0);
-            float edgeGlow = edgeCore * 1.35 + edgeBloom * 0.70;
+            // Khoảng cách từ pixel tới chu vi viền cong của điện thoại
+            float distToEdge = abs(sdRoundedBox(p, b, R));
 
-            // Dây ánh sáng chạy từ vị trí Dynamic Island (giữa đỉnh) tỏa ra 2 bên mép và chạy dọc xuống đáy
-            float topDist = abs(uv.x - 0.5) * 2.0;
-            float streamProg = 0.0;
-            if (uv.y < 0.08) {
-                streamProg = topDist * 0.25;
+            // Quầng sáng mềm mại tự nhiên (lõi neon mảnh + bloom tỏa vào trong)
+            float coreGlow = exp(-distToEdge / 3.8);
+            float bloomGlow = exp(-distToEdge / 18.0);
+            float edgeIntensity = coreGlow * 1.5 + bloomGlow * 0.75;
+
+            // Tính quãng đường chạy từ đỉnh giữa (Dynamic Island) tỏa sang 2 bên rồi chạy dọc xuống đáy
+            float normX = abs(p.x) / halfRes.x;
+            float normY = (p.y + halfRes.y) / res.y;
+
+            float pathCoord = 0.0;
+            if (normY < 0.07) {
+                pathCoord = normX * 0.25;
             } else {
-                streamProg = 0.25 + uv.y * 0.75;
+                pathCoord = 0.25 + normY * 0.75;
             }
 
-            float streamCutoff = smoothstep(progress, max(0.0, progress - 0.14), streamProg);
-            float colorPos = streamProg * 1.4 - time * 0.40;
-            float3 rgb = siriEdgeSpectrum(colorPos);
+            // Đầu tia sáng dẫn đường chạy từ trên xuống
+            float cutoff = smoothstep(streamProgress, max(0.0, streamProgress - 0.16), pathCoord);
+            float headPulse = exp(-pow((pathCoord - streamProgress) / 0.06, 2.0)) * 1.6;
 
-            float alpha = edgeGlow * streamCutoff * clamp(progress * 1.5, 0.0, 1.0);
+            float colorCycle = pathCoord * 1.6 - time * 0.45;
+            float3 rgb = siriEdgeSpectrum(colorCycle) * (1.0 + headPulse * 0.5);
+
+            float alpha = edgeIntensity * cutoff * clamp(streamProgress * 1.8, 0.0, 1.0);
             alpha = clamp(alpha, 0.0, 0.95);
 
             return half4(half3(rgb * alpha), half(alpha));
@@ -377,10 +366,10 @@ class SiriEdgeGlowView(context: Context) : View(context) {
         alpha = 1f
         enterAnimator?.cancel()
         enterAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 460L
-            interpolator = PathInterpolator(0.16f, 1f, 0.30f, 1f)
+            duration = 540L
+            interpolator = PathInterpolator(0.18f, 1f, 0.28f, 1f)
             addUpdateListener {
-                progress = it.animatedValue as Float
+                streamProgress = it.animatedValue as Float
                 invalidate()
             }
             start()
@@ -402,7 +391,7 @@ class SiriEdgeGlowView(context: Context) : View(context) {
 
     fun startExitAnimation(onEnd: () -> Unit) {
         enterAnimator?.cancel()
-        animate().alpha(0f).setDuration(300L).withEndAction {
+        animate().alpha(0f).setDuration(280L).withEndAction {
             loopAnimator?.cancel()
             loopAnimator = null
             onEnd()
@@ -425,14 +414,15 @@ class SiriEdgeGlowView(context: Context) : View(context) {
 
         val activeShader = shader
         if (activeShader != null && Build.VERSION.SDK_INT >= 33) {
+            val cornerDp = 38f * resources.displayMetrics.density
             activeShader.setFloatUniform("resolution", w, h)
             activeShader.setFloatUniform("time", phase)
-            activeShader.setFloatUniform("progress", progress)
+            activeShader.setFloatUniform("streamProgress", streamProgress)
+            activeShader.setFloatUniform("cornerRadius", cornerDp)
             paint.shader = activeShader
             canvas.drawRect(0f, 0f, w, h, paint)
             paint.shader = null
         } else {
-            // Fallback viền phát sáng đa sắc
             val density = resources.displayMetrics.density
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = 6f * density
@@ -441,8 +431,8 @@ class SiriEdgeGlowView(context: Context) : View(context) {
                 intArrayOf(0xFF00D8FF.toInt(), 0xFF9B51E0.toInt(), 0xFFFF385C.toInt(), 0xFF00D8FF.toInt()),
                 null, Shader.TileMode.CLAMP
             )
-            paint.alpha = (180 * progress).toInt()
-            canvas.drawRoundRect(0f, 0f, w, h, 34f * density, 34f * density, paint)
+            paint.alpha = (180 * streamProgress).toInt()
+            canvas.drawRoundRect(0f, 0f, w, h, 36f * density, 36f * density, paint)
             paint.shader = null
             paint.style = Paint.Style.FILL
             paint.alpha = 255
