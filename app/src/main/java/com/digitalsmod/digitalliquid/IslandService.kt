@@ -120,12 +120,12 @@ class IslandService : Service() {
     private var currentMorphProgress = 0f
     private var expandedRadiusDp = 30f
 
-    // ---- Siri Lens & Card AI state ------------------------------------------------
+    // ---- Siri Lens & Unified Glass UI state ---------------------------------------
     private var siriActive = false
     private var siriCardExpanded = false
     private var isSiriShrinking = false
     private var siriView: SiriLensEffectView? = null
-    private var siriAiContainer: FrameLayout? = null
+    private var siriUiContainer: FrameLayout? = null
     private var siriDropletAnimator: ValueAnimator? = null
     private val siriShrinkSafety = Runnable {
         resizeAnimator?.cancel()
@@ -555,25 +555,22 @@ class IslandService : Service() {
         else -> targetWidth() + targetHostInsetPx() * 2
     }
 
+    // FIX LỖI XOAY NGANG KHI CHƠI GAME: Luôn gắn ở đỉnh giữa (TOP | CENTER_HORIZONTAL)
     private fun windowGravity(): Int = when {
         isRecordingControlExpanded() -> Gravity.TOP or Gravity.CENTER_HORIZONTAL
-        isLandscapeWithSideCutout() && !panelOpen && !siriActive -> Gravity.TOP or Gravity.LEFT
-        else -> gravityForWindow()
+        else -> Gravity.TOP or Gravity.CENTER_HORIZONTAL
     }
 
-    private fun windowX(): Int {
+    // FIX LỖI XOAY NGANG: Không bị lệch sang mép trái màn hình khi xoay ngang
+    private fun positionX(windowWidth: Int = targetWidth(), expanded: Boolean = panelOpen): Int {
         if (isRecordingControlExpanded() || siriCardExpanded) return 0
-        val inset = targetHostInsetPx()
-        val pillX = positionX(targetWidth(), panelOpen || siriActive)
-        val gravity = windowGravity()
-        return when {
-            (gravity and Gravity.HORIZONTAL_GRAVITY_MASK) == Gravity.LEFT -> pillX - inset
-            (gravity and Gravity.HORIZONTAL_GRAVITY_MASK) == Gravity.RIGHT -> pillX - inset
-            else -> pillX
-        }
+        return horizontalOffset()
     }
 
-    private fun windowY(): Int = if (isRecordingControlExpanded()) 0 else positionY(targetHeight(), panelOpen || siriActive)
+    private fun positionY(windowHeight: Int = targetHeight(), expanded: Boolean = panelOpen): Int {
+        if (isRecordingControlExpanded()) return 0
+        return overlayTopY()
+    }
 
     private fun lerp(a: Float, b: Float, t: Float) = a + (b - a) * t
 
@@ -600,7 +597,6 @@ class IslandService : Service() {
         val r = lerp(pillH / 2f, dp(expandedRadiusDp), currentMorphProgress)
             .coerceIn(0f, min(pillW, pillH) / 2f)
         val siriMix = if (siriActive || isSiriShrinking) currentMorphProgress.coerceIn(0f, 1f) else 0f
-        // Lớp nền đen của root tắt hoàn toàn để nhường trọn vẹn cho thấu kính hiển thị
         val bgAlpha = ((1f - siriMix) * 255f).roundToInt().coerceIn(0, 255)
         rootBackground.setColor(Color.argb(bgAlpha, 0, 0, 0))
         rootBackground.cornerRadius = r
@@ -774,6 +770,7 @@ class IslandService : Service() {
         overlayHost = host
         hostInsetPx = targetHostInsetPx()
 
+        // Bật cờ WATCH_OUTSIDE_TOUCH để chạm ra ngoài tự động đóng về viên thuốc
         val initialParams = WindowManager.LayoutParams(
             targetWindowWidth(),
             targetHeight(),
@@ -841,7 +838,7 @@ class IslandService : Service() {
         faceView?.release()
         faceView = null
         siriView = null
-        siriAiContainer = null
+        siriUiContainer = null
         siriActive = false
         siriCardExpanded = false
         isSiriShrinking = false
@@ -859,6 +856,7 @@ class IslandService : Service() {
     }
 
     private fun handlePillTouch(view: View, event: MotionEvent): Boolean {
+        // Chạm ra ngoài màn hình -> Tự động đóng mượt mà về viên thuốc
         if (event.actionMasked == MotionEvent.ACTION_OUTSIDE) {
             if (siriActive) {
                 beginSiriShrink()
@@ -889,14 +887,14 @@ class IslandService : Service() {
                     val deltaX = abs(event.rawX - downX)
                     val isTap = deltaX <= touchSlop * 1.5f && abs(deltaY) <= touchSlop * 1.5f
 
-                    // Vuốt lên trên để đóng
+                    // Vuốt lên trên để đóng về Dynamic Island
                     if (deltaY > dp(20) && deltaY > deltaX) {
                         view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
                         beginSiriShrink()
                         return true
                     }
 
-                    // Chạm vào phần kính trong suốt bên dưới -> Phóng to ra và thu nhỏ phần đen
+                    // Chạm vào phần kính trong suốt (nửa dưới) -> Mở rộng để nhập văn bản
                     if (isTap) {
                         view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
                         if (!siriCardExpanded && event.y >= view.height * 0.40f) {
@@ -1009,7 +1007,7 @@ class IslandService : Service() {
         siriCardExpanded = true
         stopSiriDropletFloatAnimation()
 
-        // Phóng to kích thước cửa sổ để nhận bàn phím và gõ văn bản
+        // Bỏ cờ FLAG_NOT_FOCUSABLE để bàn phím ảo xuất hiện cho phép gõ chữ trực tiếp
         params?.let { lp ->
             lp.flags = lp.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
             updateOverlayWindow(lp)
@@ -1062,6 +1060,7 @@ class IslandService : Service() {
             updateOverlayWindow(lp)
         }
 
+        siriUiContainer?.animate()?.alpha(0f)?.setDuration(150L)?.start()
         siriView?.animateCardMode(false)
 
         glassView?.apply {
@@ -1081,7 +1080,7 @@ class IslandService : Service() {
         siriCardExpanded = false
         faceGhostsActive = false
         siriView = null
-        siriAiContainer = null
+        siriUiContainer = null
         stopSiriDropletFloatAnimation()
         currentMorphProgress = 0f
         glassView?.alpha = 1f
@@ -1096,7 +1095,7 @@ class IslandService : Service() {
         resizeAnimator?.cancel()
         stopSiriDropletFloatAnimation()
         siriView = null
-        siriAiContainer = null
+        siriUiContainer = null
         siriActive = false
         siriCardExpanded = false
         isSiriShrinking = false
@@ -1317,7 +1316,7 @@ class IslandService : Service() {
         isRecordingControlExpanded() -> maxOf(statusBarHeightPx() + dp(24), dp(50))
         panelOpen && screenRecording -> dp(66)
         panelOpen -> dp(252)
-        screenRecording -> maxOf(heightDp, 42)
+        screenRecording -> dp(maxOf(heightDp, 42))
         else -> dp(heightDp)
     }
 
@@ -1362,47 +1361,12 @@ class IslandService : Service() {
         return null
     }
 
-    private fun isLandscapeWithSideCutout(): Boolean {
-        if (resources.configuration.orientation != Configuration.ORIENTATION_LANDSCAPE) return false
-        val rect = currentCameraCutoutBounds() ?: return false
-        val edgeTolerance = dp(18)
-        val screenWidth = displayWidthPx()
-        return rect.left <= edgeTolerance || rect.right >= screenWidth - edgeTolerance
-    }
+    private fun isLandscapeWithSideCutout(): Boolean = false
 
     private fun isPortraitWithTopCutout(): Boolean {
         if (resources.configuration.orientation != Configuration.ORIENTATION_PORTRAIT) return false
         val rect = currentCameraCutoutBounds() ?: return false
         return rect.top <= dp(18) && rect.centerY() <= dp(90)
-    }
-
-    private fun positionX(windowWidth: Int = targetWidth(), expanded: Boolean = panelOpen): Int {
-        if (isRecordingControlExpanded() || siriCardExpanded) return 0
-        if (isLandscapeWithSideCutout() && !panelOpen && !siriActive) {
-            val cutout = currentCameraCutoutBounds()
-            if (cutout != null) {
-                val edgeInset = dp(12)
-                return if (cutout.centerX() < displayWidthPx() / 2) edgeInset
-                else (displayWidthPx() - windowWidth - edgeInset).coerceAtLeast(edgeInset)
-            }
-        }
-        if (isPortraitWithTopCutout()) {
-            val cutout = currentCameraCutoutBounds()
-            if (cutout != null) return cutout.centerX() - displayWidthPx() / 2
-        }
-        return horizontalOffset()
-    }
-
-    private fun positionY(windowHeight: Int = targetHeight(), expanded: Boolean = panelOpen): Int {
-        if (isRecordingControlExpanded()) return 0
-        if (isLandscapeWithSideCutout() && !panelOpen && !siriActive) {
-            val cutout = currentCameraCutoutBounds()
-            if (cutout != null) {
-                return (cutout.centerY() - windowHeight / 2)
-                    .coerceIn(0, (displayHeightPx() - windowHeight).coerceAtLeast(0))
-            }
-        }
-        return overlayTopY()
     }
 
     private fun updatePosition() {
@@ -1412,8 +1376,8 @@ class IslandService : Service() {
         lp.width = targetWindowWidth()
         lp.height = targetHeight()
         lp.gravity = windowGravity()
-        lp.x = windowX()
-        lp.y = windowY()
+        lp.x = positionX(targetWidth(), panelOpen || siriActive)
+        lp.y = positionY(targetHeight(), panelOpen || siriActive)
         hostInsetPx = targetHostInsetPx()
         syncOverlayChildBounds(targetWidth(), targetHeight())
         updateExpandedRadius()
@@ -1451,18 +1415,18 @@ class IslandService : Service() {
             }
             val hostFrame = siriView?.parent as? FrameLayout
             if (siriCardExpanded && hostFrame != null) {
-                if (siriAiContainer?.parent !== hostFrame) {
-                    val aiCard = buildSiriAiCardUI()
-                    siriAiContainer = aiCard
-                    hostFrame.addView(aiCard, FrameLayout.LayoutParams(-1, -1))
+                if (siriUiContainer?.parent !== hostFrame) {
+                    val unifiedUi = buildUnifiedSiriUI()
+                    siriUiContainer = unifiedUi
+                    hostFrame.addView(unifiedUi, FrameLayout.LayoutParams(-1, -1))
                 }
             } else {
-                siriAiContainer?.let { (it.parent as? FrameLayout)?.removeView(it) }
-                siriAiContainer = null
+                siriUiContainer?.let { (it.parent as? FrameLayout)?.removeView(it) }
+                siriUiContainer = null
             }
         } else if (faceUnlocking) {
             siriView = null
-            siriAiContainer = null
+            siriUiContainer = null
             rootContent.setPadding(0, 0, 0, 0)
             if (faceView?.parent !== rootContent) {
                 rootContent.removeAllViews()
@@ -1475,7 +1439,7 @@ class IslandService : Service() {
             faceView?.release()
             faceView = null
             siriView = null
-            siriAiContainer = null
+            siriUiContainer = null
             if (isRecordingControlExpanded()) {
                 rootContent.setPadding(dp(20), 0, dp(18), 0)
             } else {
@@ -1523,8 +1487,8 @@ class IslandService : Service() {
                 lp.width = targetWindowWidth()
                 lp.height = targetHeight()
                 lp.gravity = windowGravity()
-                lp.x = windowX()
-                lp.y = windowY()
+                lp.x = positionX(targetWidth(), panelOpen || siriActive)
+                lp.y = positionY(targetHeight(), panelOpen || siriActive)
                 hostInsetPx = targetHostInsetPx()
                 syncOverlayChildBounds(targetWidth(), targetHeight())
                 updateOverlayWindow(lp)
@@ -1534,68 +1498,67 @@ class IslandService : Service() {
     }
 
     /**
-     * UI Thẻ Siri AI khi bấm vào vùng trong suốt:
-     * - Phần trên màu đen: hiển thị câu hỏi đầu tiên.
-     * - Phần dưới trong suốt: khung chat và tin nhắn phản hồi với hiệu ứng Motion Blur.
+     * Giao diện chuẩn 1/2 tích hợp trực tiếp:
+     * - Nửa trên (đen): Câu hỏi đầu tiên.
+     * - Nửa dưới (dùng luôn bề mặt kính trong suốt): Nhập văn bản trực tiếp và hiển thị tin phản hồi kèm Motion Blur.
      */
-    private fun buildSiriAiCardUI(): FrameLayout = FrameLayout(this).apply {
+    private fun buildUnifiedSiriUI(): FrameLayout = FrameLayout(this).apply {
         alpha = 0f
 
-        // Vùng đen ở đỉnh: Chứa câu hỏi đầu tiên
-        val topHeader = LinearLayout(context).apply {
+        val container = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            weightSum = 2f
+        }
+
+        // 1. NỬA TRÊN ĐEN (1/2): Chứa câu hỏi đầu tiên
+        val topHalf = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_VERTICAL or Gravity.START
-            setPadding(dp(22), dp(10), dp(22), dp(4))
-            val promptTitle = TextView(context).apply {
+            setPadding(dp(22), dp(8), dp(22), dp(4))
+            val promptText = TextView(context).apply {
                 text = "Hỏi bất cứ điều gì với Siri AI..."
-                textSize = 12.5f
+                textSize = 13.5f
                 typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                 setTextColor(Color.WHITE)
             }
-            addView(promptTitle)
+            addView(promptText)
         }
-        addView(topHeader, FrameLayout.LayoutParams(-1, dp(48), Gravity.TOP))
+        container.addView(topHalf, LinearLayout.LayoutParams(-1, 0, 1f))
 
-        // Vùng trong suốt ở nửa dưới: chứa văn bản phản hồi (Motion Blur) + ô nhập tin nhắn
-        val bottomArea = LinearLayout(context).apply {
+        // 2. NỬA DƯỚI KÍNH TRONG SUỐT (1/2): Nhập văn bản trực tiếp trên nền kính
+        val bottomHalf = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-            setPadding(dp(18), dp(0), dp(18), dp(14))
+            gravity = Gravity.CENTER_VERTICAL or Gravity.CENTER_HORIZONTAL
+            setPadding(dp(20), dp(4), dp(20), dp(8))
 
-            // Text phản hồi có hiệu ứng Motion Blur khi xuất hiện
             val responseText = TextView(context).apply {
-                text = "Siri đang lắng nghe..."
-                textSize = 14f
+                text = ""
+                textSize = 13f
                 typeface = Typeface.create("sans-serif", Typeface.NORMAL)
                 setTextColor(0xFFE8EEF8.toInt())
                 gravity = Gravity.CENTER
-                alpha = 0f
+                visibility = View.GONE
             }
-            addView(responseText, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(12) })
+            addView(responseText, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6) })
 
-            // Khung nhập văn bản gửi câu hỏi
-            val inputBar = LinearLayout(context).apply {
+            // Khung gõ chữ trực tiếp trên nền kính
+            val inputRow = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(12), dp(7), dp(12), dp(7))
-                background = GradientDrawable().apply {
-                    setColor(0x22FFFFFF)
-                    cornerRadius = dp(20).toFloat()
-                    setStroke(dp(1), 0x33FFFFFF)
-                }
             }
             val editInput = EditText(context).apply {
                 hint = "Nhập văn bản..."
-                setHintTextColor(0xFFA0A5B2.toInt())
+                setHintTextColor(0xFFB0B6C2.toInt())
                 setTextColor(Color.WHITE)
-                textSize = 13f
+                textSize = 14f
                 background = null
                 isSingleLine = true
             }
             val sendBtn = TextView(context).apply {
                 text = "✦"
-                textSize = 17f
+                textSize = 18f
                 setTextColor(0xFF00D8FF.toInt())
+                setPadding(dp(8), 0, dp(4), 0)
                 setOnClickListener {
                     val query = editInput.text?.toString()?.trim().orEmpty()
                     if (query.isNotBlank()) {
@@ -1604,18 +1567,20 @@ class IslandService : Service() {
                     }
                 }
             }
-            inputBar.addView(editInput, LinearLayout.LayoutParams(0, -2, 1f))
-            inputBar.addView(sendBtn)
-            addView(inputBar, LinearLayout.LayoutParams(-1, -2))
+            inputRow.addView(editInput, LinearLayout.LayoutParams(0, -2, 1f))
+            inputRow.addView(sendBtn)
+            addView(inputRow, LinearLayout.LayoutParams(-1, -2))
         }
-        addView(bottomArea, FrameLayout.LayoutParams(-1, -1))
+        container.addView(bottomHalf, LinearLayout.LayoutParams(-1, 0, 1f))
 
+        addView(container, FrameLayout.LayoutParams(-1, -1))
         animate().alpha(1f).setStartDelay(100L).setDuration(240L).start()
     }
 
-    /** Tạo hiệu ứng Motion Blur thực sự cho chữ khi hiển thị phản hồi */
+    /** Hiệu ứng Motion Blur cho chữ khi phản hồi */
     private fun showMotionBlurResponse(targetView: TextView, text: String) {
         targetView.text = text
+        targetView.visibility = View.VISIBLE
         targetView.alpha = 0f
         targetView.translationY = dp(6).toFloat()
 
@@ -1648,20 +1613,24 @@ class IslandService : Service() {
         dot.contentDescription = if (cameraActive) "Camera đang hoạt động" else "DigitalLiquid trạng thái chờ"
     }
 
+    // FIX LỖI XOAY NGANG: Khi xoay ngang màn hình (Configuration.ORIENTATION_LANDSCAPE), tự động ẩn Dynamic Island để không đè lên game
     private fun applyNativeActivityVisibility() {
         val root = islandRoot ?: return
         val host = overlayHost ?: return
         val lp = params ?: return
         val prefs = AppPrefs.get(this)
+        val isLandscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
         val hideForSystemIsland = prefs.getBoolean(AppPrefs.AUTO_HIDE_SYSTEM_ISLAND, true) && hyperIslandVisibilityOverride == true
         val hideForOtherActivity = prefs.getBoolean(AppPrefs.HIDE_WHEN_NATIVE_ACTIVITY, true) && nativeActivityActive
         val hideForMusic = prefs.getBoolean(AppPrefs.HIDE_WHEN_MEDIA_PLAYING, true) && mediaPlaybackActive
         val ringerTransitionActive = android.os.SystemClock.elapsedRealtime() < ringerTransitionHideUntil
         val hideForRingerUi = prefs.getBoolean(AppPrefs.HIDE_WHEN_RINGER_UI, true) && ringerTransitionActive
         val nativeIslandVisible = hideForSystemIsland || hideForOtherActivity || hideForMusic || hideForRingerUi
-        val suppress = !faceUnlocking && !isFaceUnlockShrinking && !siriActive && !isSiriShrinking && (
+        
+        // Tự động ẩn khi đang xoay ngang chơi game để không bị xoay dọc lệch góc như ảnh lỗi
+        val suppress = isLandscape || (!faceUnlocking && !isFaceUnlockShrinking && !siriActive && !isSiriShrinking && (
             ringerTransitionActive || (!screenRecording && !cameraActive && nativeIslandVisible)
-        )
+        ))
         val wantedVisibility = if (suppress) View.GONE else View.VISIBLE
         val hasNotTouchable = (lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) != 0
         if (host.visibility != wantedVisibility || hasNotTouchable != suppress) {
@@ -1716,7 +1685,7 @@ class IslandService : Service() {
         isFaceUnlockShrinking = false
         faceGhostsActive = false
         siriView = null
-        siriAiContainer = null
+        siriUiContainer = null
         faceFailed = false
         faceView?.release()
         faceView = null
@@ -2117,8 +2086,8 @@ class IslandService : Service() {
         val endPillWidth = targetWidth().toFloat()
         val endWidth = targetWindowWidth().toFloat()
         val endHeight = targetHeight().toFloat()
-        val endX = windowX().toFloat()
-        val endY = windowY().toFloat()
+        val endX = positionX(targetWidth(), panelOpen || siriActive).toFloat()
+        val endY = positionY(targetHeight(), panelOpen || siriActive).toFloat()
         val startInset = hostInsetPx.toFloat()
         val endInset = targetHostInsetPx().toFloat()
         val startMorph = currentMorphProgress
@@ -2345,9 +2314,7 @@ class IslandService : Service() {
         ).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
             x = 0
-            y = if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE && isLandscapeWithSideCutout()) {
-                (positionY() + targetHeight() + dp(12)).coerceAtMost((displayHeightPx() - dp(140)).coerceAtLeast(0))
-            } else statusBarHeightPx() + dp(10)
+            y = statusBarHeightPx() + dp(10)
         }
         return try {
             windowManager.addView(card, lp)
@@ -2500,7 +2467,7 @@ class IslandService : Service() {
         faceView?.release()
         faceView = null
         siriView = null
-        siriAiContainer = null
+        siriUiContainer = null
         dismissCustomAppNotice(animate = false)
         stopPanelMedia()
         try { unregisterReceiver(configReceiver) } catch (_: Exception) { }
@@ -2538,7 +2505,7 @@ class IslandService : Service() {
 
         private const val SIRI_ORB_WIDTH_DP = 172
         private const val SIRI_ORB_HEIGHT_DP = 136
-        private const val SIRI_CARD_HEIGHT_DP = 156
+        private const val SIRI_CARD_HEIGHT_DP = 162
         private const val SIRI_EXPAND_MS = 420L
         private const val SIRI_SHRINK_MS = 380L
 
