@@ -40,10 +40,12 @@ class SiriLensEffectView(context: Context) : View(context) {
     private val dummyShader = LinearGradient(0f, 0f, 1f, 1f, Color.TRANSPARENT, Color.TRANSPARENT, Shader.TileMode.CLAMP)
 
     private var phase = 0f
-    private var morphProgress = 0f
+    private var morphProgress = 1f
     private var cardExpandProgress = 0f
     private var energy = 1f
+    private var listening = true
     private var animator: ValueAnimator? = null
+    private var intensityAnimator: ValueAnimator? = null
     private var cardModeAnimator: ValueAnimator? = null
 
     private var globalScreenX = 0f
@@ -151,7 +153,7 @@ class SiriLensEffectView(context: Context) : View(context) {
             half4 texR = backgroundTexture.eval(sampleR);
             half4 texG = backgroundTexture.eval(sampleG);
             half4 texB = backgroundTexture.eval(sampleB);
-            float3 refractedScene = float3(texR.r, texG.g, texB.b);
+            float3 refractedScene = float3(texR.r, texG.g, bgB = texB.b);
 
             // Tăng độ sâu tương phản thủy tinh (Specular Lobe Reflection như 2 vệt sáng đáy ở giây 00:02)
             float lobeReflect = exp(-pow((r - 0.84) * 16.0, 2.0)) * smoothstep(0.55, 0.92, uv.y) * abs(p.x) * (1.0 - cardMode * 0.7);
@@ -182,12 +184,28 @@ class SiriLensEffectView(context: Context) : View(context) {
 
     init {
         setLayerType(LAYER_TYPE_HARDWARE, null)
+        contentDescription = "Hiệu ứng kính Siri nhiều màu của DigitalLiquid"
         if (Build.VERSION.SDK_INT >= 33) {
             try {
                 shader = RuntimeShader(agsl)
             } catch (_: Exception) {
                 shader = null
             }
+        }
+    }
+
+    fun setListening(active: Boolean) {
+        if (listening == active) return
+        listening = active
+        val target = if (active) 1f else 0.52f
+        intensityAnimator?.cancel()
+        intensityAnimator = ValueAnimator.ofFloat(energy, target).apply {
+            duration = 260L
+            addUpdateListener {
+                energy = it.animatedValue as Float
+                invalidate()
+            }
+            start()
         }
     }
 
@@ -258,6 +276,8 @@ class SiriLensEffectView(context: Context) : View(context) {
     override fun onDetachedFromWindow() {
         animator?.cancel()
         animator = null
+        intensityAnimator?.cancel()
+        intensityAnimator = null
         cardModeAnimator?.cancel()
         cardModeAnimator = null
         releaseBackground()
