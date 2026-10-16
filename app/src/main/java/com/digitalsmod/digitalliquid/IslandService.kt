@@ -884,14 +884,12 @@ class IslandService : Service() {
                     val deltaX = abs(event.rawX - downX)
                     val isTap = deltaX <= touchSlop * 1.5f && abs(deltaY) <= touchSlop * 1.5f
 
-                    // Vuốt lên trên để đóng về Dynamic Island
                     if (deltaY > dp(20) && deltaY > deltaX) {
                         view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
                         beginSiriShrink()
                         return true
                     }
 
-                    // Chạm vào phần kính trong suốt bên dưới -> Phóng to ra và thu nhỏ phần đen
                     if (isTap) {
                         view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
                         if (!siriCardExpanded && event.y >= view.height * 0.40f) {
