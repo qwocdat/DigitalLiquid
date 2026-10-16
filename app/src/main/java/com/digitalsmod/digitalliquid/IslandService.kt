@@ -41,6 +41,7 @@ import android.view.View
 import android.view.ViewOutlineProvider
 import android.view.ViewConfiguration
 import android.view.WindowManager
+import android.view.animation.LinearInterpolator
 import android.view.animation.PathInterpolator
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -117,6 +118,7 @@ class IslandService : Service() {
     private var siriActive = false
     private var isSiriShrinking = false
     private var siriView: SiriLensEffectView? = null
+    private var siriDropletAnimator: ValueAnimator? = null
     private val siriShrinkSafety = Runnable {
         resizeAnimator?.cancel()
         finishSiriShrink()
@@ -824,6 +826,7 @@ class IslandService : Service() {
         if (shouldUseTrusted == usingAccessibilityOverlay) return
         try { windowManager.removeView(host) } catch (_: Exception) { }
         stopPanelMedia()
+        stopSiriDropletFloatAnimation()
         faceView?.release()
         faceView = null
         siriView?.releaseBackground()
@@ -861,7 +864,7 @@ class IslandService : Service() {
                 MotionEvent.ACTION_UP -> {
                     val deltaY = downY - event.rawY
                     val deltaX = abs(event.rawX - downX)
-                    // Vuốt lên trên ít nhất 24dp hoặc nhả tay chạm
+                    // Vuốt lên trên ít nhất 24dp hoặc nhả tay chạm nhẹ để đóng
                     if (deltaY > dp(24) && deltaY > deltaX) {
                         view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
                         beginSiriShrink()
@@ -960,28 +963,66 @@ class IslandService : Service() {
             panelOpen = false
             closingPanelWithMedia = false
         }
-        siriActive = true
-        isSiriShrinking = false
 
         val sWidth = displayWidthPx().toFloat()
         val sHeight = displayHeightPx().toFloat()
         val winX = ((sWidth - targetWidth()) / 2f).coerceAtLeast(0f)
         val winY = overlayTopY().toFloat()
 
-        // Bắt đầu chuỗi capture liên tục ~30 FPS qua AccessibilityService
-        HyperIslandVisibilityService.startContinuousStream { streamFrame ->
-            siriView?.updateBackgroundFrame(streamFrame, winX, winY, sWidth, sHeight)
-        }
+        // Ẩn nhẹ overlay trong 1 khung hình để chụp một bức ảnh sạch tuyệt đối của launcher
+        overlayHost?.alpha = 0f
+        handler.postDelayed({
+            HyperIslandVisibilityService.captureCleanScreen { capturedBmp ->
+                overlayHost?.alpha = 1f
+                siriView?.setBackgroundSource(capturedBmp, winX, winY, sWidth, sHeight)
+            }
+        }, 30L)
+
+        siriActive = true
+        isSiriShrinking = false
         render(animateSize = true)
+        startSiriDropletFloatAnimation()
+    }
+
+    /** Chuyển động đung đưa, co giãn bề mặt hữu cơ giống giọt nước lơ lửng */
+    private fun startSiriDropletFloatAnimation() {
+        stopSiriDropletFloatAnimation()
+        val root = islandRoot ?: return
+        val animator = ValueAnimator.ofFloat(0f, (Math.PI * 2.0).toFloat()).apply {
+            duration = 3800L
+            repeatCount = ValueAnimator.INFINITE
+            interpolator = LinearInterpolator()
+            addUpdateListener { anim ->
+                if (!siriActive || isSiriShrinking) return@addUpdateListener
+                val t = anim.animatedValue as Float
+                // Đung đưa nhẹ translation theo hình vô cực lơ lửng
+                root.translationX = (sin(t) * dp(1.8f)).toFloat()
+                root.translationY = (cos(t * 1.5f) * dp(1.2f)).toFloat()
+                // Co giãn nhịp thở nhẹ nhàng theo sức căng bề mặt chất lỏng
+                root.scaleX = 1.0f + 0.012f * sin(t * 2.0f)
+                root.scaleY = 1.0f - 0.012f * sin(t * 2.0f)
+            }
+        }
+        siriDropletAnimator = animator
+        animator.start()
+    }
+
+    private fun stopSiriDropletFloatAnimation() {
+        siriDropletAnimator?.cancel()
+        siriDropletAnimator = null
+        islandRoot?.apply {
+            translationX = 0f
+            translationY = 0f
+            scaleX = 1f
+            scaleY = 1f
+        }
     }
 
     private fun beginSiriShrink() {
         if (!siriActive || isSiriShrinking) return
         isSiriShrinking = true
         siriActive = false
-
-        // Dừng stream ngầm khi thu gọn về viên thuốc để tiết kiệm pin
-        HyperIslandVisibilityService.stopContinuousStream()
+        stopSiriDropletFloatAnimation()
 
         glassView?.apply {
             configure(glassStrength, tint, expandedNow = false)
@@ -1000,6 +1041,7 @@ class IslandService : Service() {
         faceGhostsActive = false
         siriView?.releaseBackground()
         siriView = null
+        stopSiriDropletFloatAnimation()
         currentMorphProgress = 0f
         glassView?.alpha = 1f
         applyPreferences()
@@ -1009,9 +1051,9 @@ class IslandService : Service() {
 
     private fun abortSiri() {
         if (!siriActive && !isSiriShrinking) return
-        HyperIslandVisibilityService.stopContinuousStream()
         handler.removeCallbacks(siriShrinkSafety)
         resizeAnimator?.cancel()
+        stopSiriDropletFloatAnimation()
         siriView?.releaseBackground()
         siriView = null
         siriActive = false
@@ -1512,6 +1554,7 @@ class IslandService : Service() {
         faceFailed = false
         faceView?.release()
         faceView = null
+        stopSiriDropletFloatAnimation()
         currentMorphProgress = 0f
         glassView?.alpha = 1f
         applyPreferences()
@@ -2284,7 +2327,7 @@ class IslandService : Service() {
             try { audioManager.unregisterAudioRecordingCallback(audioRecordingCallback) } catch (_: Exception) { }
         }
 
-        HyperIslandVisibilityService.stopContinuousStream()
+        stopSiriDropletFloatAnimation()
         instance = null
         AppPrefs.get(this).edit().putBoolean(AppPrefs.SERVICE_ENABLED, false).apply()
         resizeAnimator?.cancel()
