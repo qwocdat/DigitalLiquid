@@ -555,22 +555,22 @@ class IslandService : Service() {
         else -> targetWidth() + targetHostInsetPx() * 2
     }
 
-    // FIX LỖI XOAY NGANG KHI CHƠI GAME: Luôn gắn ở đỉnh giữa (TOP | CENTER_HORIZONTAL)
-    private fun windowGravity(): Int = when {
-        isRecordingControlExpanded() -> Gravity.TOP or Gravity.CENTER_HORIZONTAL
-        else -> Gravity.TOP or Gravity.CENTER_HORIZONTAL
-    }
+    // Luôn giữ ở vị trí TOP | CENTER_HORIZONTAL
+    private fun windowGravity(): Int = Gravity.TOP or Gravity.CENTER_HORIZONTAL
 
-    // FIX LỖI XOAY NGANG: Không bị lệch sang mép trái màn hình khi xoay ngang
-    private fun positionX(windowWidth: Int = targetWidth(), expanded: Boolean = panelOpen): Int {
+    private fun windowX(): Int {
         if (isRecordingControlExpanded() || siriCardExpanded) return 0
-        return horizontalOffset()
+        val inset = targetHostInsetPx()
+        val pillX = positionX(targetWidth(), panelOpen || siriActive)
+        val gravity = windowGravity()
+        return when {
+            (gravity and Gravity.HORIZONTAL_GRAVITY_MASK) == Gravity.LEFT -> pillX - inset
+            (gravity and Gravity.HORIZONTAL_GRAVITY_MASK) == Gravity.RIGHT -> pillX - inset
+            else -> pillX
+        }
     }
 
-    private fun positionY(windowHeight: Int = targetHeight(), expanded: Boolean = panelOpen): Int {
-        if (isRecordingControlExpanded()) return 0
-        return overlayTopY()
-    }
+    private fun windowY(): Int = if (isRecordingControlExpanded()) 0 else positionY(targetHeight(), panelOpen || siriActive)
 
     private fun lerp(a: Float, b: Float, t: Float) = a + (b - a) * t
 
@@ -770,7 +770,7 @@ class IslandService : Service() {
         overlayHost = host
         hostInsetPx = targetHostInsetPx()
 
-        // Bật cờ WATCH_OUTSIDE_TOUCH để chạm ra ngoài tự động đóng về viên thuốc
+        // Bật cờ FLAG_WATCH_OUTSIDE_TOUCH để tự động đóng khi chạm ra ngoài
         val initialParams = WindowManager.LayoutParams(
             targetWindowWidth(),
             targetHeight(),
@@ -1089,6 +1089,19 @@ class IslandService : Service() {
         updatePosition()
     }
 
+    private fun abortFaceUnlock() {
+        if (!faceUnlocking && !isFaceUnlockShrinking) return
+        handler.removeCallbacks(faceShrinkSafety)
+        resizeAnimator?.cancel()
+        faceView?.release()
+        faceView = null
+        faceUnlocking = false
+        isFaceUnlockShrinking = false
+        faceGhostsActive = false
+        currentMorphProgress = 0f
+        render(animateSize = false)
+    }
+
     private fun abortSiri() {
         if (!siriActive && !isSiriShrinking) return
         handler.removeCallbacks(siriShrinkSafety)
@@ -1316,7 +1329,7 @@ class IslandService : Service() {
         isRecordingControlExpanded() -> maxOf(statusBarHeightPx() + dp(24), dp(50))
         panelOpen && screenRecording -> dp(66)
         panelOpen -> dp(252)
-        screenRecording -> dp(maxOf(heightDp, 42))
+        screenRecording -> maxOf(heightDp, 42)
         else -> dp(heightDp)
     }
 
@@ -1325,8 +1338,6 @@ class IslandService : Service() {
         "right" -> Gravity.TOP or Gravity.RIGHT
         else -> Gravity.TOP or Gravity.CENTER_HORIZONTAL
     }
-
-    private fun gravityForWindow(): Int = Gravity.TOP or Gravity.CENTER_HORIZONTAL
 
     private fun horizontalOffset(): Int = 0
 
@@ -1361,12 +1372,24 @@ class IslandService : Service() {
         return null
     }
 
-    private fun isLandscapeWithSideCutout(): Boolean = false
-
     private fun isPortraitWithTopCutout(): Boolean {
         if (resources.configuration.orientation != Configuration.ORIENTATION_PORTRAIT) return false
         val rect = currentCameraCutoutBounds() ?: return false
         return rect.top <= dp(18) && rect.centerY() <= dp(90)
+    }
+
+    private fun positionX(windowWidth: Int = targetWidth(), expanded: Boolean = panelOpen): Int {
+        if (isRecordingControlExpanded() || siriCardExpanded) return 0
+        if (isPortraitWithTopCutout()) {
+            val cutout = currentCameraCutoutBounds()
+            if (cutout != null) return cutout.centerX() - displayWidthPx() / 2
+        }
+        return horizontalOffset()
+    }
+
+    private fun positionY(windowHeight: Int = targetHeight(), expanded: Boolean = panelOpen): Int {
+        if (isRecordingControlExpanded()) return 0
+        return overlayTopY()
     }
 
     private fun updatePosition() {
@@ -1376,8 +1399,8 @@ class IslandService : Service() {
         lp.width = targetWindowWidth()
         lp.height = targetHeight()
         lp.gravity = windowGravity()
-        lp.x = positionX(targetWidth(), panelOpen || siriActive)
-        lp.y = positionY(targetHeight(), panelOpen || siriActive)
+        lp.x = windowX()
+        lp.y = windowY()
         hostInsetPx = targetHostInsetPx()
         syncOverlayChildBounds(targetWidth(), targetHeight())
         updateExpandedRadius()
@@ -1487,8 +1510,8 @@ class IslandService : Service() {
                 lp.width = targetWindowWidth()
                 lp.height = targetHeight()
                 lp.gravity = windowGravity()
-                lp.x = positionX(targetWidth(), panelOpen || siriActive)
-                lp.y = positionY(targetHeight(), panelOpen || siriActive)
+                lp.x = windowX()
+                lp.y = windowY()
                 hostInsetPx = targetHostInsetPx()
                 syncOverlayChildBounds(targetWidth(), targetHeight())
                 updateOverlayWindow(lp)
@@ -1627,7 +1650,7 @@ class IslandService : Service() {
         val hideForRingerUi = prefs.getBoolean(AppPrefs.HIDE_WHEN_RINGER_UI, true) && ringerTransitionActive
         val nativeIslandVisible = hideForSystemIsland || hideForOtherActivity || hideForMusic || hideForRingerUi
         
-        // Tự động ẩn khi đang xoay ngang chơi game để không bị xoay dọc lệch góc như ảnh lỗi
+        // Tự động ẩn khi đang xoay ngang chơi game để không bị xoay dọc lệch góc
         val suppress = isLandscape || (!faceUnlocking && !isFaceUnlockShrinking && !siriActive && !isSiriShrinking && (
             ringerTransitionActive || (!screenRecording && !cameraActive && nativeIslandVisible)
         ))
@@ -2086,8 +2109,8 @@ class IslandService : Service() {
         val endPillWidth = targetWidth().toFloat()
         val endWidth = targetWindowWidth().toFloat()
         val endHeight = targetHeight().toFloat()
-        val endX = positionX(targetWidth(), panelOpen || siriActive).toFloat()
-        val endY = positionY(targetHeight(), panelOpen || siriActive).toFloat()
+        val endX = windowX().toFloat()
+        val endY = windowY().toFloat()
         val startInset = hostInsetPx.toFloat()
         val endInset = targetHostInsetPx().toFloat()
         val startMorph = currentMorphProgress
@@ -2121,6 +2144,7 @@ class IslandService : Service() {
         faceGhostsActive = ghostActive
 
         var canceled = false
+        val sWidth = displayWidthPx().toFloat()
         resizeAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
             duration = when {
                 siriCardExpanded -> 440L
@@ -2149,6 +2173,7 @@ class IslandService : Service() {
                 syncOverlayChildBounds(pillW, pillH)
                 applyRootCorner(pillW, pillH)
                 siriView?.setMorphProgress(currentMorphProgress.coerceIn(0f, 1f))
+                siriView?.updateWindowPosition(((sWidth - pillW) / 2f).coerceAtLeast(0f), lp.y.toFloat())
                 root.scaleX = 1f
                 root.scaleY = 1f
 
@@ -2170,6 +2195,7 @@ class IslandService : Service() {
                     syncOverlayChildBounds(endPillWidth.roundToInt(), endHeight.roundToInt())
                     applyRootCorner(endPillWidth.roundToInt(), endHeight.roundToInt())
                     siriView?.setMorphProgress(currentMorphProgress.coerceIn(0f, 1f))
+                    siriView?.updateWindowPosition(((sWidth - endPillWidth) / 2f).coerceAtLeast(0f), endY)
                     root.scaleX = 1f
                     root.scaleY = 1f
                     root.alpha = 1f
