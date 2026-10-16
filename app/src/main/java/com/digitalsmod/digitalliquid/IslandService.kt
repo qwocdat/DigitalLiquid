@@ -14,6 +14,7 @@ import android.content.res.Configuration
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Outline
@@ -47,6 +48,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import java.util.concurrent.Executors
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.math.sin
@@ -117,6 +119,7 @@ class IslandService : Service() {
     private var siriActive = false
     private var isSiriShrinking = false
     private var siriView: SiriLensEffectView? = null
+    private val captureExecutor = Executors.newSingleThreadExecutor()
     private val siriShrinkSafety = Runnable {
         resizeAnimator?.cancel()
         finishSiriShrink()
@@ -942,7 +945,56 @@ class IslandService : Service() {
         }
         siriActive = true
         isSiriShrinking = false
+
+        // Chụp khung hình nền phía dưới trước khi bung kính để nạp vào bộ xử lý khúc xạ quang học
+        captureBackgroundSnapshotForRefraction()
         render(animateSize = true)
+    }
+
+    private fun captureBackgroundSnapshotForRefraction() {
+        if (Build.VERSION.SDK_INT >= 30) {
+            val sWidth = displayWidthPx().toFloat()
+            val sHeight = displayHeightPx().toFloat()
+            val winX = ((sWidth - targetWidth()) / 2f).coerceAtLeast(0f)
+            val winY = overlayTopY().toFloat()
+
+            // Ẩn nhẹ overlay trong 1 khung hình để chụp trọn vẹn icon app bên dưới không bị che
+            overlayHost?.alpha = 0f
+            handler.postDelayed({
+                try {
+                    val trustedService = HyperIslandVisibilityService.instance()
+                    trustedService?.takeScreenshot(
+                        Display.DEFAULT_DISPLAY,
+                        captureExecutor,
+                        object : android.accessibilityservice.AccessibilityService.TakeScreenshotCallback {
+                            override fun onSuccess(screenshot: android.accessibilityservice.AccessibilityService.ScreenshotResult) {
+                                val buffer = screenshot.hardwareBuffer
+                                val colorSpace = screenshot.colorSpace
+                                val bmp = if (buffer != null) {
+                                    Bitmap.wrapHardwareBuffer(buffer, colorSpace)?.copy(Bitmap.Config.ARGB_8888, false)
+                                } else null
+                                buffer?.close()
+
+                                handler.post {
+                                    overlayHost?.alpha = 1f
+                                    siriView?.setBackgroundSource(bmp, winX, winY, sWidth, sHeight)
+                                }
+                            }
+
+                            override fun onFailure(errorCode: Int) {
+                                handler.post {
+                                    overlayHost?.alpha = 1f
+                                    siriView?.setBackgroundSource(null, winX, winY, sWidth, sHeight)
+                                }
+                            }
+                        }
+                    )
+                } catch (_: Exception) {
+                    overlayHost?.alpha = 1f
+                    siriView?.setBackgroundSource(null, winX, winY, sWidth, sHeight)
+                }
+            }, 30L)
+        }
     }
 
     private fun beginSiriShrink() {
@@ -2269,6 +2321,7 @@ class IslandService : Service() {
         overlayHost = null
         islandRoot = null
         ghostLayers.clear()
+        captureExecutor.shutdown()
         handler.removeCallbacksAndMessages(null)
         super.onDestroy()
     }
