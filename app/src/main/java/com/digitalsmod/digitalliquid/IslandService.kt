@@ -826,6 +826,7 @@ class IslandService : Service() {
         stopPanelMedia()
         faceView?.release()
         faceView = null
+        siriView?.releaseBackground()
         siriView = null
         siriActive = false
         isSiriShrinking = false
@@ -942,6 +943,15 @@ class IslandService : Service() {
         }
         siriActive = true
         isSiriShrinking = false
+
+        val sWidth = displayWidthPx().toFloat()
+        val sHeight = displayHeightPx().toFloat()
+        val winX = ((sWidth - targetWidth()) / 2f).coerceAtLeast(0f)
+        val winY = overlayTopY().toFloat()
+
+        HyperIslandVisibilityService.captureScreen { capturedBmp ->
+            siriView?.setBackgroundSource(capturedBmp, winX, winY, sWidth, sHeight)
+        }
         render(animateSize = true)
     }
 
@@ -965,6 +975,7 @@ class IslandService : Service() {
         if (!isSiriShrinking) return
         isSiriShrinking = false
         faceGhostsActive = false
+        siriView?.releaseBackground()
         siriView = null
         currentMorphProgress = 0f
         glassView?.alpha = 1f
@@ -977,6 +988,7 @@ class IslandService : Service() {
         if (!siriActive && !isSiriShrinking) return
         handler.removeCallbacks(siriShrinkSafety)
         resizeAnimator?.cancel()
+        siriView?.releaseBackground()
         siriView = null
         siriActive = false
         isSiriShrinking = false
@@ -1472,6 +1484,7 @@ class IslandService : Service() {
         if (!isFaceUnlockShrinking) return
         isFaceUnlockShrinking = false
         faceGhostsActive = false
+        siriView?.releaseBackground()
         faceFailed = false
         faceView?.release()
         faceView = null
@@ -2257,6 +2270,7 @@ class IslandService : Service() {
         recordingTimerTask?.let { handler.removeCallbacks(it) }
         faceView?.release()
         faceView = null
+        siriView?.releaseBackground()
         siriView = null
         dismissCustomAppNotice(animate = false)
         stopPanelMedia()
@@ -2293,11 +2307,11 @@ class IslandService : Service() {
         private const val RINGER_TRANSITION_HIDE_MS = 2100L
         private const val TRAIL_EXTENT_DP = 38
 
-        private const val SIRI_WIDTH_DP = 186
-        private const val SIRI_HEIGHT_DP = 138
-        private const val SIRI_CORNER_RADIUS_DP = 69f
-        private const val SIRI_EXPAND_MS = 420L
-        private const val SIRI_SHRINK_MS = 380L
+        private const val SIRI_WIDTH_DP = 168
+        private const val SIRI_HEIGHT_DP = 142
+        private const val SIRI_CORNER_RADIUS_DP = 71f
+        private const val SIRI_EXPAND_MS = 400L
+        private const val SIRI_SHRINK_MS = 370L
 
         private const val FACE_SIZE_DP = 150
         private const val FACE_SQUIRCLE_RADIUS_DP = 38f
