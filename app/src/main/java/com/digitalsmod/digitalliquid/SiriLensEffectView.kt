@@ -9,55 +9,143 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RadialGradient
 import android.graphics.RectF
+import android.graphics.RuntimeShader
 import android.graphics.Shader
+import android.os.Build
 import android.view.View
 import android.view.animation.LinearInterpolator
+import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
 
 /**
- * Siri-inspired optical lens for DigitalLiquid. It is deliberately a visual layer first:
- * the camera pill stays black while a moving glass lens and spectral flare animate around it.
+ * Hiệu ứng kính quang học Siri 1:1 nguyên bản cho DigitalLiquid.
+ * Sử dụng AGSL RuntimeShader trên GPU để tính toán khúc xạ thủy tinh 3D,
+ * dải tán sắc quang phổ chân thực và độ trong suốt sâu nhìn xuyên thấu nền màn hình.
  */
 class SiriLensEffectView(context: Context) : View(context) {
     private val density = resources.displayMetrics.density
     private fun dp(value: Float) = value * density
 
-    private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.DITHER_FLAG)
-    private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-    }
-    private val flarePath = Path()
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val clipPath = Path()
-    private val sphereRect = RectF()
-    private var centerX = 0f
-    private var centerY = 0f
-    private var radius = 0f
-    private var expandProgress = 1f
-
-    private var topDarkShader: Shader? = null
-    private var lowerGlassShader: Shader? = null
-    private var refractionRimShader: Shader? = null
-    private var leftCausticShader: Shader? = null
-    private var rightCausticShader: Shader? = null
-    private var spectrumCoreShader: Shader? = null
-    private var spectrumGlowShader: Shader? = null
-    private var bottomLipShader: Shader? = null
-
+    private val viewBounds = RectF()
+    private var shader: RuntimeShader? = null
     private var phase = 0f
+    private var morphProgress = 1f
     private var energy = 1f
     private var listening = true
-    private var intensityAnimator: ValueAnimator? = null
     private var animator: ValueAnimator? = null
+    private var intensityAnimator: ValueAnimator? = null
+
+    // Fallback cho thiết bị Android < 13
+    private val fallbackPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val flarePath = Path()
+
+    private val agsl = """
+        uniform float2 resolution;
+        uniform float time;
+        uniform float morph;
+        uniform float energy;
+
+        float3 siriSpectrum(float t) {
+            float3 c0 = float3(0.05, 0.35, 1.00);
+            float3 c1 = float3(0.00, 0.85, 0.98);
+            float3 c2 = float3(0.15, 0.98, 0.42);
+            float3 c3 = float3(1.00, 0.90, 0.18);
+            float3 c4 = float3(1.00, 0.45, 0.08);
+            float3 c5 = float3(1.00, 0.12, 0.24);
+
+            float x = clamp(t, 0.0, 1.0);
+            float3 col = mix(c0, c1, smoothstep(0.00, 0.20, x));
+            col = mix(col, c2, smoothstep(0.18, 0.40, x));
+            col = mix(col, c3, smoothstep(0.38, 0.60, x));
+            col = mix(col, c4, smoothstep(0.58, 0.80, x));
+            col = mix(col, c5, smoothstep(0.78, 1.00, x));
+            return col;
+        }
+
+        half4 main(float2 fragCoord) {
+            float2 res = max(resolution, float2(1.0, 1.0));
+            float2 uv = fragCoord / res;
+            float x = uv.x;
+            float y = uv.y;
+
+            float2 p = (uv - float2(0.5, 0.5)) * 2.0;
+            float distSq = p.x * p.x + p.y * p.y;
+            float dist = sqrt(max(0.0, distSq));
+
+            // 1. Đỉnh quả cầu giữ màu đen sâu tuyệt đối để hòa hợp làm 1 với camera / Dynamic Island
+            float blackTop = 1.0 - smoothstep(0.28, 0.44, y);
+
+            // 2. Dải quang phổ tán sắc uốn cong chuẩn Apple Siri 1:1
+            float arch = -sin(x * 3.14159) * 0.065;
+            float wave = 0.012 * sin(x * 6.28 - time * 1.5) + 0.006 * sin(x * 12.56 + time * 0.9);
+            float flareLine = 0.415 + arch + wave;
+            float dy = y - flareLine;
+
+            float flareCore = exp(-abs(dy) * 120.0);
+            float flareMid = exp(-abs(dy) * 28.0);
+            float flareBloom = exp(-abs(dy) * 7.5);
+
+            float specT = clamp((x - 0.12) / 0.76, 0.0, 1.0);
+            float3 specCol = siriSpectrum(specT);
+
+            // Điểm hội tụ ánh sáng trắng rực ở lệch tâm trái giống hệt ảnh mẫu
+            float hotSpot = exp(-pow((x - 0.38) / 0.18, 2.0)) * flareCore * 1.7;
+            float3 hotLight = float3(1.0, 0.99, 0.96) * hotSpot;
+
+            // 3. Khúc xạ thủy tinh trong suốt nửa dưới cho phép nhìn thấy chiều sâu nền phía sau
+            float3 glassTint = float3(0.05, 0.09, 0.16);
+            float glassAlpha = mix(0.12, 0.32, smoothstep(0.35, 0.95, dist));
+
+            // Vệt khúc xạ cong hình lưỡi liềm ở lòng kính dưới
+            float causticDist = length(float2((x - 0.5) * 1.25, y - 0.46));
+            float causticArc = exp(-pow(causticDist - 0.46, 2.0) * 110.0) * smoothstep(0.40, 0.82, y);
+            float3 causticCol = float3(0.80, 0.90, 1.0) * causticArc * 0.65;
+
+            // Viền khúc xạ bạc sắc nét bao quanh đáy quả cầu
+            float rimShape = smoothstep(0.88, 0.98, dist) * (1.0 - smoothstep(0.985, 1.01, dist));
+            float rimWeight = smoothstep(0.15, 0.85, y);
+            float3 rimCol = float3(0.92, 0.96, 1.0) * rimShape * rimWeight * 1.8;
+
+            // Ánh phản chiếu nhẹ ở đỉnh
+            float topGlance = exp(-pow((x - 0.5) / 0.35, 2.0)) * exp(-pow((y - 0.06) / 0.04, 2.0)) * 0.22;
+            float3 topCol = float3(1.0) * topGlance;
+
+            // Tổng hợp các lớp quang học
+            float3 rgb = mix(glassTint, float3(0.0, 0.0, 0.0), blackTop);
+            rgb += specCol * (flareMid * 0.92 + flareBloom * 0.38) * energy;
+            rgb += (specCol * 0.4 + float3(0.7, 0.85, 1.0) * 0.6) * flareCore * 1.2;
+            rgb += hotLight;
+            rgb += causticCol;
+            rgb += rimCol;
+            rgb += topCol;
+
+            // Đỉnh đen hoàn toàn (alpha 1.0), đáy thủy tinh trong suốt cho nền xuyên thấu
+            float finalAlpha = max(blackTop, glassAlpha);
+            finalAlpha = max(finalAlpha, (flareMid * 0.75 + flareCore * 0.95) * energy);
+            finalAlpha = max(finalAlpha, rimShape * rimWeight * 0.85);
+            finalAlpha = clamp(finalAlpha * morph, 0.0, 1.0);
+
+            return half4(half3(clamp(rgb, 0.0, 1.0) * finalAlpha), half(finalAlpha));
+        }
+    """.trimIndent()
 
     init {
         setLayerType(LAYER_TYPE_HARDWARE, null)
         contentDescription = "Hiệu ứng kính Siri nhiều màu của DigitalLiquid"
+        if (Build.VERSION.SDK_INT >= 33) {
+            try {
+                shader = RuntimeShader(agsl)
+            } catch (_: Exception) {
+                shader = null
+            }
+        }
     }
 
     fun setMorphProgress(progress: Float) {
-        expandProgress = progress.coerceIn(0f, 1f)
+        morphProgress = progress.coerceIn(0f, 1f)
         invalidate()
     }
 
@@ -71,100 +159,6 @@ class SiriLensEffectView(context: Context) : View(context) {
             addUpdateListener { energy = it.animatedValue as Float; invalidate() }
             start()
         }
-    }
-
-    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        super.onSizeChanged(w, h, oldw, oldh)
-        if (w <= 0 || h <= 0) return
-        centerX = w * 0.5f
-        centerY = h * 0.5f
-        radius = min(w, h) * 0.5f
-        sphereRect.set(0f, 0f, w.toFloat(), h.toFloat())
-
-        // Phần đỉnh quả cầu giữ màu đen sâu để hòa làm một với cụm Dynamic Island thật
-        topDarkShader = LinearGradient(
-            0f, 0f, 0f, h.toFloat(),
-            intArrayOf(
-                0xFF000000.toInt(),
-                0xFF000000.toInt(),
-                0xEC040508.toInt(),
-                0x58121722.toInt(),
-                0x14242E42.toInt(),
-                0x2840506B.toInt()
-            ),
-            floatArrayOf(0f, 0.34f, 0.44f, 0.54f, 0.76f, 1f),
-            Shader.TileMode.CLAMP
-        )
-
-        // Lớp kính trong suốt nửa dưới quả cầu tạo độ sâu khúc xạ
-        lowerGlassShader = RadialGradient(
-            centerX, h * 0.62f, radius * 0.96f,
-            intArrayOf(
-                0x05FFFFFF,
-                0x188CA8CC,
-                0x364E6482,
-                0x64192130
-            ),
-            floatArrayOf(0f, 0.52f, 0.82f, 1f),
-            Shader.TileMode.CLAMP
-        )
-
-        // Viền khúc xạ ánh sáng trắng bạc bao quanh mép dưới quả cầu như trong ảnh
-        refractionRimShader = LinearGradient(
-            0f, h * 0.35f, 0f, h.toFloat(),
-            intArrayOf(
-                0x00FFFFFF,
-                0x44A8C6EA,
-                0xB8DCEBFF.toInt(),
-                0xF2FFFFFF.toInt()
-            ),
-            floatArrayOf(0f, 0.35f, 0.78f, 1f),
-            Shader.TileMode.CLAMP
-        )
-
-        leftCausticShader = RadialGradient(
-            w * 0.16f, h * 0.74f, radius * 0.55f,
-            intArrayOf(0x88FFFFFF.toInt(), 0x38C7E0FF, 0x00FFFFFF),
-            floatArrayOf(0f, 0.45f, 1f),
-            Shader.TileMode.CLAMP
-        )
-
-        rightCausticShader = RadialGradient(
-            w * 0.84f, h * 0.74f, radius * 0.55f,
-            intArrayOf(0x88FFFFFF.toInt(), 0x38C7E0FF, 0x00FFFFFF),
-            floatArrayOf(0f, 0.45f, 1f),
-            Shader.TileMode.CLAMP
-        )
-
-        // Dải quang phổ cầu vồng rực rỡ ở giữa quả cầu (Xanh lam -> Lục -> Vàng -> Cam -> Đỏ)
-        val rainbowColors = intArrayOf(
-            0x001E5BFF,
-            0xFF2B68FF.toInt(),
-            0xFF00D8FF.toInt(),
-            0xFF5CFF95.toInt(),
-            0xFFFFF36B.toInt(),
-            0xFFFF8826.toInt(),
-            0xFFFF2A3C.toInt(),
-            0x00FF2A3C
-        )
-        val rainbowPositions = floatArrayOf(0f, 0.14f, 0.30f, 0.45f, 0.58f, 0.73f, 0.86f, 1f)
-
-        spectrumCoreShader = LinearGradient(
-            w * 0.08f, 0f, w * 0.92f, 0f,
-            rainbowColors, rainbowPositions, Shader.TileMode.CLAMP
-        )
-
-        spectrumGlowShader = LinearGradient(
-            w * 0.04f, 0f, w * 0.96f, 0f,
-            rainbowColors, rainbowPositions, Shader.TileMode.CLAMP
-        )
-
-        bottomLipShader = LinearGradient(
-            w * 0.18f, 0f, w * 0.82f, 0f,
-            intArrayOf(0x00FFFFFF, 0xCCFFFFFF.toInt(), 0xFFFFFFFF.toInt(), 0xCCFFFFFF.toInt(), 0x00FFFFFF),
-            floatArrayOf(0f, 0.25f, 0.5f, 0.75f, 1f),
-            Shader.TileMode.CLAMP
-        )
     }
 
     override fun onAttachedToWindow() {
@@ -197,112 +191,90 @@ class SiriLensEffectView(context: Context) : View(context) {
         val h = height.toFloat()
         if (w <= 0f || h <= 0f) return
 
-        val cornerR = min(w, h) * 0.5f
+        viewBounds.set(0f, 0f, w, h)
+        val cornerRadius = min(w, h) * 0.5f
         clipPath.reset()
-        clipPath.addRoundRect(sphereRect, cornerR, cornerR, Path.Direction.CW)
+        clipPath.addRoundRect(viewBounds, cornerRadius, cornerRadius, Path.Direction.CW)
         canvas.save()
         canvas.clipPath(clipPath)
 
-        // 1. Nền chuyển mượt từ phần đen nguyên bản của Dynamic Island ở đỉnh xuống lớp kính trong suốt bên dưới
-        paint.style = Paint.Style.FILL
-        paint.shader = topDarkShader
-        canvas.drawRect(sphereRect, paint)
-
-        // 2. Độ sâu thủy tinh nửa dưới quả cầu
-        paint.shader = lowerGlassShader
-        canvas.drawRect(sphereRect, paint)
-
-        // 3. Hiệu ứng khúc xạ ánh sáng trắng uốn cong ở 2 bên mép dưới (giống hệt phần chữ bị bẻ cong ở viền kính trong ảnh)
-        paint.shader = leftCausticShader
-        canvas.drawCircle(w * 0.18f, h * 0.74f, radius * 0.52f, paint)
-        paint.shader = rightCausticShader
-        canvas.drawCircle(w * 0.82f, h * 0.74f, radius * 0.52f, paint)
-        paint.shader = null
-
-        // Vệt phản quang cong đặc trưng bên trái và bên phải lòng kính
-        rimPaint.strokeCap = Paint.Cap.ROUND
-        rimPaint.strokeWidth = dp(2.2f)
-        rimPaint.color = 0x78DCEBFF
-        val innerArcRect = RectF(w * 0.07f, h * 0.20f, w * 0.93f, h * 0.92f)
-        canvas.drawArc(innerArcRect, 118f, 36f, false, rimPaint)
-        canvas.drawArc(innerArcRect, 26f, 36f, false, rimPaint)
-
-        // 4. Dải quang phổ cầu vồng uốn cong nhẹ nằm ngay đường chân trời giữa phần đen và phần kính
-        val horizonY = h * 0.465f
-        val leftX = w * 0.08f
-        val rightX = w * 0.92f
-        val span = rightX - leftX
-        val archHeight = dp(7.5f)
-
-        flarePath.reset()
-        for (step in 0..80) {
-            val u = step / 80f
-            val x = leftX + span * u
-            // Đường cong vòm nhẹ lên ở giữa giống hệt ảnh mẫu + chuyển động thở mượt
-            val arch = -sin(u * Math.PI).toFloat() * archHeight
-            val subtleWave = sin(u * 5.5f + phase) * dp(0.9f)
-            val y = horizonY + arch + subtleWave
-            if (step == 0) flarePath.moveTo(x, y) else flarePath.lineTo(x, y)
+        val activeShader = shader
+        if (activeShader != null && Build.VERSION.SDK_INT >= 33) {
+            activeShader.setFloatUniform("resolution", w, h)
+            activeShader.setFloatUniform("time", phase)
+            activeShader.setFloatUniform("morph", morphProgress)
+            activeShader.setFloatUniform("energy", energy)
+            paint.shader = activeShader
+            canvas.drawRect(viewBounds, paint)
+            paint.shader = null
+        } else {
+            drawFallback(canvas, w, h)
         }
-
-        // Lớp hào quang cầu vồng tán sắc rộng
-        paint.style = Paint.Style.STROKE
-        paint.strokeCap = Paint.Cap.ROUND
-        paint.strokeJoin = Paint.Join.ROUND
-        paint.shader = spectrumGlowShader
-        paint.alpha = (175 * energy * expandProgress).toInt().coerceIn(0, 255)
-        paint.strokeWidth = dp(18f)
-        paint.setShadowLayer(dp(14f), 0f, dp(2f), 0xAAFFFFFF.toInt())
-        canvas.drawPath(flarePath, paint)
-        paint.clearShadowLayer()
-
-        // Lớp cầu vồng trung tâm sắc nét
-        paint.shader = spectrumCoreShader
-        paint.alpha = (255 * energy * expandProgress).toInt().coerceIn(0, 255)
-        paint.strokeWidth = dp(6.5f)
-        canvas.drawPath(flarePath, paint)
-
-        // Lõi sáng trắng rực ở tâm dải cầu vồng (bên trái-giữa như trong ảnh)
-        val hotSpotPath = Path()
-        val hotLeft = w * 0.16f
-        val hotRight = w * 0.68f
-        val hotSpan = hotRight - hotLeft
-        for (step in 0..50) {
-            val u = step / 50f
-            val globalU = ((hotLeft + hotSpan * u) - leftX) / span
-            val x = hotLeft + hotSpan * u
-            val arch = -sin(globalU * Math.PI).toFloat() * archHeight
-            val subtleWave = sin(globalU * 5.5f + phase) * dp(0.9f)
-            val y = horizonY + arch + subtleWave + dp(0.5f)
-            if (step == 0) hotSpotPath.moveTo(x, y) else hotSpotPath.lineTo(x, y)
-        }
-        paint.shader = LinearGradient(
-            hotLeft, 0f, hotRight, 0f,
-            intArrayOf(0x00FFFFFF, 0xEEFFFFFF.toInt(), 0xFFFFFFFF.toInt(), 0x00FFFFFF),
-            floatArrayOf(0f, 0.35f, 0.65f, 1f),
-            Shader.TileMode.CLAMP
-        )
-        paint.strokeWidth = dp(2.6f)
-        canvas.drawPath(hotSpotPath, paint)
-        paint.shader = null
-
-        // 5. Viền thủy tinh sắc nét bao quanh toàn bộ khối cầu Dynamic Island
-        rimPaint.shader = refractionRimShader
-        rimPaint.strokeWidth = dp(1.5f)
-        val inset = dp(0.8f)
-        canvas.drawRoundRect(
-            inset, inset, w - inset, h - inset,
-            cornerR - inset, cornerR - inset, rimPaint
-        )
-        rimPaint.shader = null
-
-        // Ánh sáng phản chiếu đậm ở đáy dưới cùng của quả cầu kính
-        rimPaint.shader = bottomLipShader
-        rimPaint.strokeWidth = dp(2.4f)
-        val bottomOval = RectF(w * 0.04f, h * 0.04f, w * 0.96f, h - dp(1.2f))
-        canvas.drawArc(bottomOval, 48f, 84f, false, rimPaint)
-        rimPaint.shader = null
 
         canvas.restore()
+    }
+
+    private fun drawFallback(canvas: Canvas, w: Float, h: Float) {
+        // Nền đen trên đỉnh hòa vào Camera Cutout
+        fallbackPaint.shader = LinearGradient(
+            0f, 0f, 0f, h * 0.45f,
+            intArrayOf(0xFF000000.toInt(), 0xCC000000.toInt(), 0x00000000),
+            floatArrayOf(0f, 0.7f, 1f),
+            Shader.TileMode.CLAMP
+        )
+        canvas.drawRect(0f, 0f, w, h * 0.45f, fallbackPaint)
+
+        // Độ sâu thủy tinh trong suốt nửa dưới
+        fallbackPaint.shader = RadialGradient(
+            w * 0.5f, h * 0.65f, w * 0.5f,
+            intArrayOf(0x153A6596, 0x40182E47, 0x00000000),
+            floatArrayOf(0f, 0.7f, 1f),
+            Shader.TileMode.CLAMP
+        )
+        canvas.drawRect(0f, h * 0.35f, w, h, fallbackPaint)
+
+        // Cầu vồng uốn cong
+        val horizonY = h * 0.42f
+        flarePath.reset()
+        val steps = 60
+        for (i in 0..steps) {
+            val u = i.toFloat() / steps
+            val x = w * (0.1f + 0.8f * u)
+            val arch = -sin(u * Math.PI).toFloat() * dp(6f)
+            val wave = sin(u * 6.28f + phase) * dp(1.2f)
+            val y = horizonY + arch + wave
+            if (i == 0) flarePath.moveTo(x, y) else flarePath.lineTo(x, y)
+        }
+
+        fallbackPaint.style = Paint.Style.STROKE
+        fallbackPaint.strokeCap = Paint.Cap.ROUND
+        fallbackPaint.strokeWidth = dp(14f)
+        fallbackPaint.shader = LinearGradient(
+            w * 0.1f, 0f, w * 0.9f, 0f,
+            intArrayOf(0xFF1E5BFF.toInt(), 0xFF00D8FF.toInt(), 0xFF5CFF95.toInt(), 0xFFFFF36B.toInt(), 0xFFFF8826.toInt(), 0xFFFF2A3C.toInt()),
+            null, Shader.TileMode.CLAMP
+        )
+        fallbackPaint.alpha = (180 * morphProgress).toInt()
+        canvas.drawPath(flarePath, fallbackPaint)
+
+        fallbackPaint.strokeWidth = dp(3.5f)
+        fallbackPaint.alpha = (255 * morphProgress).toInt()
+        canvas.drawPath(flarePath, fallbackPaint)
+
+        // Viền bạc khúc xạ dưới đáy
+        fallbackPaint.shader = LinearGradient(
+            0f, h * 0.4f, 0f, h,
+            intArrayOf(0x00FFFFFF, 0x55B5D6FF, 0xE8FFFFFF.toInt()),
+            floatArrayOf(0f, 0.5f, 1f),
+            Shader.TileMode.CLAMP
+        )
+        fallbackPaint.strokeWidth = dp(1.6f)
+        val inset = dp(1f)
+        val r = min(w, h) * 0.5f
+        canvas.drawRoundRect(inset, inset, w - inset, h - inset, r - inset, r - inset, fallbackPaint)
+
+        fallbackPaint.shader = null
+        fallbackPaint.style = Paint.Style.FILL
+        fallbackPaint.alpha = 255
     }
 }
