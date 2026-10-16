@@ -849,14 +849,33 @@ class IslandService : Service() {
             return true
         }
         if (isFaceUnlockShrinking) return true
+
+        // Cử chỉ khi đang mở Siri: Hỗ trợ nhấn hoặc vuốt lên (Swipe Up) để đóng
         if (siriActive) {
-            if (event.actionMasked == MotionEvent.ACTION_UP) {
-                view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-                beginSiriShrink()
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downX = event.rawX
+                    downY = event.rawY
+                    return true
+                }
+                MotionEvent.ACTION_UP -> {
+                    val deltaY = downY - event.rawY
+                    val deltaX = abs(event.rawX - downX)
+                    // Vuốt lên trên ít nhất 24dp hoặc nhả tay chạm
+                    if (deltaY > dp(24) && deltaY > deltaX) {
+                        view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                        beginSiriShrink()
+                    } else if (abs(deltaY) <= touchSlop * 1.5f && deltaX <= touchSlop * 1.5f) {
+                        view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                        beginSiriShrink()
+                    }
+                    return true
+                }
             }
             return true
         }
         if (isSiriShrinking) return true
+
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 downX = event.rawX
@@ -949,8 +968,9 @@ class IslandService : Service() {
         val winX = ((sWidth - targetWidth()) / 2f).coerceAtLeast(0f)
         val winY = overlayTopY().toFloat()
 
-        HyperIslandVisibilityService.captureScreen { capturedBmp ->
-            siriView?.setBackgroundSource(capturedBmp, winX, winY, sWidth, sHeight)
+        // Bắt đầu chuỗi capture liên tục ~30 FPS qua AccessibilityService
+        HyperIslandVisibilityService.startContinuousStream { streamFrame ->
+            siriView?.updateBackgroundFrame(streamFrame, winX, winY, sWidth, sHeight)
         }
         render(animateSize = true)
     }
@@ -959,6 +979,9 @@ class IslandService : Service() {
         if (!siriActive || isSiriShrinking) return
         isSiriShrinking = true
         siriActive = false
+
+        // Dừng stream ngầm khi thu gọn về viên thuốc để tiết kiệm pin
+        HyperIslandVisibilityService.stopContinuousStream()
 
         glassView?.apply {
             configure(glassStrength, tint, expandedNow = false)
@@ -986,6 +1009,7 @@ class IslandService : Service() {
 
     private fun abortSiri() {
         if (!siriActive && !isSiriShrinking) return
+        HyperIslandVisibilityService.stopContinuousStream()
         handler.removeCallbacks(siriShrinkSafety)
         resizeAnimator?.cancel()
         siriView?.releaseBackground()
@@ -2260,6 +2284,7 @@ class IslandService : Service() {
             try { audioManager.unregisterAudioRecordingCallback(audioRecordingCallback) } catch (_: Exception) { }
         }
 
+        HyperIslandVisibilityService.stopContinuousStream()
         instance = null
         AppPrefs.get(this).edit().putBoolean(AppPrefs.SERVICE_ENABLED, false).apply()
         resizeAnimator?.cancel()
