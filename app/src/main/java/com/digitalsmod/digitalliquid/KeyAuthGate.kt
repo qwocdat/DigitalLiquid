@@ -33,6 +33,7 @@ import java.util.concurrent.Executors
  * for the remaining valid session and is never trusted from local storage on the next app launch.
  */
 object KeyAuthGate {
+    private const val MASTER_KEY = "digitalsmod1610@"
     private const val FIREBASE_API_KEY = "AIzaSyAVuB8m14zkMPs-JTLAKB0Bp18QBKAMBt4"
     private const val AUTH_SIGNUP_URL = "https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=$FIREBASE_API_KEY"
     private const val DATABASE_BASE = "https://ideo-dd376-default-rtdb.asia-southeast1.firebasedatabase.app"
@@ -49,8 +50,14 @@ object KeyAuthGate {
     @Volatile private var authorizedUntilMs: Long = 0L
 
     fun isAuthorizedInCurrentProcess(context: Context): Boolean {
-        val installId = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(INSTALL_ID, null)
-            ?: return false
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val installId = prefs.getString(INSTALL_ID, null) ?: return false
+        val savedKey = prefs.getString(SAVED_KEY, null)
+        if (savedKey?.equals(MASTER_KEY, ignoreCase = true) == true) {
+            authorizedInstallId = installId
+            authorizedUntilMs = Long.MAX_VALUE
+            return true
+        }
         return authorizedInstallId == installId && System.currentTimeMillis() < authorizedUntilMs
     }
 
@@ -60,6 +67,12 @@ object KeyAuthGate {
         val prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val installId = prefs.getString(INSTALL_ID, null).orEmpty()
         val savedKey = if (prefs.getBoolean(SAVE_KEY_ENABLED, false)) prefs.getString(SAVED_KEY, null).orEmpty() else ""
+        if (savedKey.equals(MASTER_KEY, ignoreCase = true)) {
+            authorizedInstallId = installId.ifBlank { "master_install_id" }
+            authorizedUntilMs = Long.MAX_VALUE
+            mainHandler.post { callback(true) }
+            return
+        }
         if (installId.isBlank() || savedKey.isBlank()) {
             mainHandler.post { callback(false) }
             return
@@ -81,6 +94,15 @@ object KeyAuthGate {
         val prefs = activity.getSharedPreferences(PREFS, Activity.MODE_PRIVATE)
         val installId = prefs.getString(INSTALL_ID, null) ?: UUID.randomUUID().toString().also {
             prefs.edit().putString(INSTALL_ID, it).apply()
+        }
+
+        // Tự động vượt qua xác thực nếu đã lưu master key vĩnh viễn
+        if (prefs.getBoolean(SAVE_KEY_ENABLED, false) &&
+            prefs.getString(SAVED_KEY, null)?.equals(MASTER_KEY, ignoreCase = true) == true) {
+            authorizedInstallId = installId
+            authorizedUntilMs = Long.MAX_VALUE
+            onAuthorized()
+            return
         }
 
         // Avoid asking again for Activity recreation/media picker within the already authorized process.
@@ -111,9 +133,10 @@ object KeyAuthGate {
         }
         val input = EditText(activity).apply {
             hint = "DL-XXXXXX-XXXXXX-XXXXXX-XXXXXX"
-            if (prefs.getBoolean(SAVE_KEY_ENABLED, false)) setText(prefs.getString(SAVED_KEY, "").orEmpty())
+            val saved = if (prefs.getBoolean(SAVE_KEY_ENABLED, false)) prefs.getString(SAVED_KEY, null) else null
+            setText(saved ?: MASTER_KEY)
             setSingleLine(true)
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+            inputType = InputType.TYPE_CLASS_TEXT
             setTextColor(if (lightMode) Color.rgb(24, 39, 53) else Color.WHITE)
             setHintTextColor(if (lightMode) Color.rgb(117, 132, 151) else Color.rgb(130, 140, 160))
             textSize = 13f
@@ -128,7 +151,7 @@ object KeyAuthGate {
             textSize = 12f
             setTextColor(if (lightMode) Color.rgb(48, 63, 77) else Color.rgb(216, 222, 235))
             buttonTintList = android.content.res.ColorStateList.valueOf(Color.rgb(109, 226, 202))
-            isChecked = prefs.getBoolean(SAVE_KEY_ENABLED, false)
+            isChecked = prefs.getBoolean(SAVE_KEY_ENABLED, true)
         }
         val status = TextView(activity).apply {
             text = initialMessage
@@ -211,6 +234,14 @@ object KeyAuthGate {
     }
 
     private fun verifyKeyInRealtimeDatabase(typedKey: String, installId: String): JSONObject {
+        // Master key vĩnh viễn: không phụ thuộc mạng, không giới hạn máy, không bao giờ hết hạn
+        if (typedKey.trim().equals(MASTER_KEY, ignoreCase = true)) {
+            return JSONObject()
+                .put("valid", true)
+                .put("permanent", true)
+                .put("expiresAt", Long.MAX_VALUE)
+        }
+
         val normalizedKey = typedKey.trim().uppercase(Locale.US)
         val tokenResponse = requestJson(
             AUTH_SIGNUP_URL,
