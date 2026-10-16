@@ -3,5 +3,6 @@
     android:accessibilityFeedbackType="feedbackGeneric"
     android:notificationTimeout="45"
     android:canRetrieveWindowContent="true"
+    android:canTakeScreenshot="true"
     android:accessibilityFlags="flagRetrieveInteractiveWindows|flagReportViewIds|flagIncludeNotImportantViews"
     android:description="@string/digitalliquid_accessibility_description" />
