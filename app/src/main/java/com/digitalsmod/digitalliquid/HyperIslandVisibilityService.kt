@@ -394,7 +394,7 @@ class HyperIslandVisibilityService : AccessibilityService() {
 
         /**
          * Chụp một khung hình sạch sẽ của nền điện thoại ngay trước khi bung khối kính.
-         * Tuyệt đối không chụp lặp tuần hoàn khi overlay đã xuất hiện để loại bỏ hoàn toàn lỗi vòng xoáy vô tận.
+         * Chỉ chụp 1 lần duy nhất, loại bỏ hoàn toàn việc chụp lặp vô hạn gây hiệu ứng đường hầm lặp hình.
          */
         fun captureCleanScreen(callback: (Bitmap?) -> Unit) {
             val service = connectedInstance
