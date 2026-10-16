@@ -43,7 +43,6 @@ import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.view.animation.LinearInterpolator
 import android.view.animation.PathInterpolator
-import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -118,12 +117,10 @@ class IslandService : Service() {
     private var currentMorphProgress = 0f
     private var expandedRadiusDp = 30f
 
-    // ---- Unified Siri Lens & AI Interface state -----------------------------------
+    // ---- Unified Siri Lens Droplet state -------------------------------------------
     private var siriActive = false
-    private var siriAiExpanded = false
     private var isSiriShrinking = false
     private var siriView: SiriLensEffectView? = null
-    private var siriAiInputCard: LinearLayout? = null
     private var siriDropletAnimator: ValueAnimator? = null
     private val siriShrinkSafety = Runnable {
         resizeAnimator?.cancel()
@@ -548,21 +545,20 @@ class IslandService : Service() {
 
     private fun targetHostInsetPx(): Int = if (panelOpen || isRecordingControlExpanded() || faceUnlocking || siriActive) 0 else dp(TRAIL_EXTENT_DP)
 
-    private fun targetWindowWidth(): Int = when {
-        isRecordingControlExpanded() -> (displayWidthPx() - dp(12)).coerceAtLeast(dp(180))
-        siriAiExpanded -> min(dp(360), (displayWidthPx() - dp(24)).coerceAtLeast(dp(220)))
-        else -> targetWidth() + targetHostInsetPx() * 2
+    private fun targetWindowWidth(): Int = if (isRecordingControlExpanded()) {
+        (displayWidthPx() - dp(12)).coerceAtLeast(dp(180))
+    } else {
+        targetWidth() + targetHostInsetPx() * 2
     }
 
     private fun windowGravity(): Int = when {
         isRecordingControlExpanded() -> Gravity.TOP or Gravity.CENTER_HORIZONTAL
-        siriAiExpanded -> Gravity.TOP or Gravity.CENTER_HORIZONTAL
         isLandscapeWithSideCutout() && !panelOpen && !siriActive -> Gravity.TOP or Gravity.LEFT
         else -> gravityForWindow()
     }
 
     private fun windowX(): Int {
-        if (isRecordingControlExpanded() || siriAiExpanded) return 0
+        if (isRecordingControlExpanded()) return 0
         val inset = targetHostInsetPx()
         val pillX = positionX(targetWidth(), panelOpen || siriActive)
         val gravity = windowGravity()
@@ -578,7 +574,6 @@ class IslandService : Service() {
     private fun lerp(a: Float, b: Float, t: Float) = a + (b - a) * t
 
     private fun targetMorph(): Float = when {
-        siriAiExpanded -> 1f
         siriActive -> 1f
         isSiriShrinking -> 0f
         faceUnlocking -> 1f
@@ -589,7 +584,6 @@ class IslandService : Service() {
 
     private fun updateExpandedRadius() {
         when {
-            siriAiExpanded -> expandedRadiusDp = 52f
             siriActive || isSiriShrinking -> expandedRadiusDp = SIRI_CORNER_RADIUS_DP
             faceUnlocking -> expandedRadiusDp = FACE_SQUIRCLE_RADIUS_DP
             panelOpen && !isRecordingControlExpanded() -> expandedRadiusDp = 30f
@@ -601,7 +595,6 @@ class IslandService : Service() {
         val r = lerp(pillH / 2f, dp(expandedRadiusDp), currentMorphProgress)
             .coerceIn(0f, min(pillW, pillH) / 2f)
         val siriMix = if (siriActive || isSiriShrinking) currentMorphProgress.coerceIn(0f, 1f) else 0f
-        // Cả khi phóng to AI vẫn giữ nền trong suốt để kính render chân thực
         val bgAlpha = ((1f - siriMix) * 255f).roundToInt().coerceIn(0, 255)
         rootBackground.setColor(Color.argb(bgAlpha, 0, 0, 0))
         rootBackground.cornerRadius = r
@@ -775,7 +768,6 @@ class IslandService : Service() {
         overlayHost = host
         hostInsetPx = targetHostInsetPx()
 
-        // Thêm cờ FLAG_WATCH_OUTSIDE_TOUCH để tự động đóng khi người dùng bấm ra ngoài
         val initialParams = WindowManager.LayoutParams(
             targetWindowWidth(),
             targetHeight(),
@@ -844,9 +836,7 @@ class IslandService : Service() {
         faceView = null
         siriView?.releaseBackground()
         siriView = null
-        siriAiInputCard = null
         siriActive = false
-        siriAiExpanded = false
         isSiriShrinking = false
         islandRoot = null
         overlayHost = null
@@ -862,7 +852,7 @@ class IslandService : Service() {
     }
 
     private fun handlePillTouch(view: View, event: MotionEvent): Boolean {
-        // Tự động đóng khi người dùng nhấn ra ngoài vùng Siri / AI
+        // Bấm ra ngoài cửa sổ Siri -> Tự động đóng về viên thuốc
         if (event.actionMasked == MotionEvent.ACTION_OUTSIDE) {
             if (siriActive) {
                 beginSiriShrink()
@@ -881,7 +871,7 @@ class IslandService : Service() {
         }
         if (isFaceUnlockShrinking) return true
 
-        // Tương tác khi Siri đang mở
+        // Cử chỉ khi đang mở Siri giọt nước
         if (siriActive) {
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
@@ -894,25 +884,17 @@ class IslandService : Service() {
                     val deltaX = abs(event.rawX - downX)
                     val isTap = deltaX <= touchSlop * 1.5f && abs(deltaY) <= touchSlop * 1.5f
 
-                    // Vuốt lên trên -> Đóng về Dynamic Island
+                    // 1. Vuốt lên trên -> Đóng về Dynamic Island
                     if (deltaY > dp(20) && deltaY > deltaX) {
                         view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
                         beginSiriShrink()
                         return true
                     }
 
-                    // Nhấn vào phần trong suốt của Siri -> Phóng to thành giao diện AI giữ nguyên hình thấu kính
+                    // 2. Chạm vào thấu kính: Rung phản hồi và kích hoạt sóng nhấp nhô
                     if (isTap) {
-                        val touchInsideViewY = event.y
-                        val isTransparentBottomArea = touchInsideViewY >= (view.height * 0.45f)
-                        if (isTransparentBottomArea && !siriAiExpanded) {
-                            view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-                            openSiriAiMode()
-                        } else if (!siriAiExpanded) {
-                            // Chạm phần đỉnh đen -> thu gọn
-                            view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-                            beginSiriShrink()
-                        }
+                        view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                        siriView?.setListening(true)
                     }
                     return true
                 }
@@ -1011,7 +993,7 @@ class IslandService : Service() {
         val winX = ((sWidth - targetWidth()) / 2f).coerceAtLeast(0f)
         val winY = overlayTopY().toFloat()
 
-        // Ẩn overlay 30ms để chụp khung hình sạch của launcher 1 lần duy nhất
+        // Ẩn overlay 30ms để chụp 1 lần khung hình nền sạch của launcher
         overlayHost?.alpha = 0f
         handler.postDelayed({
             HyperIslandVisibilityService.captureCleanScreen { capturedBmp ->
@@ -1021,37 +1003,12 @@ class IslandService : Service() {
         }, 30L)
 
         siriActive = true
-        siriAiExpanded = false
         isSiriShrinking = false
         render(animateSize = true)
         startSiriDropletFloatAnimation()
     }
 
-    private fun openSiriAiMode() {
-        if (!siriActive || siriAiExpanded || isSiriShrinking) return
-        siriAiExpanded = true
-        stopSiriDropletFloatAnimation()
-
-        // Chụp thêm 1 lần nữa để lấy background phủ toàn bộ diện tích thấu kính lớn hơn
-        val sWidth = displayWidthPx().toFloat()
-        val sHeight = displayHeightPx().toFloat()
-        val winX = ((sWidth - targetWidth()) / 2f).coerceAtLeast(0f)
-        val winY = overlayTopY().toFloat()
-
-        overlayHost?.alpha = 0f
-        handler.postDelayed({
-            HyperIslandVisibilityService.captureCleanScreen { capturedBmp ->
-                overlayHost?.alpha = 1f
-                siriView?.setBackgroundSource(capturedBmp, winX, winY, sWidth, sHeight)
-            }
-        }, 30L)
-
-        // Dải sóng trượt mượt mà xuống viền đáy thấu kính
-        siriView?.animateVoiceMode(1f)
-        render(animateSize = true)
-    }
-
-    /** Chuyển động đung đưa, co giãn bề mặt hữu cơ giống giọt nước lơ lửng */
+    /** Chuyển động lơ lửng, co giãn bề mặt hữu cơ giống giọt nước chất lỏng */
     private fun startSiriDropletFloatAnimation() {
         stopSiriDropletFloatAnimation()
         val root = islandRoot ?: return
@@ -1060,7 +1017,7 @@ class IslandService : Service() {
             repeatCount = ValueAnimator.INFINITE
             interpolator = LinearInterpolator()
             addUpdateListener { anim ->
-                if (!siriActive || siriAiExpanded || isSiriShrinking) return@addUpdateListener
+                if (!siriActive || isSiriShrinking) return@addUpdateListener
                 val t = anim.animatedValue as Float
                 root.translationX = (sin(t) * dp(1.8f)).toFloat()
                 root.translationY = (cos(t * 1.5f) * dp(1.2f)).toFloat()
@@ -1087,10 +1044,8 @@ class IslandService : Service() {
         if (!siriActive || isSiriShrinking) return
         isSiriShrinking = true
         siriActive = false
-        siriAiExpanded = false
         stopSiriDropletFloatAnimation()
 
-        siriView?.animateVoiceMode(0f)
         glassView?.apply {
             configure(glassStrength, tint, expandedNow = false)
             alpha = 0f
@@ -1105,11 +1060,9 @@ class IslandService : Service() {
         handler.removeCallbacks(siriShrinkSafety)
         if (!isSiriShrinking) return
         isSiriShrinking = false
-        siriAiExpanded = false
         faceGhostsActive = false
         siriView?.releaseBackground()
         siriView = null
-        siriAiInputCard = null
         stopSiriDropletFloatAnimation()
         currentMorphProgress = 0f
         glassView?.alpha = 1f
@@ -1125,9 +1078,7 @@ class IslandService : Service() {
         stopSiriDropletFloatAnimation()
         siriView?.releaseBackground()
         siriView = null
-        siriAiInputCard = null
         siriActive = false
-        siriAiExpanded = false
         isSiriShrinking = false
         faceGhostsActive = false
         currentMorphProgress = 0f
@@ -1325,7 +1276,6 @@ class IslandService : Service() {
         val density = resources.displayMetrics.density.coerceAtLeast(1f)
         val screenWidthPx = displayWidthPx().coerceAtLeast(dp(180))
         val screenWidthDp = (screenWidthPx / density).toInt().coerceAtLeast(180)
-        if (siriAiExpanded) return min(dp(360), (screenWidthPx - dp(24)).coerceAtLeast(dp(220)))
         if (siriActive) return dp(SIRI_WIDTH_DP)
         if (faceUnlocking) return dp(FACE_SIZE_DP)
         if (isRecordingControlExpanded()) return (screenWidthPx - dp(12)).coerceAtLeast(dp(180))
@@ -1340,7 +1290,6 @@ class IslandService : Service() {
     }
 
     private fun targetHeight(): Int = when {
-        siriAiExpanded -> dp(200)
         siriActive -> dp(SIRI_HEIGHT_DP)
         faceUnlocking -> dp(FACE_SIZE_DP)
         isRecordingControlExpanded() -> maxOf(statusBarHeightPx() + dp(24), dp(50))
@@ -1406,7 +1355,7 @@ class IslandService : Service() {
     }
 
     private fun positionX(windowWidth: Int = targetWidth(), expanded: Boolean = panelOpen): Int {
-        if (isRecordingControlExpanded() || siriAiExpanded) return 0
+        if (isRecordingControlExpanded()) return 0
         if (isLandscapeWithSideCutout() && !panelOpen && !siriActive) {
             val cutout = currentCameraCutoutBounds()
             if (cutout != null) {
@@ -1470,27 +1419,14 @@ class IslandService : Service() {
             rootContent.setPadding(0, 0, 0, 0)
             faceView?.release()
             faceView = null
-            // Siri thấu kính luôn làm nền trọn vẹn trong suốt và đen trên đỉnh
             if (siriView?.parent !== rootContent) {
                 rootContent.removeAllViews()
                 val sv = SiriLensEffectView(this)
                 siriView = sv
                 rootContent.addView(sv, FrameLayout.LayoutParams(-1, -1))
             }
-            if (siriAiExpanded) {
-                // Hiển thị thêm bảng nhập văn bản mỏng nhẹ phủ lên vùng thấu kính Siri
-                if (siriAiInputCard?.parent !== rootContent) {
-                    val card = createSiriAiInputCard()
-                    siriAiInputCard = card
-                    rootContent.addView(card, FrameLayout.LayoutParams(-1, -1))
-                }
-            } else {
-                siriAiInputCard?.let { rootContent.removeView(it) }
-                siriAiInputCard = null
-            }
         } else if (faceUnlocking) {
             siriView = null
-            siriAiInputCard = null
             rootContent.setPadding(0, 0, 0, 0)
             if (faceView?.parent !== rootContent) {
                 rootContent.removeAllViews()
@@ -1503,7 +1439,6 @@ class IslandService : Service() {
             faceView?.release()
             faceView = null
             siriView = null
-            siriAiInputCard = null
             if (isRecordingControlExpanded()) {
                 rootContent.setPadding(dp(20), 0, dp(18), 0)
             } else {
@@ -1559,76 +1494,6 @@ class IslandService : Service() {
             }
         }
         applyNativeActivityVisibility()
-    }
-
-    /** Tạo thanh nhập câu hỏi Siri AI phủ mờ thanh lịch lên thấu kính hình bầu dục */
-    private fun createSiriAiInputCard(): LinearLayout = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        gravity = Gravity.CENTER_HORIZONTAL
-        setPadding(dp(18), dp(16), dp(18), dp(16))
-        setBackgroundColor(Color.TRANSPARENT)
-
-        val headerRow = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        val title = TextView(context).apply {
-            text = "Siri Intelligence"
-            textSize = 14f
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setTextColor(Color.WHITE)
-        }
-        val badge = TextView(context).apply {
-            text = "AI"
-            textSize = 10f
-            setPadding(dp(5), dp(1), dp(5), dp(1))
-            background = GradientDrawable().apply {
-                setColor(0x2BFFFFFF)
-                cornerRadius = dp(6).toFloat()
-            }
-            setTextColor(0xFF00D8FF.toInt())
-        }
-        headerRow.addView(title, LinearLayout.LayoutParams(0, -2, 1f))
-        headerRow.addView(badge)
-        addView(headerRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(24) })
-
-        val inputWrap = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(12), dp(7), dp(12), dp(7))
-            background = GradientDrawable().apply {
-                setColor(0x22FFFFFF)
-                cornerRadius = dp(20).toFloat()
-                setStroke(dp(1), 0x33FFFFFF)
-            }
-        }
-        val edit = EditText(context).apply {
-            hint = "Nhập câu hỏi... (Cần cấu hình API)"
-            setHintTextColor(0xFF8E8E93.toInt())
-            setTextColor(Color.WHITE)
-            textSize = 13.5f
-            background = null
-            isSingleLine = true
-        }
-        val send = TextView(context).apply {
-            text = "✦"
-            textSize = 17f
-            setTextColor(0xFF00D8FF.toInt())
-            setOnClickListener {
-                Toast.makeText(this@IslandService, "Siri AI: Chưa gắn API Key.", Toast.LENGTH_SHORT).show()
-            }
-        }
-        inputWrap.addView(edit, LinearLayout.LayoutParams(0, -2, 1f))
-        inputWrap.addView(send)
-        addView(inputWrap, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(12) })
-
-        val hint = TextView(context).apply {
-            text = "Chạm ra ngoài để đóng · Vuốt lên để thu gọn"
-            textSize = 10.5f
-            setTextColor(0xFF98989F.toInt())
-            gravity = Gravity.CENTER
-        }
-        addView(hint, LinearLayout.LayoutParams(-1, -2))
     }
 
     private fun updatePrivacyDot() {
@@ -2145,7 +2010,6 @@ class IslandService : Service() {
         var canceled = false
         resizeAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
             duration = when {
-                siriAiExpanded -> 420L
                 siriActive -> SIRI_EXPAND_MS
                 isSiriShrinking -> SIRI_SHRINK_MS
                 faceUnlocking -> FACE_EXPAND_MS
@@ -2174,7 +2038,6 @@ class IslandService : Service() {
                 root.scaleX = 1f
                 root.scaleY = 1f
 
-                // Cập nhật hiệu ứng bóng ma (ghost trail) bám theo nhịp phóng to / thu nhỏ
                 if (ghostActive) {
                     updateGhostTrail(tc, startPillWidth, endPillWidth, startHeight, endHeight, startMorph, targetMorph)
                 }
@@ -2209,7 +2072,6 @@ class IslandService : Service() {
         }
     }
 
-    /** Tạo chuỗi bóng ma lag mờ bám sau khi co giãn thẻ / giọt kính */
     private fun updateGhostTrail(
         t: Float, startW: Float, endW: Float, startH: Float, endH: Float,
         startMorph: Float, endMorph: Float
@@ -2494,7 +2356,6 @@ class IslandService : Service() {
         faceView = null
         siriView?.releaseBackground()
         siriView = null
-        siriAiInputCard = null
         dismissCustomAppNotice(animate = false)
         stopPanelMedia()
         try { unregisterReceiver(configReceiver) } catch (_: Exception) { }
