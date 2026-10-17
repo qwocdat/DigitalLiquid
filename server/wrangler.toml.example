@@ -1,0 +1,9 @@
+name = "digitalliquid-ai"
+main = "openrouter-worker.js"
+compatibility_date = "2026-10-17"
+
+[vars]
+FIREBASE_PROJECT_ID = "ideo-dd376"
+APP_SITE_URL = "https://digitalsmod.site"
+# Optional comma-separated override. Values must match the model IDs in AiModels.kt.
+# ALLOWED_MODELS = "google/gemini-3.8-flash,openai/gpt-4o-mini"
