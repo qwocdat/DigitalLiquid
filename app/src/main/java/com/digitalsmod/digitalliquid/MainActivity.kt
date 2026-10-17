@@ -571,7 +571,7 @@ class MainActivity : Activity() {
     private fun showSearchDialog() {
         val query = EditText(this).apply {
             hint = "Tìm Home, Activities, Siri, Settings…"
-            singleLine = true
+            setSingleLine(true)
             setPadding(dp(14), dp(11), dp(14), dp(11))
         }
         android.app.AlertDialog.Builder(this)
@@ -1337,6 +1337,8 @@ class MainActivity : Activity() {
         target.addView(featureMiniCard("HYPERISLAND", "Trợ năng hệ thống", if (hasHyperIslandAccessibility()) "Đã bật quan sát giao diện hệ thống." else "Bật Trợ năng để hỗ trợ lớp phủ và phát hiện popup HyperIsland."), marginTop(12))
         target.addView(textButton(if (hasHyperIslandAccessibility()) "Quản lý quyền Trợ năng" else "Bật quyền Trợ năng", false) { openAccessibilitySettings() }, marginTop(8))
     }
+
+    private data class PreviewState(val kind: String, val title: String, val subtitle: String, val symbol: String, val active: Boolean)
 
     private fun previewStateForSelection(): PreviewState = when (previewSample) {
         "call" -> PreviewState("call", "Cuộc gọi đến", "Cuộc gọi đang diễn ra · 00:12", "☎", true)
