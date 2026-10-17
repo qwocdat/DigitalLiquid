@@ -23,9 +23,12 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-          cache: gradle
 
-      # v4 avoids the retired Android SDK "tools" package requested by v3.
+      - name: Set up Gradle (for repositories without gradlew)
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
         with:
@@ -35,15 +38,43 @@ jobs:
         run: |
           sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Make Gradle wrapper executable
-        run: chmod +x ./gradlew
+      - name: Locate Gradle project and build APK
+        shell: bash
+        run: |
+          set -euo pipefail
 
-      - name: Build debug APK
-        run: ./gradlew --no-daemon assembleDebug
+          # Find the Android Gradle project, even if it is inside a subfolder.
+          PROJECT_DIR=""
+          while IFS= read -r file; do
+            candidate="$(dirname "$file")"
+            if [[ -f "$candidate/build.gradle" || -f "$candidate/build.gradle.kts" ]]; then
+              PROJECT_DIR="$candidate"
+              break
+            fi
+          done < <(find . -maxdepth 5 -type f \( -name 'settings.gradle' -o -name 'settings.gradle.kts' \) -not -path './.git/*' | sort)
+
+          if [[ -z "$PROJECT_DIR" ]]; then
+            if [[ -f "./build.gradle" || -f "./build.gradle.kts" ]]; then
+              PROJECT_DIR="."
+            else
+              echo "Không tìm thấy settings.gradle(.kts) hoặc build.gradle(.kts). Kiểm tra cấu trúc repository."
+              find . -maxdepth 3 -type f | sort | head -200
+              exit 1
+            fi
+          fi
+
+          echo "Gradle project directory: $PROJECT_DIR"
+          if [[ -f "$PROJECT_DIR/gradlew" ]]; then
+            chmod +x "$PROJECT_DIR/gradlew"
+            "$PROJECT_DIR/gradlew" -p "$PROJECT_DIR" --no-daemon assembleDebug
+          else
+            echo "Không có gradlew; dùng Gradle đã được cài bởi setup-gradle."
+            gradle -p "$PROJECT_DIR" --no-daemon assembleDebug
+          fi
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
           name: DigitalLiquid-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: '**/build/outputs/apk/debug/*.apk'
           if-no-files-found: error
