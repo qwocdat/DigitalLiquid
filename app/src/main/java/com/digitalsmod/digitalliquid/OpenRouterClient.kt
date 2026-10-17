@@ -12,10 +12,16 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.Executors
 
-/** Talks only to the user's HTTPS proxy. Never embeds an OpenRouter secret in the APK. */
+/** Talks to a publisher-managed HTTPS proxy. The OpenRouter secret must never ship in the APK. */
 object OpenRouterClient {
+    // Replace this host once when publishing the app after deploying server/openrouter-worker.js.
+    // It is deliberately not an editable field in the user interface.
+    private const val AI_PROXY_ENDPOINT = "https://digitalliquid-ai.YOUR-SUBDOMAIN.workers.dev/api/chat"
     private val executor = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
+
+    fun isConfigured(): Boolean = AI_PROXY_ENDPOINT.startsWith("https://") &&
+        !AI_PROXY_ENDPOINT.contains("YOUR-SUBDOMAIN", ignoreCase = true)
 
     fun chat(context: Context, model: String, prompt: String, callback: (String?, String?) -> Unit) =
         chatMessages(context, model, listOf("user" to prompt), callback)
@@ -26,13 +32,9 @@ object OpenRouterClient {
         messages: List<Pair<String, String>>,
         callback: (String?, String?) -> Unit
     ) {
-        val endpoint = AppPrefs.get(context).getString(AppPrefs.AI_ENDPOINT, "").orEmpty().trim()
-        if (endpoint.isBlank()) {
-            callback(null, "Chưa cấu hình AI proxy. Hãy mở DigitalLiquid → Trợ lý AI → Cấu hình máy chủ.")
-            return
-        }
-        if (!endpoint.startsWith("https://", ignoreCase = true)) {
-            callback(null, "AI proxy phải dùng HTTPS.")
+        val endpoint = AI_PROXY_ENDPOINT
+        if (!isConfigured()) {
+            callback(null, "AI proxy chưa được triển khai. Quản trị viên cần đặt URL Worker trong OpenRouterClient.kt; người dùng cuối không cần nhập key.")
             return
         }
         if (messages.none { it.first == "user" && it.second.isNotBlank() }) {

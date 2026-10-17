@@ -346,6 +346,23 @@ class IslandNotificationListener : NotificationListenerService() {
 
     companion object {
         @Volatile private var listenerInstance: IslandNotificationListener? = null
+
+        fun latestPreviewNotificationTitle(): String? {
+            val listener = listenerInstance ?: return null
+            return try {
+                listener.activeNotifications
+                    .asSequence()
+                    .filter { it.packageName != listener.packageName }
+                    .filter { it.notification.category != Notification.CATEGORY_TRANSPORT }
+                    .filter { (it.notification.flags and Notification.FLAG_GROUP_SUMMARY) == 0 }
+                    .sortedByDescending { it.postTime }
+                    .mapNotNull { sbn ->
+                        val extras = sbn.notification.extras ?: return@mapNotNull null
+                        extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim()?.takeIf { it.isNotBlank() }
+                    }
+                    .firstOrNull()
+            } catch (_: Throwable) { null }
+        }
         private val recordingKeys = ConcurrentHashMap.newKeySet<String>()
         private val nativeActivityKeys = ConcurrentHashMap.newKeySet<String>()
 

@@ -66,22 +66,8 @@ class IslandService : Service() {
     private var usingAccessibilityOverlay = false
     private var overlayStartupAttempts = 0
     private val handler = Handler(Looper.getMainLooper())
-    private val keyAuthorizationWatchdog = object : Runnable {
-        override fun run() {
-            if (!KeyAuthGate.isAuthorizedInCurrentProcess(this@IslandService)) {
-                stopSelf()
-                return
-            }
-            handler.postDelayed(this, 30_000L)
-        }
-    }
-
     private val onlinePolicyWatchdog = object : Runnable {
         override fun run() {
-            if (!KeyAuthGate.isAuthorizedInCurrentProcess(this@IslandService)) {
-                stopSelf()
-                return
-            }
             OnlineControlManager.fetch(this@IslandService) { control, _ ->
                 val localVersion = installedVersionCode()
                 if (control != null && control.configFound) {
@@ -153,6 +139,9 @@ class IslandService : Service() {
     private var alignment = "center"
     private var glassStrength = 72
     private var tint = "midnight"
+    private var pillOpacity = 100
+    private var shadowStrength = 68
+    private var motionBlurStrength = 55
     private var panelOpen = false
     private var closingPanelWithMedia = false
     
@@ -331,18 +320,6 @@ class IslandService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        if (!KeyAuthGate.isAuthorizedInCurrentProcess(this)) {
-            createNotificationChannel()
-            val blockedNotification = buildForegroundNotification()
-            if (Build.VERSION.SDK_INT >= 34) {
-                startForeground(42, blockedNotification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
-            } else {
-                startForeground(42, blockedNotification)
-            }
-            stopSelf()
-            return
-        }
-        handler.postDelayed(keyAuthorizationWatchdog, 30_000L)
         instance = this
         
         displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
@@ -371,6 +348,11 @@ class IslandService : Service() {
             startForeground(42, foregroundNotification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         } else {
             startForeground(42, foregroundNotification)
+        }
+        if (!NativeIntegrity.isTrusted(this)) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
         }
         applyPreferences()
         RecentAppSwitcher.warmUp(this)
@@ -480,10 +462,6 @@ class IslandService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (!KeyAuthGate.isAuthorizedInCurrentProcess(this)) {
-            stopSelf(startId)
-            return START_NOT_STICKY
-        }
         return START_STICKY
     }
 
@@ -544,6 +522,9 @@ class IslandService : Service() {
         alignment = prefs.getString(AppPrefs.ALIGNMENT, "center") ?: "center"
         glassStrength = prefs.getInt(AppPrefs.GLASS_STRENGTH, 72).coerceIn(15, 100)
         tint = prefs.getString(AppPrefs.TINT, "midnight") ?: "midnight"
+        pillOpacity = prefs.getInt(AppPrefs.PILL_OPACITY, 100).coerceIn(35, 100)
+        shadowStrength = prefs.getInt(AppPrefs.SHADOW_STRENGTH, 68).coerceIn(0, 100)
+        motionBlurStrength = prefs.getInt(AppPrefs.MOTION_BLUR_STRENGTH, 55).coerceIn(0, 100)
     }
 
     private fun isRecordingControlExpanded(): Boolean = panelOpen && screenRecording && recordingExpanded
@@ -554,6 +535,9 @@ class IslandService : Service() {
         isRecordingControlExpanded() -> (displayWidthPx() - dp(12)).coerceAtLeast(dp(180))
         else -> targetWidth() + targetHostInsetPx() * 2
     }
+
+    /** The overlay host includes transparent space around the visible pill for the soft shadow trail. */
+    private fun targetWindowHeight(): Int = targetHeight() + targetHostInsetPx() * 2
 
     private fun windowGravity(): Int = Gravity.TOP or Gravity.CENTER_HORIZONTAL
 
@@ -569,7 +553,8 @@ class IslandService : Service() {
         }
     }
 
-    private fun windowY(): Int = if (isRecordingControlExpanded()) 0 else positionY(targetHeight(), panelOpen || siriActive)
+    // Keep the visible pill at the same top offset while the transparent shadow host grows around it.
+    private fun windowY(): Int = if (isRecordingControlExpanded()) 0 else positionY(targetHeight(), panelOpen || siriActive) - targetHostInsetPx()
 
     private fun lerp(a: Float, b: Float, t: Float) = a + (b - a) * t
 
@@ -596,7 +581,7 @@ class IslandService : Service() {
         val r = lerp(pillH / 2f, dp(expandedRadiusDp), currentMorphProgress)
             .coerceIn(0f, min(pillW, pillH) / 2f)
         val siriMix = if (siriActive || isSiriShrinking) currentMorphProgress.coerceIn(0f, 1f) else 0f
-        val bgAlpha = ((1f - siriMix) * 255f).roundToInt().coerceIn(0, 255)
+        val bgAlpha = ((1f - siriMix) * 255f * (pillOpacity / 100f)).roundToInt().coerceIn(0, 255)
         rootBackground.setColor(Color.argb(bgAlpha, 0, 0, 0))
         rootBackground.cornerRadius = r
         cornerOutline.radiusPx = r
@@ -733,6 +718,8 @@ class IslandService : Service() {
         content = innerContent
         islandRoot = root
         applyRootCorner(targetWidth(), targetHeight())
+        glassView?.alpha = pillOpacity / 100f
+        root.elevation = dp(8f * shadowStrength / 100f)
 
         val host = FrameLayout(this).apply {
             setBackgroundColor(Color.TRANSPARENT)
@@ -771,7 +758,7 @@ class IslandService : Service() {
 
         val initialParams = WindowManager.LayoutParams(
             targetWindowWidth(),
-            targetHeight(),
+            targetWindowHeight(),
             overlayWindowType(),
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
@@ -1077,8 +1064,8 @@ class IslandService : Service() {
         siriUiContainer = null
         stopSiriDropletFloatAnimation()
         currentMorphProgress = 0f
-        glassView?.alpha = 1f
         applyPreferences()
+        glassView?.alpha = pillOpacity / 100f
         render(animateSize = false)
         updatePosition()
     }
@@ -1191,7 +1178,7 @@ class IslandService : Service() {
             if (!wasRunning) {
                 ghost.translationX = 0f
                 ghost.translationY = 0f
-                ghost.alpha = ghostAlphaOrder[index]
+                ghost.alpha = ghostAlphaOrder[index] * (shadowStrength / 100f)
             }
             ghost.visibility = View.VISIBLE
         }
@@ -1232,14 +1219,14 @@ class IslandService : Service() {
                     ghost.translationY = startGhostY[index] * (1f - smooth(t)) +
                         (index + 1) * dp(0.08f) * (1f - smooth(t))
                     val tailFade = if (t < 0.62f) 1f else (1f - (t - 0.62f) / 0.38f).coerceIn(0f, 1f)
-                    ghost.alpha = startGhostAlpha[index] * (1f - smooth(t)) +
-                        ghostAlphaOrder[index] * tailFade * smooth(t)
+                    ghost.alpha = (startGhostAlpha[index] * (1f - smooth(t)) +
+                        ghostAlphaOrder[index] * tailFade * smooth(t)) * (shadowStrength / 100f)
                 }
                 val travel = abs(offset - lastOffset)
                 val direction = if (offset < lastOffset) -1f else 1f
                 val normalizedVelocity = (travel / dp(3.5f).coerceAtLeast(1f)).coerceIn(0f, 1f)
                 val blurAllowed = AppPrefs.get(this@IslandService).getBoolean(AppPrefs.MOTION_BLUR, true)
-                glassView?.setMotionBlur(if (blurAllowed) normalizedVelocity * 0.55f else 0f, direction)
+                glassView?.setMotionBlur(if (blurAllowed) normalizedVelocity * (motionBlurStrength / 100f) else 0f, direction)
                 lastOffset = offset
             }
         }
@@ -1392,17 +1379,20 @@ class IslandService : Service() {
         val root = islandRoot ?: return
         val lp = params ?: return
         if (isFaceUnlockShrinking || isSiriShrinking) return
+        val wantedInset = targetHostInsetPx()
         lp.width = targetWindowWidth()
-        lp.height = targetHeight()
+        lp.height = targetHeight() + wantedInset * 2
         lp.gravity = windowGravity()
         lp.x = windowX()
         lp.y = windowY()
-        hostInsetPx = targetHostInsetPx()
+        hostInsetPx = wantedInset
         syncOverlayChildBounds(targetWidth(), targetHeight())
         updateExpandedRadius()
         currentMorphProgress = targetMorph()
         applyRootCorner(targetWidth(), targetHeight())
         glassView?.configure(glassStrength, tint, expandedNow = panelOpen)
+        glassView?.alpha = pillOpacity / 100f
+        root.elevation = dp(8f * shadowStrength / 100f)
         updateOverlayWindow(lp)
     }
 
@@ -1417,7 +1407,8 @@ class IslandService : Service() {
         recordingPulse = null
         recordingTextTypewriter?.let { handler.removeCallbacks(it) }
         recordingTextTypewriter = null
-        glassView?.alpha = 1f
+        glassView?.alpha = pillOpacity / 100f
+        root.elevation = dp(8f * shadowStrength / 100f)
         rootContent.visibility = View.VISIBLE
 
         if (siriActive) {
@@ -1503,12 +1494,13 @@ class IslandService : Service() {
         if (lp != null) {
             if (animateSize) animateToTargetSize()
             else {
+                val wantedInset = targetHostInsetPx()
                 lp.width = targetWindowWidth()
-                lp.height = targetHeight()
+                lp.height = targetHeight() + wantedInset * 2
                 lp.gravity = windowGravity()
                 lp.x = windowX()
                 lp.y = windowY()
-                hostInsetPx = targetHostInsetPx()
+                hostInsetPx = wantedInset
                 syncOverlayChildBounds(targetWidth(), targetHeight())
                 updateOverlayWindow(lp)
             }
@@ -1629,16 +1621,20 @@ class IslandService : Service() {
         val lp = params ?: return
         val prefs = AppPrefs.get(this)
         val isLandscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-        val hideForSystemIsland = prefs.getBoolean(AppPrefs.AUTO_HIDE_SYSTEM_ISLAND, true) && hyperIslandVisibilityOverride == true
-        val hideForOtherActivity = prefs.getBoolean(AppPrefs.HIDE_WHEN_NATIVE_ACTIVITY, true) && nativeActivityActive
-        val hideForMusic = prefs.getBoolean(AppPrefs.HIDE_WHEN_MEDIA_PLAYING, true) && mediaPlaybackActive
+        val fullMode = prefs.getString(AppPrefs.OPERATION_MODE, AppPrefs.MODE_HYBRID) == AppPrefs.MODE_FULL
+        val hideForSystemIsland = !fullMode && prefs.getBoolean(AppPrefs.AUTO_HIDE_SYSTEM_ISLAND, true) && hyperIslandVisibilityOverride == true
+        val hideForOtherActivity = !fullMode && prefs.getBoolean(AppPrefs.HIDE_WHEN_NATIVE_ACTIVITY, true) && nativeActivityActive
+        val hideForMusic = !fullMode && prefs.getBoolean(AppPrefs.HIDE_WHEN_MEDIA_PLAYING, true) && mediaPlaybackActive
         val ringerTransitionActive = android.os.SystemClock.elapsedRealtime() < ringerTransitionHideUntil
-        val hideForRingerUi = prefs.getBoolean(AppPrefs.HIDE_WHEN_RINGER_UI, true) && ringerTransitionActive
+        val hideForRingerUi = !fullMode && prefs.getBoolean(AppPrefs.HIDE_WHEN_RINGER_UI, true) && ringerTransitionActive
         val nativeIslandVisible = hideForSystemIsland || hideForOtherActivity || hideForMusic || hideForRingerUi
-        
-        val suppress = isLandscape || (!faceUnlocking && !isFaceUnlockShrinking && !siriActive && !isSiriShrinking && (
+
+        // In full mode the overlay remains visible in both portrait and landscape and does not
+        // disappear just because HyperOS presents its own media/activity island. Android still
+        // owns protected camera/microphone privacy indicators and other system surfaces.
+        val suppress = !fullMode && (isLandscape || (!faceUnlocking && !isFaceUnlockShrinking && !siriActive && !isSiriShrinking && (
             ringerTransitionActive || (!screenRecording && !cameraActive && nativeIslandVisible)
-        ))
+        )))
         val wantedVisibility = if (suppress) View.GONE else View.VISIBLE
         val hasNotTouchable = (lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) != 0
         if (host.visibility != wantedVisibility || hasNotTouchable != suppress) {
@@ -2074,7 +2070,10 @@ class IslandService : Service() {
         val ghostActive = isFaceUnlockShrinking || isSiriShrinking || siriActive
         val opening = panelOpen || faceUnlocking || siriActive
         val startWindowWidth = lp.width.toFloat()
-        val startHeight = lp.height.toFloat()
+        val startWindowHeight = lp.height.toFloat()
+        // IMPORTANT: lp.height includes the transparent host's extra top/bottom inset. Using
+        // it as the visible pill height creates a brief square block at the start of Siri zoom.
+        val startPillHeight = (root.height.takeIf { it > 0 } ?: (lp.height - 2 * hostInsetPx)).toFloat()
         val startX = lp.x.toFloat()
         val startY = lp.y.toFloat()
         val startPillWidth = (root.width.takeIf { it > 0 } ?: (lp.width - 2 * hostInsetPx)).toFloat()
@@ -2092,7 +2091,7 @@ class IslandService : Service() {
         if (AppPrefs.get(this).getBoolean(AppPrefs.REDUCE_MOTION, false)) {
             currentMorphProgress = targetMorph
             lp.width = endWidth.roundToInt()
-            lp.height = endHeight.roundToInt()
+            lp.height = (endHeight + 2f * endInset).roundToInt().coerceAtLeast(1)
             lp.x = endX.roundToInt()
             lp.y = endY.roundToInt()
             hostInsetPx = endInset.roundToInt()
@@ -2118,39 +2117,47 @@ class IslandService : Service() {
         var canceled = false
         val sWidth = displayWidthPx().toFloat()
         resizeAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            val configuredDuration = AppPrefs.get(this@IslandService)
+                .getInt(AppPrefs.MORPH_DURATION_MS, 420).coerceIn(220, 720).toLong()
             duration = when {
-                siriCardExpanded -> 440L
-                siriActive -> SIRI_EXPAND_MS
-                isSiriShrinking -> SIRI_SHRINK_MS
-                faceUnlocking -> FACE_EXPAND_MS
-                isFaceUnlockShrinking -> FACE_SHRINK_MS
-                opening -> 420L
-                else -> 460L
+                siriCardExpanded -> (configuredDuration * 1.08f).toLong()
+                siriActive || isSiriShrinking -> configuredDuration
+                faceUnlocking || isFaceUnlockShrinking -> (configuredDuration * 0.92f).toLong()
+                opening -> configuredDuration
+                else -> configuredDuration
             }
-            interpolator = PathInterpolator(0.22f, 1.18f, 0.34f, 1f)
+            interpolator = when (AppPrefs.get(this@IslandService).getString(AppPrefs.ANIMATION_STYLE, "fluid")) {
+                "spring" -> PathInterpolator(0.20f, 0.92f, 0.22f, 1f)
+                "soft" -> PathInterpolator(0.35f, 0f, 0.20f, 1f)
+                "linear" -> android.view.animation.AccelerateDecelerateInterpolator()
+                else -> PathInterpolator(0.22f, 0.70f, 0.20f, 1f)
+            }
             addUpdateListener { animator ->
                 val t = animator.animatedValue as Float
                 val tc = t.coerceIn(0f, 1f)
                 currentMorphProgress = lerp(startMorph, targetMorph, t)
 
                 lp.width = (startWindowWidth + (endWidth - startWindowWidth) * t).roundToInt().coerceAtLeast(1)
-                lp.height = (startHeight + (endHeight - startHeight) * t).roundToInt().coerceAtLeast(1)
+                lp.height = (startWindowHeight + (endHeight + 2f * endInset - startWindowHeight) * t).roundToInt().coerceAtLeast(1)
                 lp.x = (startX + (endX - startX) * t).roundToInt()
                 lp.y = (startY + (endY - startY) * t).roundToInt()
                 hostInsetPx = (startInset + (endInset - startInset) * tc).roundToInt()
 
                 val pillW = (startPillWidth + (endPillWidth - startPillWidth) * t).roundToInt().coerceAtLeast(1)
-                val pillH = (startHeight + (endHeight - startHeight) * t).roundToInt().coerceAtLeast(1)
+                val pillH = (startPillHeight + (endHeight - startPillHeight) * t).roundToInt().coerceAtLeast(1)
 
                 syncOverlayChildBounds(pillW, pillH)
                 applyRootCorner(pillW, pillH)
                 siriView?.setMorphProgress(currentMorphProgress.coerceIn(0f, 1f))
-                siriView?.updateWindowPosition(((sWidth - pillW) / 2f).coerceAtLeast(0f), lp.y.toFloat())
+                siriView?.updateWindowPosition(
+                    ((sWidth - pillW) / 2f).coerceAtLeast(0f),
+                    lp.y.toFloat() + hostInsetPx
+                )
                 root.scaleX = 1f
                 root.scaleY = 1f
 
                 if (ghostActive) {
-                    updateGhostTrail(tc, startPillWidth, endPillWidth, startHeight, endHeight, startMorph, targetMorph)
+                    updateGhostTrail(tc, startPillWidth, endPillWidth, startPillHeight, endHeight, startMorph, targetMorph)
                 }
                 updateOverlayWindow(lp)
             }
@@ -2167,7 +2174,10 @@ class IslandService : Service() {
                     syncOverlayChildBounds(endPillWidth.roundToInt(), endHeight.roundToInt())
                     applyRootCorner(endPillWidth.roundToInt(), endHeight.roundToInt())
                     siriView?.setMorphProgress(currentMorphProgress.coerceIn(0f, 1f))
-                    siriView?.updateWindowPosition(((sWidth - endPillWidth) / 2f).coerceAtLeast(0f), endY)
+                    siriView?.updateWindowPosition(
+                        ((sWidth - endPillWidth) / 2f).coerceAtLeast(0f),
+                        endY + endInset
+                    )
                     root.scaleX = 1f
                     root.scaleY = 1f
                     root.alpha = 1f
@@ -2200,7 +2210,7 @@ class IslandService : Service() {
             if (bg != null) bg.cornerRadius = gr else ghost.background = ghostCapsule(gr)
             ghost.translationX = 0f
             ghost.translationY = 0f
-            ghost.alpha = FACE_GHOST_ALPHA[i.coerceAtMost(FACE_GHOST_ALPHA.lastIndex)] * envelope
+            ghost.alpha = FACE_GHOST_ALPHA[i.coerceAtMost(FACE_GHOST_ALPHA.lastIndex)] * envelope * (shadowStrength / 100f)
             ghost.visibility = View.VISIBLE
         }
     }
@@ -2439,7 +2449,6 @@ class IslandService : Service() {
     }
 
     override fun onDestroy() {
-        handler.removeCallbacks(keyAuthorizationWatchdog)
         handler.removeCallbacks(onlinePolicyWatchdog)
         handler.removeCallbacks(faceShrinkSafety)
         handler.removeCallbacks(siriShrinkSafety)
@@ -2536,6 +2545,11 @@ class IslandService : Service() {
         @Volatile private var lastMediaPlaybackActive = false
         @Volatile private var lastRingerUiActive = false
         @Volatile private var lastCameraActivityActive = false
+
+        fun isScreenRecordingActive(): Boolean = lastNotificationScreenRecording || lastAccessibilityScreenRecording
+        fun isCameraActivityActive(): Boolean = lastCameraActivityActive
+        fun isMediaPlaybackActive(): Boolean = lastMediaPlaybackActive
+        fun isNativeActivityActive(): Boolean = lastNativeActivityActive
 
         fun setCameraActivityActive(active: Boolean) {
             lastCameraActivityActive = active

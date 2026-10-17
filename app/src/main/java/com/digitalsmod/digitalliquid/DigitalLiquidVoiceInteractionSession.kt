@@ -149,9 +149,9 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
         content.addView(modelScroll, LinearLayout.LayoutParams(-1, dp(39)).apply { topMargin = dp(6) })
 
         status = TextView(uiContext).apply {
-            text = if (AppPrefs.get(uiContext).getString(AppPrefs.AI_ENDPOINT, "").orEmpty().isBlank())
-                "Chưa cấu hình kết nối AI trong mục Trợ lý AI."
-            else "Sẵn sàng. Nhập câu hỏi hoặc dùng nút Nói."
+            text = if (OpenRouterClient.isConfigured())
+                "Sẵn sàng. Nhập câu hỏi hoặc dùng nút Nói."
+            else "AI đang chờ quản trị viên triển khai proxy. Người dùng không cần nhập API key."
             textSize = 10.5f
             setTextColor(0xFFD8D9E3.toInt())
             setPadding(dp(2), dp(6), dp(2), dp(4))
@@ -185,7 +185,12 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
             minLines = 1
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(11), dp(8), dp(11), dp(8))
-            background = GradientDrawable().apply { setColor(0xFF141722.toInt()); cornerRadius = dp(15).toFloat(); setStroke(dp(1), 0x33FFFFFF) }
+            background = GradientDrawable().apply {
+                setColor(0x88212A39.toInt())
+                cornerRadius = dp(15).toFloat()
+                setStroke(dp(1), 0x66FFFFFF)
+            }
+            elevation = dp(2).toFloat()
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
         }
         promptInput = input
@@ -220,10 +225,6 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
         val input = promptInput ?: return
         val question = input.text?.toString()?.trim().orEmpty()
         if (question.isBlank()) return
-        if (!KeyAuthGate.isAuthorizedInCurrentProcess(uiContext)) {
-            status?.text = "Cần xác thực lại key trước khi sử dụng trợ lý."
-            return
-        }
         history.add("user" to question)
         conversation?.text = formatHistory()
         input.setText("")
@@ -308,18 +309,11 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
                 })
             }.onFailure { Log.w("DigitalLiquidSiri", "Could not acknowledge visible session", it) }
         }
-        // The visual assistant must always open. Authentication gates AI requests, not the Siri animation.
+        // The visual assistant opens without a key gate; only network availability can affect AI replies.
         applyWindowStyleAndPosition()
         panel?.visibility = View.VISIBLE
         siriLens?.setListening(true)
-        if (!KeyAuthGate.isAuthorizedInCurrentProcess(uiContext)) {
-            status?.text = "Hiệu ứng Siri đã mở · xác thực key trong DigitalLiquid để trò chuyện với AI."
-            // The session lives in a separate process, so a saved-key recheck may take time.
-            // Do not hide the effect when this device has no saved key.
-            KeyAuthGate.reauthenticateSavedKey(uiContext) { authorized ->
-                if (authorized && panel?.visibility == View.VISIBLE) status?.text = "Sẵn sàng · ${AiModels.labelFor(AiModels.selectedId(uiContext))}"
-            }
-        }
+        status?.text = "Sẵn sàng · ${AiModels.labelFor(AiModels.selectedId(uiContext))}"
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {

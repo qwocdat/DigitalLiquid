@@ -33,7 +33,6 @@ class MainActivity : Activity() {
     companion object { private const val REQUEST_PANEL_BACKGROUND = 2409 }
 
     private var launchedForPanelPicker = false
-    private var unsupportedDevice = false
     private var keyAuthorized = false
     private var authorizedUiInitialized = false
     private var remoteCheckInFlight = false
@@ -56,117 +55,58 @@ class MainActivity : Activity() {
     private val prefs by lazy { AppPrefs.get(this) }
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
-    private fun readSystemProperty(name: String): String {
-        return try {
-            val cls = Class.forName("android.os.SystemProperties")
-            val method = cls.getMethod("get", String::class.java, String::class.java)
-            (method.invoke(null, name, "") as? String).orEmpty()
-        } catch (_: Throwable) {
-            ""
-        }
-    }
-
-    /** Allows only Xiaomi/Redmi/POCO devices whose ROM identifies itself as HyperOS 3+. */
-    private fun checkDeviceCompatibility(): Pair<Boolean, String> {
-        val familyIdentity = listOf(Build.MANUFACTURER, Build.BRAND, Build.DEVICE, Build.PRODUCT)
-            .joinToString(" ").lowercase()
-        val isXiaomiFamily = listOf("xiaomi", "redmi", "poco").any { familyIdentity.contains(it) }
-        if (!isXiaomiFamily) {
-            return false to "DigitalLiquid chỉ hỗ trợ điện thoại Xiaomi, Redmi và POCO chạy HyperOS 3 trở lên. Thiết bị hiện tại không thuộc nhóm được hỗ trợ."
-        }
-
-        val osIdentity = listOf(
-            readSystemProperty("ro.mi.os.version.name"),
-            readSystemProperty("ro.mi.os.version.incremental"),
-            Build.DISPLAY
-        ).filter { it.isNotBlank() }.joinToString(" ")
-        // Avoid interpreting Android's generic text like “Android OS 16” as Xiaomi HyperOS.
-        val versionMatch = Regex("(?i)\\bOS([0-9]+)(?:\\.[0-9]+)*").find(osIdentity)
-            ?: Regex("(?i)HyperOS\\s+([0-9]+)(?:\\.[0-9]+)*").find(osIdentity)
-        val major = versionMatch?.groupValues?.getOrNull(1)?.toIntOrNull()
-        // Xiaomi's documented focus-protocol value is 3 for OS3 island support; use it first
-        // because a version string may be hidden or vendor-formatted differently.
-        val focusProtocolVersion = try {
-            Settings.System.getInt(contentResolver, "notification_focus_protocol", 0)
-        } catch (_: Exception) { 0 }
-        val supported = focusProtocolVersion >= 3 || (major != null && major >= 3)
-        if (!supported) {
-            val found = buildString {
-                append(osIdentity.ifBlank { "không xác định được phiên bản ROM" })
-                if (focusProtocolVersion > 0) append(" · notification_focus_protocol=$focusProtocolVersion")
-            }
-            return false to "DigitalLiquid yêu cầu Xiaomi/Redmi/POCO chạy HyperOS 3, HyperOS 4 hoặc mới hơn. MIUI và HyperOS 2 trở xuống không được hỗ trợ. Hệ thống phát hiện: $found"
-        }
-        return true to ""
-    }
-
-    private fun renderUnsupportedDevice(reason: String) {
-        unsupportedDevice = true
-        try { stopService(Intent(this, IslandService::class.java)) } catch (_: Exception) { }
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            setPadding(dp(28), dp(32), dp(28), dp(32))
-            background = GradientDrawable().apply {
-                setColor(Color.rgb(7, 8, 12))
-            }
-        }
-        root.addView(TextView(this).apply {
-            text = "DigitalLiquid"
-            textSize = 27f
-            typeface = Typeface.create("sans-serif", Typeface.BOLD)
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-        })
-        root.addView(TextView(this).apply {
-            text = "THIẾT BỊ KHÔNG ĐƯỢC HỖ TRỢ"
-            textSize = 12f
-            letterSpacing = 0.08f
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setTextColor(0xFFFF6B6B.toInt())
-            gravity = Gravity.CENTER
-        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(14) })
-        root.addView(TextView(this).apply {
-            text = reason
-            textSize = 14f
-            setTextColor(0xFF6B798A.toInt())
-            gravity = Gravity.CENTER
-            setLineSpacing(dp(4).toFloat(), 1f)
-        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
-        val exit = Button(this).apply {
-            text = "Thoát"
-            setTextColor(Color.WHITE)
-            background = roundedGradient(intArrayOf(0xFF242631.toInt(), 0xFF151720.toInt()), 16, 0x35FFFFFF)
-            setOnClickListener { finish() }
-        }
-        root.addView(exit, LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(24) })
-        setContentView(root)
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (!NativeIntegrity.isTrusted(this)) {
+            renderIntegrityBlocked()
+            return
+        }
         // One-time visual refresh: new installs and upgraded installs start with the redesigned light UI.
         // Users can still switch back to dark mode after this migration.
         if (!prefs.getBoolean("ui_redesign_153_migrated", false)) {
             prefs.edit().putBoolean(AppPrefs.LIGHT_MODE, true).putBoolean("ui_redesign_153_migrated", true).apply()
         }
         applySystemBars()
-        val compatibility = checkDeviceCompatibility()
-        if (!compatibility.first) {
-            renderUnsupportedDevice(compatibility.second)
-            return
-        }
-
-        // Keep the app behind a blank surface until the server accepts a typed key.
-        setContentView(LinearLayout(this).apply {
-            setBackgroundColor(Color.rgb(7, 8, 12))
-            layoutParams = ViewGroup.LayoutParams(-1, -1)
-        })
-        KeyAuthGate.requireKey(this) {
-            if (isFinishing || isDestroyed) return@requireKey
-            keyAuthorized = true
+        // Access is open while the app is in active development. Offer the operating
+        // mode before the dashboard instead of requiring a Get Key flow or ROM gate.
+        keyAuthorized = true
+        if (prefs.getString(AppPrefs.OPERATION_MODE, "").isNullOrBlank()) {
+            renderModeChooser()
+        } else {
             initializeAuthorizedUi()
         }
+    }
+
+    private fun renderIntegrityBlocked() {
+        window.statusBarColor = Color.rgb(12, 14, 20)
+        window.navigationBarColor = Color.rgb(12, 14, 20)
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(28), dp(28), dp(28), dp(28))
+            setBackgroundColor(Color.rgb(12, 14, 20))
+        }
+        root.addView(ImageView(this).apply {
+            setImageResource(R.drawable.digitalliquid_brand)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            contentDescription = "DigitalLiquid"
+        }, LinearLayout.LayoutParams(dp(72), dp(72)).apply { bottomMargin = dp(20) })
+        root.addView(TextView(this).apply {
+            text = "Bản cài đặt không được xác minh"
+            textSize = 21f
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+        })
+        root.addView(TextView(this).apply {
+            text = "Chữ ký gói ứng dụng không khớp với bản phát hành được cấu hình. Hãy cài bản chính thức. Bản phát triển có thể bỏ qua bước này."
+            textSize = 13f
+            gravity = Gravity.CENTER
+            setLineSpacing(dp(4).toFloat(), 1.02f)
+            setTextColor(0xFFAFB8C8.toInt())
+        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
+        root.addView(textButton("Thoát", true) { finish() }, LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(22) })
+        setContentView(root)
     }
 
     private fun initializeAuthorizedUi() {
@@ -180,7 +120,11 @@ class MainActivity : Activity() {
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         super.onConfigurationChanged(newConfig)
         applySystemBars()
-        if (!keyAuthorized || isFinishing || isDestroyed) return
+        if (isFinishing || isDestroyed) return
+        if (prefs.getString(AppPrefs.OPERATION_MODE, "").isNullOrBlank()) {
+            renderModeChooser()
+            return
+        }
         if (prefs.getBoolean(AppPrefs.ONBOARDING_DONE, false)) {
             val savedScroll = if (::scroll.isInitialized) scroll.scrollY else lastScrollY
             renderMain()
@@ -199,8 +143,7 @@ class MainActivity : Activity() {
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
         if (intent != null) setIntent(intent)
-        // A service/panel intent must not open a picker or other app UI before the key gate passes.
-        if (keyAuthorized) maybePickPanelBackground(intent)
+        maybePickPanelBackground(intent)
     }
 
     private fun openBackgroundPicker() {
@@ -261,14 +204,11 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        if (unsupportedDevice) return
-        val compatibility = checkDeviceCompatibility()
-        if (!compatibility.first) {
-            renderUnsupportedDevice(compatibility.second)
+        keyAuthorized = true
+        if (prefs.getString(AppPrefs.OPERATION_MODE, "").isNullOrBlank()) {
+            renderModeChooser()
             return
         }
-        // Do not render the dashboard/onboarding while the key dialog is pending or the user is in Get Key.
-        if (!keyAuthorized) return
         if (prefs.getBoolean(AppPrefs.ONBOARDING_DONE, false)) renderMain()
         checkOnlineControl(force = false)
     }
@@ -306,6 +246,150 @@ class MainActivity : Activity() {
             insets
         }
         root.requestApplyInsets()
+    }
+
+    private fun renderModeChooser() {
+        val light = prefs.getBoolean(AppPrefs.LIGHT_MODE, true)
+        val root = FrameLayout(this).apply {
+            background = appBackground()
+            clipChildren = false
+            clipToPadding = false
+        }
+        val scrollable = ScrollView(this).apply {
+            isFillViewport = true
+            clipToPadding = false
+        }
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(24), dp(24), dp(24), dp(26))
+        }
+        column.addView(ImageView(this).apply {
+            setImageResource(R.drawable.digitalliquid_brand)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            contentDescription = "DigitalLiquid"
+        }, LinearLayout.LayoutParams(dp(68), dp(68)).apply { bottomMargin = dp(20) })
+        column.addView(TextView(this).apply {
+            text = "Chọn trải nghiệm của bạn"
+            textSize = 27f
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
+            gravity = Gravity.CENTER
+            setTextColor(if (light) 0xFF141821.toInt() else Color.WHITE)
+        }, LinearLayout.LayoutParams(-1, -2))
+        column.addView(TextView(this).apply {
+            text = "DigitalLiquid có hai cách hoạt động. Bạn có thể đổi lựa chọn trong Cài đặt bất cứ lúc nào."
+            textSize = 14f
+            gravity = Gravity.CENTER
+            setLineSpacing(dp(4).toFloat(), 1.02f)
+            setTextColor(if (light) 0xFF616B7B.toInt() else 0xFFADB5C5.toInt())
+        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10); bottomMargin = dp(24) })
+
+        fun modeCard(title: String, eyebrow: String, description: String, features: List<String>, selectedMode: String, emphasized: Boolean) {
+            val shell = card().apply {
+                setPadding(dp(17), dp(17), dp(17), dp(17))
+                isClickable = true
+                isFocusable = true
+                background = roundedGradient(
+                    if (light) intArrayOf(if (emphasized) 0xFFF8FCFF.toInt() else 0xF6FFFFFF.toInt(), if (emphasized) 0xFFE5F1FF.toInt() else 0xFFE9EEF7.toInt())
+                    else intArrayOf(0xF1262A37.toInt(), 0xF20F121A.toInt()),
+                    24,
+                    if (emphasized) 0x883C9AF4.toInt() else if (light) 0x66FFFFFF else 0x35FFFFFF
+                )
+                elevation = dp(2).toFloat()
+            }
+            val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            val icon = TextView(this).apply {
+                text = if (selectedMode == AppPrefs.MODE_FULL) "◉" else "⌁"
+                textSize = 28f
+                gravity = Gravity.CENTER
+                setTextColor(if (emphasized) 0xFF1688EF.toInt() else if (light) 0xFF287C89.toInt() else 0xFF7ADBD0.toInt())
+                background = rounded(if (light) 0x1B258BEA else 0x263B95F3, 16)
+            }
+            head.addView(icon, LinearLayout.LayoutParams(dp(48), dp(48)))
+            val titleBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            titleBox.addView(TextView(this@MainActivity).apply {
+                text = eyebrow.uppercase()
+                textSize = 9.5f
+                letterSpacing = 0.09f
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                setTextColor(if (light) 0xFF21847E.toInt() else 0xFF77D6CC.toInt())
+            })
+            titleBox.addView(TextView(this@MainActivity).apply {
+                text = title
+                textSize = 20f
+                typeface = Typeface.create("sans-serif", Typeface.BOLD)
+                setTextColor(if (light) 0xFF17202B.toInt() else Color.WHITE)
+            }, marginTop(4))
+            head.addView(titleBox, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(12) })
+            head.addView(TextView(this).apply {
+                text = "›"
+                textSize = 30f
+                setTextColor(if (light) 0xFF748092.toInt() else 0xFFB9C2D0.toInt())
+            })
+            shell.addView(head)
+            shell.addView(TextView(this).apply {
+                text = description
+                textSize = 13f
+                setLineSpacing(dp(3).toFloat(), 1.02f)
+                setTextColor(if (light) 0xFF5B6575.toInt() else 0xFFB5BECD.toInt())
+            }, marginTop(14))
+            val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            features.forEach { feature ->
+                val row = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                row.addView(View(this@MainActivity).apply {
+                    background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(if (emphasized) 0xFF3B9AF2.toInt() else 0xFF64CDB4.toInt()) }
+                }, LinearLayout.LayoutParams(dp(7), dp(7)))
+                row.addView(TextView(this@MainActivity).apply {
+                    text = feature
+                    textSize = 12.5f
+                    setTextColor(if (light) 0xFF404B5B.toInt() else 0xFFD1D8E3.toInt())
+                }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(9) })
+                list.addView(row, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
+            }
+            shell.addView(list, marginTop(10))
+            shell.addView(textButton(if (selectedMode == AppPrefs.MODE_HYBRID) "Dùng Hybrid" else "Dùng Dynamic Island đầy đủ", emphasized) {
+                prefs.edit().putString(AppPrefs.OPERATION_MODE, selectedMode).apply()
+                keyAuthorized = true
+                if (prefs.getBoolean(AppPrefs.ONBOARDING_DONE, false)) {
+                    authorizedUiInitialized = false
+                    initializeAuthorizedUi()
+                } else {
+                    renderOnboarding(0)
+                }
+            }, marginTop(16))
+            shell.setOnClickListener {
+                prefs.edit().putString(AppPrefs.OPERATION_MODE, selectedMode).apply()
+                if (prefs.getBoolean(AppPrefs.ONBOARDING_DONE, false)) {
+                    authorizedUiInitialized = false
+                    initializeAuthorizedUi()
+                } else renderOnboarding(0)
+            }
+            column.addView(shell, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(14) })
+        }
+
+        modeCard(
+            "Hybrid Island", "TÙY BIẾN THEO HỆ ĐIỀU HÀNH",
+            "Giữ kiểu đảo nổi DigitalLiquid hiện tại, nâng cấp hình ảnh, hiệu ứng và tương tác. Hợp với HyperOS hoặc máy Android cần giao diện nhất quán.",
+            listOf("Tương tác chạm, giữ và vuốt", "Tùy chỉnh hình dạng và animation", "Ưu tiên tránh trùng với HyperIsland hệ thống"),
+            AppPrefs.MODE_HYBRID, false
+        )
+        modeCard(
+            "Dynamic Island đầy đủ", "CHẾ ĐỘ HIỂN THỊ LIÊN TỤC",
+            "Giữ lớp phủ hiển thị khi nhạc, thông báo và hoạt động nền xuất hiện thay vì tự ẩn theo HyperIsland. Hỗ trợ phụ thuộc API và quyền Android.",
+            listOf("Hiển thị liên tục cả khi có nhạc/thông báo", "Theo dõi media và thông báo được cấp quyền", "Không thể thay thế các chỉ báo riêng tư do Android bảo vệ"),
+            AppPrefs.MODE_FULL, true
+        )
+        column.addView(TextView(this).apply {
+            text = "Bạn có thể đổi chế độ sau này trong Cài đặt. Một số hoạt động hệ thống bị giới hạn bởi Android và phiên bản ROM."
+            textSize = 11f
+            gravity = Gravity.CENTER
+            setLineSpacing(dp(3).toFloat(), 1f)
+            setTextColor(if (light) 0xFF7A8493.toInt() else 0xFF9099A8.toInt())
+        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(2) })
+        scrollable.addView(column)
+        root.addView(scrollable, FrameLayout.LayoutParams(-1, -1))
+        setContentView(root)
+        applySystemBars()
     }
 
     private fun renderOnboarding(page: Int) {
@@ -723,7 +807,7 @@ class MainActivity : Activity() {
             })
         }, marginTop(8))
         val previewCard = card().apply { setPadding(dp(14), dp(16), dp(14), dp(16)) }
-        previewCard.addView(buildGlassPreview(), LinearLayout.LayoutParams(-1, dp(64)))
+        previewCard.addView(buildGlassPreview(), LinearLayout.LayoutParams(-1, dp(190)))
         previewCard.addView(TextView(this).apply {
             text = "CHẠM: RUNG LẮC  ·  GIỮ: TÙY CHỈNH"
             textSize = 9.5f
@@ -766,7 +850,27 @@ class MainActivity : Activity() {
         target.addView(toggleCard("Giảm chuyển động", "Tắt chuyển động rung lắc và co giãn; giữ giao diện cơ bản.", AppPrefs.REDUCE_MOTION), marginTop(18))
         target.addView(sectionTitle("Island Refresh Rate"), marginTop(22))
         target.addView(refreshRateCard(), marginTop(8))
-        target.addView(infoCard("Tần số khung hình", "DigitalLiquid sẽ yêu cầu mức gần nhất mà màn hình hỗ trợ. Các lựa chọn 140/165 FPS không thể ép màn hình 60/90/120 Hz vượt giới hạn phần cứng; HyperOS vẫn quyết định tốc độ thực tế."), marginTop(10))
+        target.addView(infoCard("Tần số khung hình", "DigitalLiquid yêu cầu mức gần nhất mà màn hình hỗ trợ. 140/165 FPS không thể ép màn hình 60/90/120 Hz vượt giới hạn phần cứng; hệ điều hành vẫn quyết định tốc độ thực tế."), marginTop(10))
+
+        target.addView(sectionTitle("Tùy chỉnh chuyển động & Liquid Glass"), marginTop(22))
+        target.addView(card().apply {
+            setPadding(dp(13), dp(13), dp(13), dp(13))
+            addView(TextView(this@MainActivity).apply {
+                text = "Kiểu thu phóng"
+                textSize = 13f
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                setTextColor(if (prefs.getBoolean(AppPrefs.LIGHT_MODE, true)) 0xFF252838.toInt() else Color.WHITE)
+            })
+            addView(segmentedOptions(
+                listOf("Fluid" to "fluid", "Spring" to "spring", "Soft" to "soft", "Linear" to "linear"),
+                prefs.getString(AppPrefs.ANIMATION_STYLE, "fluid") ?: "fluid"
+            ) { selected -> prefs.edit().putString(AppPrefs.ANIMATION_STYLE, selected).apply(); applyConfig(); renderMain() }, marginTop(9))
+        }, marginTop(8))
+        target.addView(seekCard("Thời lượng thu phóng", "220–720 ms · ngắn hơn không đồng nghĩa mượt hơn", AppPrefs.MORPH_DURATION_MS, 220, 720, " ms") { applyConfig() }, marginTop(8))
+        target.addView(seekCard("Độ trong viên thuốc", "35–100% · ảnh hưởng bề mặt đảo nổi", AppPrefs.PILL_OPACITY, 35, 100, "%") { applyConfig() }, marginTop(8))
+        target.addView(seekCard("Bóng mờ khi thu phóng", "Điều chỉnh độ đậm của vệt bóng chuyển động", AppPrefs.SHADOW_STRENGTH, 0, 100, "%") { applyConfig() }, marginTop(8))
+        target.addView(seekCard("Cường độ motion blur", "Vệt mờ theo hướng vuốt và rung lắc", AppPrefs.MOTION_BLUR_STRENGTH, 0, 100, "%") { applyConfig() }, marginTop(8))
+        target.addView(seekCard("Độ bóng Liquid Glass", "15–100% · cường độ phản chiếu trên viên thuốc", AppPrefs.GLASS_STRENGTH, 15, 100, "%") { applyConfig() }, marginTop(8))
     }
 
     private fun refreshRateCard(): View {
@@ -902,9 +1006,8 @@ class MainActivity : Activity() {
             addView(modelRow, ViewGroup.LayoutParams(-2, -1))
         }, LinearLayout.LayoutParams(-1, dp(39)).apply { topMargin = dp(8) })
         config.addView(textButton("Nhập model ID tùy chỉnh", false) { editAiModel() }, marginTop(8))
-        config.addView(textButton("Cấu hình endpoint máy chủ", false) { editAiEndpoint() }, marginTop(8))
-        val endpointText = prefs.getString(AppPrefs.AI_ENDPOINT, "").orEmpty().ifBlank { "Chưa cấu hình máy chủ HTTPS" }
-        config.addView(bodyText(endpointText), marginTop(8))
+        config.addView(textButton("Trạng thái kết nối AI", false) { showAiEndpointInfo() }, marginTop(8))
+        config.addView(bodyText(if (OpenRouterClient.isConfigured()) "AI proxy đã được triển khai" else "AI proxy sẽ hoạt động sau khi quản trị viên triển khai Worker"), marginTop(8))
         target.addView(config, marginTop(14))
 
         val chatCard = card().apply { setPadding(dp(15), dp(15), dp(15), dp(15)) }
@@ -962,47 +1065,20 @@ class MainActivity : Activity() {
             prompt.setText("")
         }, marginTop(7))
         target.addView(chatCard, marginTop(14))
-        target.addView(infoCard("Kết nối AI", "Nhập địa chỉ dịch vụ AI bảo mật do bạn quản lý. Không lưu khóa bí mật trực tiếp trong ứng dụng."), marginTop(14))
+        target.addView(infoCard("Kết nối AI", "AI dùng một proxy HTTPS cố định. Khóa OpenRouter được lưu ở phía máy chủ, không yêu cầu người dùng nhập khóa trong ứng dụng."), marginTop(14))
     }
 
-    private fun editAiEndpoint() {
-        val input = EditText(this).apply {
-            hint = "https://ai-service.example"
-            setText(prefs.getString(AppPrefs.AI_ENDPOINT, "").orEmpty())
-            setTextColor(Color.WHITE)
-            setHintTextColor(0xFF8E9AAC.toInt())
-            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI
-            setPadding(dp(14), dp(12), dp(14), dp(12))
-            background = rounded(0xD91B2636.toInt(), 14)
-        }
-        val form = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(0, 0, 0, 0)
-            addView(input, LinearLayout.LayoutParams(-1, -2))
-        }
+    private fun showAiEndpointInfo() {
         LiquidDialog.show(
             this,
-            eyebrow = "TRỢ LÝ AI · KẾT NỐI",
-            title = "Kết nối AI bảo mật",
-            message = "Nhập địa chỉ HTTPS của dịch vụ AI bảo mật. Không nhập khóa bí mật vào ứng dụng.",
-            content = form,
-            actions = listOf(
-                LiquidDialog.Action("Hủy"),
-                LiquidDialog.Action("Xóa", dismissOnClick = true) {
-                    prefs.edit().remove(AppPrefs.AI_ENDPOINT).apply()
-                    renderMain()
-                },
-                LiquidDialog.Action("Lưu", primary = true, dismissOnClick = false) { dialog ->
-                    val value = input.text?.toString()?.trim().orEmpty().trimEnd('/')
-                    if (value.isNotBlank() && !value.startsWith("https://", true)) {
-                        input.error = "Endpoint phải bắt đầu bằng https://"
-                        return@Action
-                    }
-                    prefs.edit().putString(AppPrefs.AI_ENDPOINT, value).apply()
-                    dialog.dismiss()
-                    renderMain()
-                }
-            )
+            eyebrow = "DIGITALLIQUID AI · BẢO MẬT",
+            title = "Kết nối AI",
+            message = if (OpenRouterClient.isConfigured()) {
+                "AI proxy đã được cấu hình. Khóa OpenRouter không được lưu trong ứng dụng."
+            } else {
+                "Bản mã nguồn này dùng Cloudflare Worker làm proxy. Quản trị viên cần triển khai Worker và đặt OPENROUTER_API_KEY trong mục Secrets của Worker, sau đó gán URL Worker vào OpenRouterClient.kt. Người dùng cuối không cần nhập key."
+            },
+            actions = listOf(LiquidDialog.Action("Đóng", primary = true))
         )
     }
 
@@ -1042,7 +1118,13 @@ class MainActivity : Activity() {
     }
 
     private fun buildSettings(target: LinearLayout) {
-        addEyebrow(target, "QUYỀN & RIÊNG TƯ")
+        addEyebrow(target, "GIAO DIỆN & VẬN HÀNH")
+        target.addView(settingAction(
+            "Chế độ Dynamic Island",
+            if (prefs.getString(AppPrefs.OPERATION_MODE, AppPrefs.MODE_HYBRID) == AppPrefs.MODE_FULL) "Dynamic Island đầy đủ" else "Hybrid Island",
+            "Đổi cách ứng dụng xử lý nhạc, thông báo và HyperIsland của hệ thống. Việc đổi chế độ sẽ mở lại màn hình lựa chọn."
+        ) { renderModeChooser() }, marginTop(8))
+        addEyebrow(target, "QUYỀN & RIÊNG TƯ", 22)
         target.addView(TextView(this).apply {
             text = "Cài đặt hệ thống"
             textSize = 24f
@@ -1113,8 +1195,8 @@ class MainActivity : Activity() {
         }, marginTop(8))
 
         target.addView(sectionTitle("Trợ lý AI / Kết nối"), marginTop(20))
-        target.addView(settingAction("Kết nối AI bảo mật", if (prefs.getString(AppPrefs.AI_ENDPOINT, "").orEmpty().isBlank()) "Chưa cấu hình" else "Đã lưu endpoint HTTPS", "Thiết lập địa chỉ dịch vụ AI. Thông tin bí mật không được lưu trực tiếp trong ứng dụng.") {
-            editAiEndpoint()
+        target.addView(settingAction("Kết nối AI bảo mật", if (OpenRouterClient.isConfigured()) "Đã cấu hình proxy" else "Chờ triển khai proxy", "API key được giữ trong Cloudflare Worker. Người dùng không phải nhập key hoặc URL máy chủ.") {
+            showAiEndpointInfo()
         }, marginTop(8))
         target.addView(settingAction("Model AI mặc định", AiModels.labelFor(AiModels.selectedId(this)), "Mở tab Shortcuts để chọn model hoặc đặt model tùy chỉnh.") {
             tab = 2
@@ -1124,16 +1206,6 @@ class MainActivity : Activity() {
         val autoStartSwitch = IOSSwitch(this).apply {
             isChecked = prefs.getBoolean(AppPrefs.AUTO_START, false)
             setOnCheckedChangeListener { _, checked ->
-                if (checked) {
-                    val authPrefs = getSharedPreferences("digitalsmod_key_auth", MODE_PRIVATE)
-                    val savedKeyEnabled = authPrefs.getBoolean("save_key_enabled", false) && !authPrefs.getString("saved_key", null).isNullOrBlank()
-                    if (!savedKeyEnabled) {
-                        prefs.edit().putBoolean(AppPrefs.AUTO_START, false).apply()
-                        isChecked = false
-                        LiquidNotice.show(this@MainActivity, "Để tự khởi chạy an toàn, hãy xác thực key và chọn ‘Lưu key trên thiết bị’ trước.", 3600L)
-                        return@setOnCheckedChangeListener
-                    }
-                }
                 prefs.edit().putBoolean(AppPrefs.AUTO_START, checked).apply()
                 LiquidNotice.show(this@MainActivity, if (checked) "Đã bật tự khởi chạy. HyperOS vẫn có thể yêu cầu quyền tự khởi động." else "Đã tắt tự khởi chạy.")
             }
@@ -1148,7 +1220,7 @@ class MainActivity : Activity() {
             }, LinearLayout.LayoutParams(0, -2, 1f))
             row.addView(autoStartSwitch, LinearLayout.LayoutParams(dp(51), dp(31)))
             addView(row)
-            addView(bodyText("Chỉ khôi phục khi bạn đã bật đảo nổi, lưu key và máy chủ xác thực key vẫn còn hiệu lực. HyperOS có thể áp dụng thêm quyền Tự khởi động."), marginTop(6))
+            addView(bodyText("Khôi phục đảo nổi sau khi khởi động. HyperOS có thể áp dụng thêm quyền Tự khởi động hoặc giới hạn chạy nền."), marginTop(6))
         }.apply { setPadding(dp(15), dp(14), dp(14), dp(14)) }, marginTop(18))
 
         target.addView(settingAction("Điều khiển trực tuyến", "Thông báo · phiên bản · bảo trì", "Ứng dụng nhận trạng thái vận hành và thông báo mới từ dịch vụ trực tuyến.") {
@@ -1184,154 +1256,364 @@ class MainActivity : Activity() {
         target.addView(infoCard("DigitalLiquid", "DigitalLiquid chỉ cần các quyền bạn chủ động bật. Bạn có thể thu hồi quyền hoặc dừng viên thuốc bất cứ lúc nào."), marginTop(20))
     }
 
+    private data class PreviewState(val kind: String, val title: String, val subtitle: String, val symbol: String, val active: Boolean)
+
+    private fun readLivePreviewState(): PreviewState {
+        if (IslandService.isScreenRecordingActive()) {
+            return PreviewState("recording", "Đang quay màn hình", "REC · Hoạt động thật", "●", true)
+        }
+        if (IslandService.isCameraActivityActive()) {
+            return PreviewState("camera", "Camera đang hoạt động", "Chỉ báo quyền riêng tư", "◉", true)
+        }
+        try {
+            val manager = getSystemService(android.content.Context.MEDIA_SESSION_SERVICE) as android.media.session.MediaSessionManager
+            val sessions = manager.getActiveSessions(android.content.ComponentName(this, IslandNotificationListener::class.java))
+            val playing = sessions.firstOrNull { controller ->
+                val state = controller.playbackState?.state
+                state == android.media.session.PlaybackState.STATE_PLAYING ||
+                    state == android.media.session.PlaybackState.STATE_BUFFERING ||
+                    state == android.media.session.PlaybackState.STATE_CONNECTING
+            }
+            val paused = sessions.firstOrNull { controller ->
+                controller.playbackState?.state == android.media.session.PlaybackState.STATE_PAUSED && controller.metadata != null
+            }
+            val mediaController = playing ?: paused
+            if (mediaController != null) {
+                val metadata = mediaController.metadata
+                val title = metadata?.getString(android.media.MediaMetadata.METADATA_KEY_TITLE)?.trim().orEmpty()
+                    .ifBlank { if (playing != null) "Đang phát nhạc" else "Nhạc đang tạm dừng" }
+                val artist = metadata?.getString(android.media.MediaMetadata.METADATA_KEY_ARTIST)?.trim().orEmpty()
+                    .ifBlank { mediaController.packageName }
+                val subtitle = if (playing != null) artist else "$artist · Đã tạm dừng"
+                return PreviewState("music", title.take(42), subtitle.take(52), "♫", playing != null)
+            }
+        } catch (_: SecurityException) {
+            // Notification access is optional; fall through to app and permission state.
+        } catch (_: Throwable) { }
+
+        val notificationTitle = IslandNotificationListener.latestPreviewNotificationTitle()
+        if (!notificationTitle.isNullOrBlank()) {
+            return PreviewState("notification", notificationTitle.take(42), "Thông báo đang hoạt động", "●", true)
+        }
+        if (IslandService.isMediaPlaybackActive()) {
+            return PreviewState("music", "Media đang hoạt động", "Đã nhận trạng thái phát", "♫", true)
+        }
+        if (IslandService.isNativeActivityActive()) {
+            return PreviewState("activity", "Hoạt động hệ thống", "Đã nhận trạng thái thông báo", "◉", true)
+        }
+        return if (prefs.getBoolean(AppPrefs.SERVICE_ENABLED, false)) {
+            PreviewState("idle", "DigitalLiquid đang chạy", "Chạm để xem trạng thái · giữ để mở Siri", "•", false)
+        } else {
+            PreviewState("idle", "Đảo nổi đang chờ", "Bật đảo nổi để xem trạng thái trực tiếp", "•", false)
+        }
+    }
+
     private fun buildGlassPreview(): View {
         val frame = FrameLayout(this).apply {
-            // A cool white-blue canvas keeps the silhouette crisp while fitting the new glass palette.
             background = GradientDrawable(
                 GradientDrawable.Orientation.TL_BR,
-                intArrayOf(0xFFF8FAFF.toInt(), 0xFFE7EEFA.toInt(), 0xFFF2F5FC.toInt())
+                intArrayOf(0xFFF9FBFF.toInt(), 0xFFE8EFFA.toInt(), 0xFFF4F7FD.toInt())
             ).apply {
-                cornerRadius = dp(23).toFloat()
-                setStroke(dp(1), 0x88FFFFFF.toInt())
+                cornerRadius = dp(28).toFloat()
+                setStroke(dp(1), 0x99FFFFFF.toInt())
             }
             clipToOutline = true
             clipChildren = false
             clipToPadding = false
-            contentDescription = "Bản xem trước tương tác DigitalLiquid"
+            contentDescription = "Bản xem trước trực tiếp DigitalLiquid"
         }
+        val shadow = View(this).apply {
+            background = GradientDrawable().apply {
+                setColor(0x26030B1A)
+                cornerRadius = dp(30).toFloat()
+            }
+            alpha = prefs.getInt(AppPrefs.SHADOW_STRENGTH, 68).coerceIn(0, 100) / 100f * 0.62f
+            elevation = dp((8f * prefs.getInt(AppPrefs.SHADOW_STRENGTH, 68).coerceIn(0, 100) / 100f).toInt()).toFloat()
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        frame.addView(shadow, FrameLayout.LayoutParams(dp(154), dp(42), Gravity.CENTER))
+
         val pill = FrameLayout(this).apply {
             background = GradientDrawable().apply {
                 setColor(Color.BLACK)
-                cornerRadius = dp(24).toFloat()
-                setStroke(dp(1), 0x55383A44)
+                cornerRadius = dp(22).toFloat()
+                setStroke(dp(1), 0x332E3440)
             }
             clipToOutline = true
             tag = "digitalliquid-preview-island"
             isClickable = true
             isFocusable = true
+            elevation = dp(9).toFloat()
+            alpha = prefs.getInt(AppPrefs.PILL_OPACITY, 100).coerceIn(35, 100) / 100f
+            setLayerType(View.LAYER_TYPE_HARDWARE, null)
         }
         val glass = LiquidGlassView(this).apply {
-            configure(78, "midnight", expandedNow = false)
+            configure(prefs.getInt(AppPrefs.GLASS_STRENGTH, 78), prefs.getString(AppPrefs.TINT, "midnight").orEmpty(), expandedNow = false)
             setMotionBlur(0f)
         }
         pill.addView(glass, FrameLayout.LayoutParams(-1, -1))
-        val dot = View(this).apply {
-            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xFFFFD36E.toInt()) }
-            isClickable = false
-        }
-        pill.addView(dot, FrameLayout.LayoutParams(dp(4), dp(4), Gravity.CENTER_VERTICAL or Gravity.RIGHT).apply { rightMargin = dp(20) })
-        val previewLabel = TextView(this).apply {
-            text = "DigitalLiquid"
-            textSize = 12f
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-            maxLines = 2
-            visibility = View.GONE
-            isClickable = false
-        }
-        pill.addView(previewLabel, FrameLayout.LayoutParams(-1, -1))
-        frame.addView(pill, FrameLayout.LayoutParams(dp(150), dp(38), Gravity.CENTER))
 
-        val previewModes = listOf(
-            "DigitalLiquid  ·  Đang chờ",
-            "♫  Now Playing  ·  00:31",
-            "●  Recording  ·  00:08",
-            "◷  Hẹn giờ  ·  00:12",
-            "✦  DigitalLiquid AI"
-        )
-        var previewMode = 0
-        var previewExpanded = false
-        var previewLastTap = 0L
-        var previewTapCount = 0
-        var previewSwitchModeActive = false
-        val previewHandler = Handler(Looper.getMainLooper())
-        val previewSwitchReset = object : Runnable {
-            override fun run() {
-                previewSwitchModeActive = false
-                previewTapCount = 0
-                previewLastTap = 0L
+        val leftIcon = TextView(this).apply {
+            text = "•"
+            textSize = 16f
+            gravity = Gravity.CENTER
+            includeFontPadding = false
+            setTextColor(0xFFFFD36E.toInt())
+            isClickable = false
+        }
+        pill.addView(leftIcon, FrameLayout.LayoutParams(dp(24), dp(28), Gravity.CENTER_VERTICAL or Gravity.LEFT).apply { leftMargin = dp(9) })
+
+        val waves = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            isClickable = false
+        }
+        val waveBars = mutableListOf<View>()
+        val heights = listOf(7, 13, 18, 10, 15)
+        heights.forEachIndexed { index, height ->
+            val bar = View(this).apply {
+                background = GradientDrawable().apply { setColor(0xFFFF4E9B.toInt()); cornerRadius = dp(2).toFloat() }
+                alpha = 0.88f
+            }
+            waveBars.add(bar)
+            waves.addView(bar, LinearLayout.LayoutParams(dp(3), dp(height)).apply { marginStart = if (index == 0) 0 else dp(3) })
+        }
+        pill.addView(waves, FrameLayout.LayoutParams(dp(45), dp(26), Gravity.CENTER_VERTICAL or Gravity.RIGHT).apply { rightMargin = dp(10) })
+
+        val expandedText = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+            visibility = View.GONE
+            setPadding(dp(17), dp(7), dp(17), dp(7))
+            isClickable = false
+        }
+        val stateTitle = TextView(this).apply {
+            text = "Đang chờ"
+            textSize = 12f
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            setTextColor(Color.WHITE)
+        }
+        val stateSubtitle = TextView(this).apply {
+            text = ""
+            textSize = 9.5f
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setTextColor(0xFFBFC5D0.toInt())
+        }
+        expandedText.addView(stateTitle, LinearLayout.LayoutParams(-1, -2))
+        expandedText.addView(stateSubtitle, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(3) })
+        pill.addView(expandedText, FrameLayout.LayoutParams(-1, -1))
+        frame.addView(pill, FrameLayout.LayoutParams(dp(154), dp(42), Gravity.CENTER))
+
+        var expanded = false
+        var downX = 0f
+        var downY = 0f
+        var moved = false
+        var longPressTriggered = false
+        var lastTapAt = 0L
+        var tapCount = 0
+        val handler = Handler(Looper.getMainLooper())
+        var morphAnimator: android.animation.ValueAnimator? = null
+        val compactW = dp(154)
+        val compactH = dp(42)
+        val expandedW = dp(264)
+        val expandedH = dp(74)
+
+        fun updateState() {
+            val state = readLivePreviewState()
+            stateTitle.text = state.title
+            stateSubtitle.text = state.subtitle
+            leftIcon.text = state.symbol
+            leftIcon.setTextColor(when (state.kind) {
+                "recording" -> 0xFFFF514D.toInt()
+                "camera" -> 0xFF49D89B.toInt()
+                "music" -> 0xFF71E7BE.toInt()
+                "notification" -> 0xFFFFC66E.toInt()
+                else -> 0xFFFFD36E.toInt()
+            })
+            val waveColor = when (state.kind) {
+                "recording" -> 0xFFFF5757.toInt()
+                "camera" -> 0xFF4CE0A2.toInt()
+                "notification" -> 0xFFFFC56D.toInt()
+                else -> 0xFFFF4E9B.toInt()
+            }
+            waveBars.forEachIndexed { index, bar ->
+                (bar.background as? GradientDrawable)?.setColor(waveColor)
+                val lp = bar.layoutParams as? LinearLayout.LayoutParams ?: return@forEachIndexed
+                val pulse = if (state.active && !prefs.getBoolean(AppPrefs.REDUCE_MOTION, false)) (index % 3) * dp(2) else 0
+                lp.height = dp(heights[index]) + pulse
+                bar.layoutParams = lp
+                bar.alpha = if (state.active) 1f else 0.5f
+            }
+            if (state.kind == "idle") {
+                waves.alpha = 0.34f
+            } else waves.alpha = 1f
+            pill.contentDescription = "${state.title}. ${state.subtitle}. Chạm để mở rộng, vuốt để chuyển trang, giữ để mở trợ lý AI."
+        }
+
+        fun setExpanded(targetExpanded: Boolean, animated: Boolean = true) {
+            if (expanded == targetExpanded && morphAnimator?.isRunning != true) return
+            expanded = targetExpanded
+            morphAnimator?.cancel()
+            if (!targetExpanded) {
+                leftIcon.visibility = View.VISIBLE
+                waves.visibility = View.VISIBLE
+            }
+            val startW = (pill.layoutParams?.width ?: compactW).toFloat()
+            val startH = (pill.layoutParams?.height ?: compactH).toFloat()
+            val endW = (if (targetExpanded) expandedW else compactW).toFloat()
+            val endH = (if (targetExpanded) expandedH else compactH).toFloat()
+            expandedText.visibility = if (targetExpanded) View.VISIBLE else expandedText.visibility
+            if (targetExpanded) {
+                expandedText.alpha = 0f
+                expandedText.translationY = dp(3).toFloat()
+                expandedText.animate().alpha(1f).translationY(0f).setDuration(190L)
+                    .setInterpolator(android.view.animation.PathInterpolator(0.2f, 0.7f, 0.2f, 1f)).start()
+            } else {
+                expandedText.animate().alpha(0f).translationY(dp(2).toFloat()).setDuration(120L).start()
+            }
+            leftIcon.animate().alpha(if (targetExpanded) 0f else 1f).setDuration(110L).start()
+            waves.animate().alpha(if (targetExpanded) 0f else if (readLivePreviewState().active) 1f else 0.34f).setDuration(110L).start()
+            val shadowStrength = prefs.getInt(AppPrefs.SHADOW_STRENGTH, 68).coerceIn(0, 100) / 100f
+            val targetShadowAlpha = shadowStrength * if (targetExpanded) 0.80f else 0.62f
+            shadow.animate().alpha(targetShadowAlpha).translationY(if (targetExpanded) dp(3).toFloat() else 0f).setDuration(if (animated) 260L else 0L).start()
+            if (!animated) {
+                expandedText.animate().cancel()
+                expandedText.visibility = if (targetExpanded) View.VISIBLE else View.GONE
+                expandedText.alpha = if (targetExpanded) 1f else 0f
+                expandedText.translationY = 0f
+                pill.layoutParams = (pill.layoutParams as FrameLayout.LayoutParams).apply { width = endW.toInt(); height = endH.toInt() }
+                (pill.background as? GradientDrawable)?.cornerRadius = endH / 2f
+                shadow.layoutParams = (shadow.layoutParams as FrameLayout.LayoutParams).apply { width = endW.toInt() + dp(5); height = endH.toInt() + dp(5) }
+                (shadow.background as? GradientDrawable)?.cornerRadius = (endH + dp(5)) / 2f
+                glass.configure(prefs.getInt(AppPrefs.GLASS_STRENGTH, 78), prefs.getString(AppPrefs.TINT, "midnight").orEmpty(), targetExpanded)
+                glass.setMotionBlur(0f)
+                return
+            }
+            val configured = prefs.getInt(AppPrefs.MORPH_DURATION_MS, 420).coerceIn(220, 720).toLong()
+            val time = if (targetExpanded) configured else (configured * 0.88f).toLong()
+            morphAnimator = android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
+                duration = time
+                interpolator = when (prefs.getString(AppPrefs.ANIMATION_STYLE, "fluid")) {
+                    "spring" -> android.view.animation.PathInterpolator(0.20f, 0.92f, 0.22f, 1f)
+                    "soft" -> android.view.animation.PathInterpolator(0.35f, 0f, 0.20f, 1f)
+                    "linear" -> android.view.animation.AccelerateDecelerateInterpolator()
+                    else -> android.view.animation.PathInterpolator(
+                        if (targetExpanded) 0.20f else 0.40f,
+                        if (targetExpanded) 0.86f else 0.00f,
+                        if (targetExpanded) 0.25f else 0.20f,
+                        1f
+                    )
+                }
+                addUpdateListener { animation ->
+                    val t = animation.animatedValue as Float
+                    val widthNow = (startW + (endW - startW) * t).toInt().coerceAtLeast(dp(1))
+                    val heightNow = (startH + (endH - startH) * t).toInt().coerceAtLeast(dp(1))
+                    pill.layoutParams = (pill.layoutParams as FrameLayout.LayoutParams).apply { width = widthNow; height = heightNow }
+                    (pill.background as? GradientDrawable)?.cornerRadius = heightNow / 2f
+                    shadow.layoutParams = (shadow.layoutParams as FrameLayout.LayoutParams).apply { width = widthNow + dp(5); height = heightNow + dp(5) }
+                    (shadow.background as? GradientDrawable)?.cornerRadius = (heightNow + dp(5)) / 2f
+                    val blur = prefs.getInt(AppPrefs.MOTION_BLUR_STRENGTH, 55).coerceIn(0, 100) / 100f * 0.36f
+                    glass.setMotionBlur((if (targetExpanded) 1f - t else t) * blur)
+                    glass.configure(prefs.getInt(AppPrefs.GLASS_STRENGTH, 78), prefs.getString(AppPrefs.TINT, "midnight").orEmpty(), if (targetExpanded) t > 0.5f else t < 0.5f)
+                }
+                addListener(object : android.animation.AnimatorListenerAdapter() {
+                    override fun onAnimationEnd(animation: android.animation.Animator) {
+                        if (!targetExpanded) {
+                            expandedText.visibility = View.GONE
+                            expandedText.alpha = 0f
+                            expandedText.translationY = 0f
+                        }
+                    }
+                })
+                start()
+            }
+            if (targetExpanded) {
+                updateState()
+                pill.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
             }
         }
-        var previewLong = false
-        val previewLongPress = Runnable {
-            previewLong = true
-            previewExpanded = !previewExpanded
-            previewMode = (previewMode + 1) % previewModes.size
-            previewLabel.text = previewModes[previewMode]
-            previewLabel.visibility = if (previewExpanded) View.VISIBLE else View.GONE
-            val targetW = if (previewExpanded) dp(276) else dp(150)
-            val targetH = if (previewExpanded) dp(70) else dp(38)
-            pill.animate().scaleX(targetW.toFloat() / dp(150)).scaleY(targetH.toFloat() / dp(38))
-                .setDuration(280L).setInterpolator(android.view.animation.OvershootInterpolator(0.7f)).start()
-            dot.visibility = if (previewExpanded) View.GONE else View.VISIBLE
-            pill.contentDescription = if (previewExpanded) "Bảng xem trước: ${previewModes[previewMode]}" else "Viên thuốc đen DigitalLiquid"
+
+        val longPress = Runnable {
+            longPressTriggered = true
             pill.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+            openSiriEffect()
         }
+        val updateTask = object : Runnable {
+            override fun run() {
+                if (!frame.isAttachedToWindow) return
+                updateState()
+                if (expanded) {
+                    leftIcon.visibility = View.GONE
+                    waves.visibility = View.GONE
+                } else {
+                    leftIcon.visibility = View.VISIBLE
+                    waves.visibility = View.VISIBLE
+                }
+                handler.postDelayed(this, 1200L)
+            }
+        }
+        frame.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(v: View) { handler.removeCallbacks(updateTask); handler.post(updateTask) }
+            override fun onViewDetachedFromWindow(v: View) { handler.removeCallbacks(updateTask); handler.removeCallbacks(longPress); morphAnimator?.cancel() }
+        })
+
         pill.setOnTouchListener { view, event ->
             if (!prefs.getBoolean(AppPrefs.LIVE_PREVIEW_INTERACTIVE, true)) return@setOnTouchListener false
             when (event.actionMasked) {
                 android.view.MotionEvent.ACTION_DOWN -> {
-                    previewLong = false
-                    previewHandler.removeCallbacks(previewLongPress)
-                    previewHandler.postDelayed(previewLongPress, 430L)
-                    view.animate().scaleX(if (previewExpanded) 1.02f else 0.97f).scaleY(0.97f).setDuration(100L).start()
+                    downX = event.rawX
+                    downY = event.rawY
+                    moved = false
+                    longPressTriggered = false
+                    handler.removeCallbacks(longPress)
+                    handler.postDelayed(longPress, 520L)
+                    view.animate().scaleX(0.985f).scaleY(0.965f).setDuration(95L).start()
+                    true
+                }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    if (kotlin.math.abs(event.rawX - downX) > dp(18) || kotlin.math.abs(event.rawY - downY) > dp(24)) {
+                        moved = true
+                        handler.removeCallbacks(longPress)
+                    }
                     true
                 }
                 android.view.MotionEvent.ACTION_UP -> {
-                    previewHandler.removeCallbacks(previewLongPress)
-                    view.animate().scaleX(if (previewExpanded) 276f / 150f else 1f).scaleY(if (previewExpanded) 70f / 38f else 1f)
-                        .setDuration(240L).setInterpolator(android.view.animation.OvershootInterpolator(0.7f)).start()
-                    if (!previewLong) {
-                        val now = android.os.SystemClock.elapsedRealtime()
-                        val switchEnabled = prefs.getBoolean(AppPrefs.ISLAND_APP_SWITCH_GESTURE, false)
-                        if (switchEnabled && previewSwitchModeActive) {
-                            RecentAppSwitcher.switchNext(this@MainActivity)
-                            previewHandler.removeCallbacks(previewSwitchReset)
-                            previewHandler.postDelayed(previewSwitchReset, 1800L)
-                            previewLastTap = now
+                    handler.removeCallbacks(longPress)
+                    view.animate().scaleX(1f).scaleY(1f).setDuration(190L)
+                        .setInterpolator(android.view.animation.PathInterpolator(0.2f, 0.75f, 0.25f, 1f)).start()
+                    if (moved) {
+                        val dx = event.rawX - downX
+                        if (kotlin.math.abs(dx) > dp(42)) {
+                            tab = if (dx < 0) (tab + 1).coerceAtMost(4) else (tab - 1).coerceAtLeast(0)
+                            renderMain()
                             return@setOnTouchListener true
                         }
-                        previewTapCount = if (now - previewLastTap <= 720L) previewTapCount + 1 else 1
-                        previewLastTap = now
-                        when {
-                            previewTapCount >= 6 && switchEnabled -> {
-                                previewTapCount = 0
-                                previewSwitchModeActive = true
-                                previewHandler.removeCallbacks(previewSwitchReset)
-                                previewHandler.postDelayed(previewSwitchReset, 1800L)
-                            }
-                            previewTapCount == 2 && prefs.getBoolean(AppPrefs.DOUBLE_TAP_ASSISTANT, false) -> {
-                                view.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
-                                // Route to the real assistant screen, not a decorative fake response.
-                                tab = 2
-                                renderMain()
-                                return@setOnTouchListener true
-                            }
-                            previewExpanded -> {
-                                previewMode = (previewMode + 1) % previewModes.size
-                                previewLabel.text = previewModes[previewMode]
-                                pill.contentDescription = "Bảng xem trước: ${previewModes[previewMode]}"
-                                view.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
-                            }
-                            else -> {
-                                view.animate().rotationBy(if (Random.nextBoolean()) 2.5f else -2.5f).setDuration(90L).withEndAction {
-                                    view.animate().rotation(0f).setDuration(180L).start()
-                                }.start()
-                            }
+                    } else if (!longPressTriggered) {
+                        val now = android.os.SystemClock.elapsedRealtime()
+                        tapCount = if (now - lastTapAt < 360L) tapCount + 1 else 1
+                        lastTapAt = now
+                        if (tapCount >= 2) {
+                            tapCount = 0
+                            openSiriEffect()
+                        } else {
+                            setExpanded(!expanded)
                         }
                     }
                     true
                 }
                 android.view.MotionEvent.ACTION_CANCEL -> {
-                    previewHandler.removeCallbacks(previewLongPress)
-                    view.animate().scaleX(if (previewExpanded) 276f / 150f else 1f).scaleY(if (previewExpanded) 70f / 38f else 1f).setDuration(180L).start()
+                    handler.removeCallbacks(longPress)
+                    view.animate().scaleX(1f).scaleY(1f).setDuration(160L).start()
                     true
                 }
                 else -> true
             }
         }
-        frame.layoutParams = LinearLayout.LayoutParams(-1, dp(72))
+        updateState()
+        frame.layoutParams = LinearLayout.LayoutParams(-1, dp(190))
         return frame
     }
 
@@ -1400,7 +1682,10 @@ class MainActivity : Activity() {
         val line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         line.addView(TextView(this).apply { text = label; textSize = 13f; setTextColor(Color.WHITE) }, LinearLayout.LayoutParams(0, -2, 1f))
         val initial = prefs.getInt(key, when (key) {
-            AppPrefs.WIDTH -> 148; AppPrefs.HEIGHT -> 38; AppPrefs.OFFSET_TOP -> 6; AppPrefs.GLASS_STRENGTH -> 72; else -> min
+            AppPrefs.WIDTH -> 148; AppPrefs.HEIGHT -> 38; AppPrefs.OFFSET_TOP -> 6
+            AppPrefs.GLASS_STRENGTH -> 72; AppPrefs.MORPH_DURATION_MS -> 420
+            AppPrefs.PILL_OPACITY -> 100; AppPrefs.SHADOW_STRENGTH -> 68
+            AppPrefs.MOTION_BLUR_STRENGTH -> 55; else -> min
         }).coerceIn(min, maxValue)
         val value = TextView(this).apply {
             text = "$initial$suffix"

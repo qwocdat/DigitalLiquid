@@ -192,7 +192,8 @@ class AssistantFallbackActivity : Activity() {
             gravity = Gravity.CENTER_VERTICAL
             imeOptions = EditorInfo.IME_ACTION_SEND
             setPadding(dp(13), dp(7), dp(13), dp(7))
-            background = glassField(0xFF171D29.toInt(), 15, 0x3D9FB9E8)
+            background = glassField(0x88212A39.toInt(), 15, 0x66FFFFFF)
+            elevation = dp(2).toFloat()
             inputType = android.text.InputType.TYPE_CLASS_TEXT or
                 android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or
                 android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
@@ -208,7 +209,7 @@ class AssistantFallbackActivity : Activity() {
         panel.addView(composer, LinearLayout.LayoutParams(-1, dp(47)).apply { topMargin = dp(10) })
 
         panel.addView(TextView(this).apply {
-            text = "Văn bản và giọng nói · AI cần kết nối đã cấu hình"
+            text = "Văn bản và giọng nói · kết nối AI do DigitalLiquid quản lý"
             textSize = 9.5f
             letterSpacing = 0.015f
             gravity = Gravity.CENTER
@@ -222,19 +223,6 @@ class AssistantFallbackActivity : Activity() {
         })
         setContentView(root)
 
-        // This activity can be opened by the island while the application process is cold.
-        if (!KeyAuthGate.isAuthorizedInCurrentProcess(this)) {
-            status?.text = "Hiệu ứng đã sẵn sàng · đang kiểm tra key đã lưu…"
-            KeyAuthGate.reauthenticateSavedKey(this) { authorized ->
-                if (!isFinishing && !isDestroyed) {
-                    status?.text = if (authorized) {
-                        "AI sẵn sàng · ${AiModels.labelFor(AiModels.selectedId(this))}"
-                    } else {
-                        "Hiệu ứng Siri đã sẵn sàng · mở DigitalLiquid để xác thực AI."
-                    }
-                }
-            }
-        }
     }
 
     private fun glassField(color: Int, radiusDp: Int, stroke: Int) = GradientDrawable().apply {
@@ -379,10 +367,6 @@ class AssistantFallbackActivity : Activity() {
             status?.text = "Nhập câu hỏi trước nhé."
             return
         }
-        if (!KeyAuthGate.isAuthorizedInCurrentProcess(this)) {
-            status?.text = "Cần mở DigitalLiquid và xác thực key trước khi dùng AI."
-            return
-        }
         requestInFlight = true
         history.add("user" to prompt)
         answer?.text = history.takeLast(6).joinToString("\n\n") { (role, text) ->
@@ -409,7 +393,7 @@ class AssistantFallbackActivity : Activity() {
                 answer?.text = history.takeLast(6).joinToString("\n\n") { (role, text) ->
                     (if (role == "user") "BẠN" else "DIGITALLIQUID AI") + "\n" + text
                 }
-                status?.text = error ?: "AI chưa phản hồi. Kiểm tra endpoint và cấu hình kết nối."
+                status?.text = error ?: "AI chưa phản hồi. Kiểm tra kết nối mạng hoặc cấu hình máy chủ."
             }
         }
     }
