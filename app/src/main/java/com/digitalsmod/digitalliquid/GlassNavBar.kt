@@ -1,105 +1,133 @@
 package com.digitalsmod.digitalliquid
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
+import android.view.View
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 
-/** Large-title header with a compact assistant shortcut and a readable service state. */
+/** Lightweight iOS-inspired header. Home uses the branded lockup; other tabs use a large page title. */
 class GlassNavBar(
     context: Context,
     title: CharSequence,
     subtitle: CharSequence,
     active: Boolean,
-    private val onAssistant: () -> Unit = {}
+    private val onAssistant: () -> Unit = {},
+    private val onSearch: (() -> Unit)? = null
 ) : LinearLayout(context) {
     val titleView = TextView(context)
     val subtitleView = TextView(context)
     val stateView = TextView(context)
+
     private val density = resources.displayMetrics.density
     private fun dp(value: Int) = (value * density).toInt()
+    private val lightMode = AppPrefs.get(context).getBoolean(AppPrefs.LIGHT_MODE, true)
+    private val accentColor = when (AppPrefs.get(context).getString(AppPrefs.ACCENT_COLOR, "blue")) {
+        "purple" -> 0xFFAA58E8.toInt()
+        "pink" -> 0xFFF13070.toInt()
+        "red" -> 0xFFF3423A.toInt()
+        else -> 0xFF2488E8.toInt()
+    }
+    private val homeStyle = subtitle.toString().isNotBlank()
 
     init {
         orientation = HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        val lightMode = AppPrefs.get(context).getBoolean(AppPrefs.LIGHT_MODE, true)
+        setPadding(if (homeStyle) dp(2) else dp(1), dp(2), dp(1), dp(2))
+        clipChildren = false
+        clipToPadding = false
+        minimumHeight = dp(if (homeStyle) 58 else 52)
 
-        val logo = ImageView(context).apply {
-            setImageResource(R.drawable.digitalliquid_brand)
-            scaleType = ImageView.ScaleType.CENTER_CROP
-            contentDescription = "DigitalLiquid"
+        if (homeStyle) {
+            addView(ImageView(context).apply {
+                setImageResource(R.drawable.digitalliquid_brand)
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                contentDescription = "DigitalLiquid"
+            }, LayoutParams(dp(38), dp(38)))
         }
-        addView(logo, LayoutParams(dp(42), dp(42)))
 
         val labels = LinearLayout(context).apply {
             orientation = VERTICAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(10), 0, dp(7), 0)
+            setPadding(if (homeStyle) dp(10) else 0, 0, dp(6), 0)
         }
         titleView.apply {
             text = title
-            textSize = 25f
+            textSize = if (homeStyle) 22f else 26f
             typeface = Typeface.create("sans-serif", Typeface.BOLD)
-            setTextColor(if (lightMode) 0xFF161923.toInt() else Color.WHITE)
+            setTextColor(if (lightMode) 0xFF171923.toInt() else Color.WHITE)
             includeFontPadding = false
             letterSpacing = -0.025f
-        }
-        subtitleView.apply {
-            text = subtitle
-            textSize = 8.2f
-            letterSpacing = 0.10f
-            setTextColor(if (lightMode) 0xFF3987E9.toInt() else 0xFF9DBEFF.toInt())
-            includeFontPadding = false
             maxLines = 1
         }
-        labels.addView(titleView)
-        labels.addView(subtitleView, LayoutParams(-1, -2).apply { topMargin = dp(3) })
+        labels.addView(titleView, LayoutParams(-1, -2))
+        if (homeStyle) {
+            subtitleView.apply {
+                text = subtitle
+                textSize = 10f
+                letterSpacing = 0.14f
+                typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                setTextColor(if (lightMode) accentColor else 0xFF9DBEFF.toInt())
+                includeFontPadding = false
+                maxLines = 1
+            }
+            labels.addView(subtitleView, LayoutParams(-1, -2).apply { topMargin = dp(4) })
+        } else {
+            subtitleView.visibility = View.GONE
+        }
         addView(labels, LayoutParams(0, -2, 1f))
 
-        val siri = TextView(context).apply {
-            text = "✦"
-            textSize = 19f
-            gravity = Gravity.CENTER
-            setTextColor(if (lightMode) 0xFF167FE8.toInt() else 0xFFB8D4FF.toInt())
-            background = GradientDrawable(
-                GradientDrawable.Orientation.TL_BR,
-                if (lightMode) intArrayOf(0xF7FFFFFF.toInt(), 0xDBE5F5FF.toInt())
-                else intArrayOf(0x35FFFFFF, 0x16FFFFFF)
-            ).apply {
-                shape = GradientDrawable.OVAL
-                setStroke(dp(1), if (lightMode) 0x628EB8EC else 0x35FFFFFF)
-            }
-            isClickable = true
-            isFocusable = true
-            contentDescription = "Mở hiệu ứng Siri"
-            setOnClickListener {
-                performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-                onAssistant()
-            }
-        }
-        addView(siri, LayoutParams(dp(38), dp(38)).apply { marginEnd = dp(7) })
+        // Keep old state field for callers compiled against earlier revisions, but do not show a badge
+        // in the top bar: the reference uses only the title and circular search shortcut.
+        stateView.text = if (active) "LIVE" else "READY"
+        stateView.visibility = View.GONE
 
-        stateView.apply {
-            text = if (active) "LIVE" else "READY"
-            textSize = 9f
-            letterSpacing = 0.07f
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setTextColor(if (lightMode) { if (active) 0xFF197C49.toInt() else 0xFF526078.toInt() } else { if (active) 0xFF8EF2BE.toInt() else 0xFFB9BCCD.toInt() })
-            setPadding(dp(9), dp(7), dp(9), dp(7))
-            background = GradientDrawable(
-                GradientDrawable.Orientation.TL_BR,
-                if (lightMode) intArrayOf(0xF7FFFFFF.toInt(), 0xE3EAF5FB.toInt()) else intArrayOf(0x32FFFFFF, 0x16FFFFFF)
-            ).apply {
-                cornerRadius = dp(30).toFloat()
-                setStroke(dp(1), if (lightMode) 0x578B9BBC else 0x28FFFFFF)
-            }
+        if (homeStyle) {
+            addView(actionCircle("➤", "Telegram") {
+                openUrl("https://t.me/")
+            }, LayoutParams(dp(44), dp(44)).apply { marginStart = dp(6) })
+            addView(actionCircle("♪", "TikTok") {
+                openUrl("https://www.tiktok.com/")
+            }, LayoutParams(dp(44), dp(44)).apply { marginStart = dp(6) })
         }
-        addView(stateView)
+        addView(actionCircle("⌕", "Tìm kiếm") {
+            if (onSearch != null) onSearch.invoke() else onAssistant()
+        }, LayoutParams(dp(44), dp(44)).apply { marginStart = dp(6) })
         contentDescription = "Thanh điều hướng DigitalLiquid"
+    }
+
+    private fun actionCircle(glyph: String, description: String, action: () -> Unit): View = TextView(context).apply {
+        text = glyph
+        textSize = if (glyph == "⌕") 29f else 22f
+        gravity = Gravity.CENTER
+        includeFontPadding = false
+        setTextColor(if (lightMode) 0xFF222631.toInt() else 0xFFE9EDFA.toInt())
+        background = GradientDrawable(
+            GradientDrawable.Orientation.TL_BR,
+            if (lightMode) intArrayOf(0xAFFFFFFF.toInt(), 0x76E8EEF7.toInt())
+            else intArrayOf(0x36FFFFFF, 0x16FFFFFF)
+        ).apply {
+            shape = GradientDrawable.OVAL
+            setStroke(dp(1), if (lightMode) 0x2293A2BB else 0x2AFFFFFF)
+        }
+        elevation = dp(2).toFloat()
+        isClickable = true
+        isFocusable = true
+        contentDescription = description
+        setOnClickListener {
+            performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+            action()
+        }
+    }
+
+    private fun openUrl(url: String) {
+        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
     }
 }

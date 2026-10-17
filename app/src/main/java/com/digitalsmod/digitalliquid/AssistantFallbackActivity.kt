@@ -267,6 +267,7 @@ class AssistantFallbackActivity : Activity() {
             try { recognizer?.cancel() } catch (_: Exception) { }
             speechInProgress = false
             lens?.setListening(false)
+            lens?.setAudioLevel(0f)
             speechButton?.text = "Nói"
             status?.text = "Đã dừng nghe."
             return
@@ -290,18 +291,23 @@ class AssistantFallbackActivity : Activity() {
                         lens?.setListening(true)
                     }
                     override fun onBeginningOfSpeech() { status?.text = "Mình đang nghe đây…" }
-                    override fun onRmsChanged(rmsdB: Float) = Unit
+                    override fun onRmsChanged(rmsdB: Float) {
+                        // Android reports decibels; normalize and let the view smooth the wave itself.
+                        lens?.setAudioLevel(((rmsdB + 2f) / 14f).coerceIn(0f, 1f))
+                    }
                     override fun onBufferReceived(buffer: ByteArray?) = Unit
                     override fun onEndOfSpeech() {
                         status?.text = "Đang xử lý giọng nói…"
                         speechInProgress = false
                         speechButton?.text = "Nói"
                         lens?.setListening(false)
+                        lens?.setAudioLevel(0f)
                     }
                     override fun onError(error: Int) {
                         speechInProgress = false
                         speechButton?.text = "Nói"
                         lens?.setListening(false)
+                        lens?.setAudioLevel(0f)
                         status?.text = when (error) {
                             SpeechRecognizer.ERROR_NO_MATCH -> "Chưa nghe rõ. Nhấn Nói và thử lại."
                             SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Chưa phát hiện tiếng nói."
@@ -314,6 +320,7 @@ class AssistantFallbackActivity : Activity() {
                         speechInProgress = false
                         speechButton?.text = "Nói"
                         lens?.setListening(false)
+                        lens?.setAudioLevel(0f)
                         val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
                         if (text.isNotBlank()) {
                             input?.setText(text)

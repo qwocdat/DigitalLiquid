@@ -1041,7 +1041,10 @@ class IslandService : Service() {
             updateOverlayWindow(lp)
         }
 
-        siriUiContainer?.animate()?.alpha(0f)?.setDuration(150L)?.start()
+        siriUiContainer?.animate()?.cancel()
+        siriUiContainer?.alpha = 0f
+        siriUiContainer?.visibility = View.INVISIBLE
+        siriView?.setAudioLevel(0f)
         siriView?.animateCardMode(false)
 
         glassView?.apply {
@@ -1570,7 +1573,29 @@ class IslandService : Service() {
                     }
                 }
             }
+            val voiceBtn = TextView(context).apply {
+                text = "Nói"
+                textSize = 11f
+                gravity = Gravity.CENTER
+                setTextColor(0xFFEAF1FF.toInt())
+                setPadding(dp(10), dp(9), dp(10), dp(9))
+                background = GradientDrawable(
+                    GradientDrawable.Orientation.TL_BR,
+                    intArrayOf(0x3DFFFFFF, 0x1AFFFFFF)
+                ).apply { cornerRadius = dp(14).toFloat(); setStroke(dp(1), 0x35FFFFFF) }
+                contentDescription = "Mở micro để nói với trợ lý"
+                setOnClickListener {
+                    try {
+                        startActivity(Intent(this@IslandService, AssistantFallbackActivity::class.java).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                        })
+                    } catch (_: Exception) {
+                        showTransientServiceNotice("Không mở được nút thoại. Hãy mở DigitalLiquid và cấp quyền micro trong Cài đặt.")
+                    }
+                }
+            }
             inputRow.addView(editInput, LinearLayout.LayoutParams(0, -2, 1f))
+            inputRow.addView(voiceBtn, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(4) })
             inputRow.addView(sendBtn)
             addView(inputRow, LinearLayout.LayoutParams(-1, -2))
         }
@@ -2067,7 +2092,9 @@ class IslandService : Service() {
         resizeAnimator?.cancel()
         updateExpandedRadius()
 
-        val ghostActive = isFaceUnlockShrinking || isSiriShrinking || siriActive
+        // Siri already carries a shader-driven glass wave. Ghost trails are retained for Face ID only;
+        // layering them over Siri caused a brief square/capsule artifact during the close morph.
+        val ghostActive = faceUnlocking || isFaceUnlockShrinking
         val opening = panelOpen || faceUnlocking || siriActive
         val startWindowWidth = lp.width.toFloat()
         val startWindowHeight = lp.height.toFloat()

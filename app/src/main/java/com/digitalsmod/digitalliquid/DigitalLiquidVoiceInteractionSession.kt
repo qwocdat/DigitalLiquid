@@ -265,12 +265,15 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
                 setRecognitionListener(object : RecognitionListener {
                     override fun onReadyForSpeech(params: Bundle?) { status?.text = "Đang nghe…"; siriLens?.setListening(true) }
                     override fun onBeginningOfSpeech() = Unit
-                    override fun onRmsChanged(rmsdB: Float) = Unit
+                    override fun onRmsChanged(rmsdB: Float) {
+                        siriLens?.setAudioLevel(((rmsdB + 2f) / 14f).coerceIn(0f, 1f))
+                    }
                     override fun onBufferReceived(buffer: ByteArray?) = Unit
-                    override fun onEndOfSpeech() { status?.text = "Đang xử lý giọng nói…"; siriLens?.setListening(false) }
-                    override fun onError(error: Int) { status?.text = "Không nhận dạng được giọng nói (mã $error)."; siriLens?.setListening(false) }
+                    override fun onEndOfSpeech() { status?.text = "Đang xử lý giọng nói…"; siriLens?.setListening(false); siriLens?.setAudioLevel(0f) }
+                    override fun onError(error: Int) { status?.text = "Không nhận dạng được giọng nói (mã $error)."; siriLens?.setListening(false); siriLens?.setAudioLevel(0f) }
                     override fun onResults(results: Bundle?) {
                         siriLens?.setListening(false)
+                        siriLens?.setAudioLevel(0f)
                         val words = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
                         if (!words.isNullOrBlank()) {
                             promptInput?.setText(words)
@@ -328,6 +331,7 @@ class DigitalLiquidVoiceInteractionSession(private val uiContext: Context) : Voi
         Log.i("DigitalLiquidSiri", "VoiceInteractionSession onHide")
         panel?.visibility = View.GONE
         siriLens?.setListening(false)
+        siriLens?.setAudioLevel(0f)
         try { recognizer?.stopListening() } catch (_: Exception) { }
         try { recognizer?.destroy() } catch (_: Exception) { }
         recognizer = null

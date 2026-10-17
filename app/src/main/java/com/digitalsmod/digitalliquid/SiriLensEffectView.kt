@@ -42,8 +42,11 @@ class SiriLensEffectView(context: Context) : View(context) {
     private var phase = 0f
     private var morphProgress = 1f
     private var cardExpandProgress = 0f
-    private var energy = 1f
-    private var listening = true
+    private var energy = 0.72f
+    private var listening = false
+    private var audioLevel = 0f
+    // 1 = white intro wave, 0 = full spectrum. Loud speech progressively reveals spectrum color.
+    private var whiteWave = 1f
     private var animator: ValueAnimator? = null
     private var intensityAnimator: ValueAnimator? = null
     private var cardModeAnimator: ValueAnimator? = null
@@ -67,6 +70,8 @@ class SiriLensEffectView(context: Context) : View(context) {
         uniform float morph;
         uniform float cardMode;
         uniform float energy;
+        uniform float audioLevel;
+        uniform float whiteWave;
 
         float3 appleSpectrum(float t) {
             float3 c0 = float3(0.08, 0.44, 1.00); // Deep Blue
@@ -100,9 +105,12 @@ class SiriLensEffectView(context: Context) : View(context) {
             float taperSharp = pow(max(0.0, taper), 1.35);
 
             // Chuyển động sóng chất lỏng Apple nhấp nhô hữu cơ
+            float voiceDisplacement = 0.020 * sin(uv.x * 11.5 - time * 3.0) * audioLevel
+                                    + 0.010 * sin(uv.x * 21.0 + time * 2.15) * audioLevel;
             float waveFluid = -taper * 0.024
                             + 0.006 * sin(uv.x * 6.28 - time * 2.2)
-                            + 0.003 * sin(uv.x * 14.0 + time * 1.5) * energy;
+                            + 0.003 * sin(uv.x * 14.0 + time * 1.5) * energy
+                            + voiceDisplacement;
             float horizonY = baseHorizon + waveFluid;
 
             float dy = uv.y - horizonY;
@@ -115,11 +123,14 @@ class SiriLensEffectView(context: Context) : View(context) {
 
             float colorShift = clamp((uv.x - 0.06) / 0.88 + 0.03 * sin(time * 1.2), 0.0, 1.0);
             float3 rainbow = appleSpectrum(colorShift);
+            rainbow = mix(rainbow, float3(0.97, 0.985, 1.0), clamp(whiteWave, 0.0, 1.0));
+            float volumeWidth = 1.0 + audioLevel * 1.65;
+            float volumeGlow = 0.48 + audioLevel * 1.15;
 
-            // Điểm hội tụ kim cương trắng rực ở giữa-trái
+            // A crisp white arrival wave; louder input adds displacement, width and bloom.
             float centerHotspot = exp(-pow((uv.x - 0.42) / 0.22, 2.0)) * coreLine * 1.85;
-            float3 flareLight = rainbow * (midFlare * 1.1 + softBloom * 0.45) * energy
-                              + mix(rainbow, float3(1.0, 1.0, 1.0), 0.75) * coreLine * 1.35
+            float3 flareLight = rainbow * (midFlare * 1.1 * volumeWidth + softBloom * 0.45 * volumeGlow) * energy
+                              + mix(rainbow, float3(1.0, 1.0, 1.0), 0.75) * coreLine * (1.35 + audioLevel * 0.85)
                               + float3(1.0, 0.99, 0.96) * centerHotspot;
 
             // 2. NỬA TRÊN ĐEN HOÀN TOÀN
@@ -142,7 +153,7 @@ class SiriLensEffectView(context: Context) : View(context) {
 
             // ĐỘ TRONG SUỐT (ALPHA)
             float outAlpha = max(blackMask, glassBodyAlpha + rimFresnel * 0.85);
-            outAlpha = max(outAlpha, (midFlare * 0.75 + coreLine * 0.95) * energy);
+            outAlpha = max(outAlpha, (midFlare * (0.75 + audioLevel * 0.72) + coreLine * (0.95 + audioLevel * 0.35)) * energy);
             outAlpha = clamp(outAlpha * morph, 0.0, 1.0);
 
             return half4(half3(clamp(finalRGB, 0.0, 1.0) * outAlpha), half(outAlpha));
@@ -164,16 +175,29 @@ class SiriLensEffectView(context: Context) : View(context) {
     fun setListening(active: Boolean) {
         if (listening == active) return
         listening = active
-        val target = if (active) 1f else 0.52f
+        val target = if (active) 0.90f else 0.58f
         intensityAnimator?.cancel()
         intensityAnimator = ValueAnimator.ofFloat(energy, target).apply {
-            duration = 260L
+            duration = 320L
+            interpolator = PathInterpolator(0.20f, 0.70f, 0.22f, 1f)
             addUpdateListener {
                 energy = it.animatedValue as Float
+                shader?.setFloatUniform("energy", energy)
                 invalidate()
             }
             start()
         }
+    }
+
+    /** Normalized speech level (0..1), smoothed to prevent the wave from flickering between RMS callbacks. */
+    fun setAudioLevel(level: Float) {
+        val target = level.coerceIn(0f, 1f)
+        audioLevel = (audioLevel * 0.68f + target * 0.32f).coerceIn(0f, 1f)
+        whiteWave = (1f - audioLevel * 1.28f).coerceIn(0.02f, 1f)
+        shader?.setFloatUniform("audioLevel", audioLevel)
+        shader?.setFloatUniform("whiteWave", whiteWave)
+        shader?.setFloatUniform("energy", energy)
+        invalidate()
     }
 
     fun setBackgroundSource(bitmap: Bitmap?, screenX: Float, screenY: Float, sWidth: Float, sHeight: Float) {
@@ -280,6 +304,8 @@ class SiriLensEffectView(context: Context) : View(context) {
             activeShader.setFloatUniform("morph", morphProgress)
             activeShader.setFloatUniform("cardMode", cardExpandProgress)
             activeShader.setFloatUniform("energy", energy)
+            activeShader.setFloatUniform("audioLevel", audioLevel)
+            activeShader.setFloatUniform("whiteWave", whiteWave)
 
             paint.shader = activeShader
             canvas.drawRect(viewBounds, paint)
@@ -307,17 +333,20 @@ class SiriLensEffectView(context: Context) : View(context) {
             val u = i.toFloat() / steps
             val x = w * (0.08f + 0.84f * u)
             val arch = -sin(u * Math.PI).toFloat() * dp(6f)
-            val wave = sin(u * 6.28f + phase) * dp(1.2f)
+            val voiceRipple = sin(u * 13.0f - phase * 1.4f) * dp(4.2f) * audioLevel
+            val wave = sin(u * 6.28f + phase) * dp(1.2f) + voiceRipple
             val y = horizonY + arch + wave
             if (i == 0) flarePath.moveTo(x, y) else flarePath.lineTo(x, y)
         }
 
         fallbackPaint.style = Paint.Style.STROKE
         fallbackPaint.strokeCap = Paint.Cap.ROUND
-        fallbackPaint.strokeWidth = dp(3.5f)
+        fallbackPaint.strokeWidth = dp(3.0f + audioLevel * 2.4f)
+        val white = whiteWave > 0.92f
         fallbackPaint.shader = LinearGradient(
             w * 0.1f, 0f, w * 0.9f, 0f,
-            intArrayOf(0xFF1E5BFF.toInt(), 0xFF00D8FF.toInt(), 0xFF5CFF95.toInt(), 0xFFFFF36B.toInt(), 0xFFFF8826.toInt(), 0xFFFF2A3C.toInt()),
+            if (white) intArrayOf(0xFFE5ECF7.toInt(), 0xFFFFFFFF.toInt(), 0xFFF2F6FF.toInt())
+            else intArrayOf(0xFF1E5BFF.toInt(), 0xFF00D8FF.toInt(), 0xFF5CFF95.toInt(), 0xFFFFF36B.toInt(), 0xFFFF8826.toInt(), 0xFFFF2A3C.toInt()),
             null, Shader.TileMode.CLAMP
         )
         fallbackPaint.alpha = (255 * morphProgress).toInt()
